@@ -1,0 +1,11 @@
+name = "sitopia-lobby"
+main = "worker/lobby.js"
+compatibility_date = "2026-09-24"
+
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "SitopiaLobby"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SitopiaLobby"]

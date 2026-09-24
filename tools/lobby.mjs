@@ -1,31 +1,7 @@
 import crypto from "node:crypto";
+import { blankPerson, onClientMessage, onLeave } from "./room.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const MAX_PEOPLE = 24;
-const LOG_MAX = 40;
-
-function cleanName(value) {
-  const text = String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 12);
-  return text || "访客";
-}
-
-function cleanText(value) {
-  return String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 80);
-}
-
-function cleanPose(msg) {
-  const x = Number(msg.x);
-  const z = Number(msg.z);
-  let yaw = Number(msg.yaw);
-  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return null;
-  if (x < -40 || x > 40 || z < -50 || z > 40) return null;
-  yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
-  return {
-    x: Math.round(x * 1000) / 1000,
-    z: Math.round(z * 1000) / 1000,
-    yaw: Math.round(yaw * 1000) / 1000,
-  };
-}
 
 function encodeFrame(opcode, payload) {
   const len = payload.length;
@@ -77,42 +53,20 @@ export function attachLobby(server) {
     }
   }
 
-  function uniqueName(name, exceptId) {
-    const used = new Set();
-    for (const person of people.values()) {
-      if (person.id === exceptId || !person.named) continue;
-      used.add(person.name);
+  function deliver(person, result) {
+    for (let i = 0; i < result.out.length; i++) {
+      const ev = result.out[i];
+      if (ev.who === "self") send(person.socket, ev.obj);
+      else if (ev.who === "others") broadcast(ev.obj, person.id);
+      else broadcast(ev.obj);
     }
-    if (!used.has(name)) return name;
-    for (let i = 2; i < 100; i++) {
-      const next = (name + i).slice(0, 12);
-      if (!used.has(next)) return next;
-    }
-    return name.slice(0, 8) + "客";
-  }
-
-  function namedCount() {
-    let n = 0;
-    for (const person of people.values()) if (person.named && !person.away) n++;
-    return n;
-  }
-
-  function snapshot(exceptId) {
-    const list = [];
-    for (const person of people.values()) {
-      if (person.id === exceptId || !person.named || person.away) continue;
-      list.push({ id: person.id, name: person.name, x: person.x, z: person.z, yaw: person.yaw });
-    }
-    return list;
+    if (result.close) person.socket.end();
   }
 
   function drop(person) {
     if (!person || person.gone) return;
-    person.gone = true;
-    people.delete(person.id);
-    if (person.named && !person.away) {
-      broadcast({ t: "bye", id: person.id, name: person.name, n: namedCount() });
-    }
+    const out = onLeave(people, person);
+    for (let i = 0; i < out.length; i++) broadcast(out[i].obj);
     if (!person.socket.destroyed) person.socket.destroy();
   }
 
@@ -124,116 +78,13 @@ export function attachLobby(server) {
       return;
     }
     if (!msg || typeof msg.t !== "string") return;
-    person.seen = Date.now();
-    if (msg.t === "hi" && !person.named) {
-      if (namedCount() >= MAX_PEOPLE) {
-        send(person.socket, { t: "full" });
-        person.socket.end();
-        return;
-      }
-      person.name = uniqueName(cleanName(msg.name), person.id);
-      person.named = true;
-      person.away = msg.away === true;
-      const n = namedCount();
-      send(person.socket, {
-        t: "welcome",
-        id: person.id,
-        name: person.name,
-        away: person.away,
-        n,
-        people: snapshot(person.id),
-        log: log.slice(),
-      });
-      if (!person.away) {
-        broadcast({
-          t: "join",
-          id: person.id,
-          name: person.name,
-          x: person.x,
-          z: person.z,
-          yaw: person.yaw,
-          n,
-        }, person.id);
-      }
-      return;
-    }
-    if (!person.named) return;
-    if (msg.t === "away") {
-      if (person.away) return;
-      person.away = true;
-      broadcast({ t: "bye", id: person.id, name: person.name, n: namedCount() }, person.id);
-      return;
-    }
-    if (msg.t === "back") {
-      if (!person.away) return;
-      person.away = false;
-      broadcast({
-        t: "join",
-        id: person.id,
-        name: person.name,
-        x: person.x,
-        z: person.z,
-        yaw: person.yaw,
-        n: namedCount(),
-      }, person.id);
-      return;
-    }
-    if (msg.t === "name") {
-      const now = Date.now();
-      if (now - person.lastName < 400) return;
-      const next = uniqueName(cleanName(msg.name), person.id);
-      if (next === person.name) return;
-      person.lastName = now;
-      person.name = next;
-      const note = { t: "name", id: person.id, name: person.name };
-      if (person.away) send(person.socket, note);
-      else broadcast(note);
-      return;
-    }
-    if (msg.t === "move") {
-      const now = Date.now();
-      if (now - person.lastMove < 45) return;
-      const pose = cleanPose(msg);
-      if (!pose) return;
-      person.lastMove = now;
-      person.x = pose.x;
-      person.z = pose.z;
-      person.yaw = pose.yaw;
-      if (person.away) return;
-      broadcast({ t: "move", id: person.id, x: pose.x, z: pose.z, yaw: pose.yaw }, person.id);
-      return;
-    }
-    if (msg.t === "say") {
-      if (person.away) return;
-      const now = Date.now();
-      if (now - person.lastSay < 450) return;
-      const text = cleanText(msg.text);
-      if (!text) return;
-      person.lastSay = now;
-      const line = { t: "say", id: person.id, name: person.name, text, at: now };
-      log.push(line);
-      if (log.length > LOG_MAX) log.shift();
-      broadcast(line);
-    }
+    deliver(person, onClientMessage(people, log, person, msg, Date.now()));
   }
 
   function adopt(socket) {
-    const person = {
-      id: crypto.randomBytes(3).toString("hex"),
-      name: "",
-      named: false,
-      x: 0,
-      z: 15.5,
-      yaw: 0,
-      away: false,
-      socket,
-      buf: null,
-      seen: Date.now(),
-      lastMove: 0,
-      lastSay: 0,
-      lastName: 0,
-      gone: false,
-    };
+    const person = blankPerson(crypto.randomBytes(3).toString("hex"), Date.now());
+    person.socket = socket;
+    person.buf = null;
     socket.on("data", (chunk) => {
       person.buf = person.buf ? Buffer.concat([person.buf, chunk]) : chunk;
       if (person.buf.length > 65536) {

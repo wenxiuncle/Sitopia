@@ -2,6 +2,8 @@ import { PLAZA } from "./layout.js";
 import { forwardFromYaw } from "./basis.js";
 import { createCrowd } from "./avatar.js";
 
+const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby";
+
 const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
@@ -235,11 +237,26 @@ export function mountPresence(options) {
     return socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
   }
 
+  function lobbyAddress() {
+    const host = location.hostname;
+    if (host === "127.0.0.1" || host === "localhost") {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return proto + "//" + location.host + "/lobby";
+    }
+    const custom = new URLSearchParams(location.search).get("lobby");
+    if (custom && /^wss?:\/\//.test(custom)) return custom;
+    return PUBLIC_LOBBY;
+  }
+
   function arm() {
     if (dead || document.hidden || !confirmed || !myName || socketLive()) return;
+    const address = lobbyAddress();
+    if (!address) {
+      online.textContent = "未连接";
+      return;
+    }
     window.clearTimeout(retry);
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(proto + "//" + location.host + "/lobby");
+    const ws = new WebSocket(address);
     socket = ws;
     ws.addEventListener("open", () => {
       if (socket !== ws) return;
