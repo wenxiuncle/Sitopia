@@ -8,6 +8,7 @@ const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
 const BUBBLE_LIFE = 6000;
+const HOLD_MS = 30000;
 
 function readStoredName() {
   try {
@@ -34,12 +35,14 @@ export function mountPresence(options) {
     interior,
     getPose,
     onTyping,
+    onNav,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
   const mapCanvas = document.getElementById("map");
   const mapToggle = document.getElementById("map-visible");
   const online = document.getElementById("online");
+  const rosterEl = document.getElementById("roster");
   const toggle = document.getElementById("drawer-toggle");
   const drawer = document.getElementById("drawer");
   const peopleEl = document.getElementById("people");
@@ -71,6 +74,9 @@ export function mountPresence(options) {
   let selfBubbleUntil = 0;
   let composing = false;
   let showMap = true;
+  let holdUntil = 0;
+  let holdTimer = 0;
+  let holdToken = 0;
 
   corner.hidden = false;
 
@@ -326,9 +332,46 @@ export function mountPresence(options) {
   }
 
   function setDrawer(open) {
-    drawer.hidden = !open;
+    const changed = corner.classList.contains("nav-open") !== open;
+    corner.classList.toggle("nav-open", open);
+    drawer.inert = !open;
+    drawer.setAttribute("aria-hidden", open ? "false" : "true");
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
-    toggle.textContent = open ? "收起" : "导航";
+    toggle.setAttribute("aria-label", open ? "收起导航" : "导航");
+    if (changed && onNav) onNav(open);
+  }
+
+  function setRoster(open) {
+    rosterEl.hidden = !open;
+    online.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function holdPresence() {
+    const token = ++holdToken;
+    holdUntil = Date.now() + HOLD_MS;
+    window.clearTimeout(holdTimer);
+    holdTimer = window.setTimeout(() => {
+      if (token !== holdToken) return;
+      holdUntil = 0;
+      if (document.hidden && linked) send({ t: "away" });
+    }, HOLD_MS);
+  }
+
+  function outboundLink(event) {
+    const raw = event.target;
+    if (!raw || !raw.closest) return;
+    const link = raw.closest("a[href]");
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    if (!href || href.startsWith("#")) return;
+    let url;
+    try {
+      url = new URL(link.href, location.href);
+    } catch {
+      return;
+    }
+    if (link.target !== "_blank" && url.origin === location.origin) return;
+    holdPresence();
   }
 
   function applyMap(show) {
@@ -351,8 +394,16 @@ export function mountPresence(options) {
 
   toggle.addEventListener("click", (event) => {
     event.stopPropagation();
-    setDrawer(drawer.hidden);
+    setDrawer(!corner.classList.contains("nav-open"));
   });
+
+  online.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setRoster(rosterEl.hidden);
+  });
+
+  document.addEventListener("click", outboundLink);
+  document.addEventListener("auxclick", outboundLink);
 
   mapToggle.addEventListener("change", () => {
     applyMap(mapToggle.checked);
@@ -404,7 +455,14 @@ export function mountPresence(options) {
       closeChat();
       return;
     }
-    if (el && el.closest && el.closest("input, textarea, button, select, #drawer, #name-gate, #day, #panel")) return;
+    if (event.key === "Tab" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (!nameGate.hidden || event.repeat) return;
+      if (el && el.closest && el.closest("input, textarea, select, #drawer, #roster, #panel")) return;
+      event.preventDefault();
+      setDrawer(!corner.classList.contains("nav-open"));
+      return;
+    }
+    if (el && el.closest && el.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #day, #panel")) return;
     if (!nameGate.hidden && event.key === "Enter" && !event.repeat) {
       event.preventDefault();
       nameInput.focus();
@@ -419,9 +477,13 @@ export function mountPresence(options) {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       window.clearTimeout(retry);
-      if (linked) send({ t: "away" });
+      if (Date.now() < holdUntil) return;
+      holdPresence();
       return;
     }
+    holdToken += 1;
+    window.clearTimeout(holdTimer);
+    holdUntil = 0;
     if (dead || !confirmed || !myName) return;
     if (socket && socket.readyState === WebSocket.OPEN) {
       if (linked) send({ t: "back" });

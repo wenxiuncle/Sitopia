@@ -9,50 +9,68 @@
 <body>
   <canvas id="view"></canvas>
   <div id="loading">正在布置展厅…</div>
-  <div id="crosshair" hidden></div>
+  <div id="crosshair" hidden><span></span><span></span><span></span><span></span></div>
   <div id="hover" hidden></div>
   <header id="where" hidden>
     <strong>趣站博物馆</strong>
     <div id="place">门厅</div>
     <nav id="day"></nav>
   </header>
+  <p id="hint" hidden>W A S D 走动 · 鼠标环顾 · Shift 快步<br>单击画框 · 回车聊天 · Tab 导航（出鼠标，再按恢复）· [ ] 时辰 · R 回广场 · Esc 释放鼠标</p>
+  <div id="lower">
   <ol id="legend" hidden></ol>
-  <p id="hint" hidden>W A S D 走动 · 鼠标环顾 · Shift 快步<br>单击画框 · 回车聊天 · [ ] 时辰 · R 回广场 · Esc 释放鼠标</p>
   <div id="boot" hidden>
     <h1>趣站博物馆</h1>
-    <p>千奇百怪样式展厅，画框按发布日期从新到旧挂满，分上中下三排。<br>走近画框，单击，看介绍和链接。左上角可以选清晨到夜晚。右上角是平面图，松开鼠标后可打开导航。回车说话，字会出现在头上。建议使用电脑键鼠。点击画面开始走动。</p>
+    <p>千奇百怪样式展厅，画框按发布日期从新到旧挂满，分上中下三排。<br>走近画框，单击，看介绍和链接。左上角可以选清晨到夜晚。右上角是平面图，下面是在线人数。点在线人数可以看谁在、改名字，再点一次才收起。按 Tab 打开导航，鼠标会出现，视角停住，再按一次恢复。回车说话，字会出现在头上。建议使用电脑键鼠。点击画面开始走动。</p>
+  </div>
   </div>
   <form id="name-gate" hidden>
-    <p>进馆之前，先起个名字。以后可以在右上角导航里改。</p>
+    <p>进馆之前，先起个名字。以后点地图下面的在线人数就能改。</p>
     <input id="name-input" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
     <button type="submit">进入</button>
   </form>
   <div id="corner" hidden>
-    <div id="map-card">
-      <canvas id="map" width="360" height="420"></canvas>
-      <p id="online">连接中</p>
+    <button id="drawer-toggle" type="button" aria-controls="drawer" aria-expanded="false" aria-label="导航"><span></span></button>
+    <div id="dock">
+      <div id="rail">
+        <div id="map-card">
+          <canvas id="map" width="360" height="420"></canvas>
+        </div>
+        <div id="online-slot">
+          <button id="online" type="button" aria-expanded="false" aria-controls="roster">连接中</button>
+          <aside id="roster" hidden>
+            <p class="drawer-label">名称</p>
+            <form id="name-form">
+              <input id="nav-name" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
+              <button type="submit">保存</button>
+            </form>
+            <p class="drawer-label">在馆</p>
+            <ul id="people"></ul>
+            <p class="drawer-label">聊天</p>
+            <ol id="chat-log"></ol>
+          </aside>
+        </div>
+      </div>
+      <aside id="drawer" aria-hidden="true" inert>
+        <div class="drawer-body">
+          <label id="map-switch">
+            <input id="map-visible" type="checkbox" checked>
+            显示地图
+          </label>
+          <p class="drawer-label">更新日志</p>
+          <ol id="changelog">
+            <li><time datetime="2026-09-24">9月24日</time>画面上的鼠标改回系统指针，和汉堡、画框卡片上一样清楚。趣站博物馆介绍卡在左下角，厅名在卡片上面。</li>
+            <li><time datetime="2026-09-24">9月24日</time>在线人数挪到地图下面。点开之后不会自己收起，再点一次才收。导航换成三条横线，按 Tab 展开时把地图和在线人数一起往左推。这时鼠标会出现，视角停住，再按一次 Tab 恢复。准心还是白芯黑边，横竖两笔不再叠在中间。</li>
+            <li><time datetime="2026-09-24">9月24日</time>离开这个页面也会再留三十秒，不论有没有点开链接，到点才离开。鼠标改成白芯黑边，移到黑图上也看得见。按 Tab 拉出导航，从右边滑出来，把地图往左挤。在线人数单独放在导航上面，点开能看谁在、聊天，也能改名字。导航里可以开关地图、看更新日志和项目地址。地图和导航的白底没那么透了。</li>
+            <li><time datetime="2026-09-24">9月24日</time>进馆先起名字。地图可以关掉。聊天发出去，输入框就收起，再按回车才出现。离开这个页面只算离开，回到页面才再进入。</li>
+            <li><time datetime="2026-09-23">9月23日</time>画框上的图直接用图片站。最里面那面墙，左右各空出一列。</li>
+          </ol>
+          <p class="drawer-label">项目</p>
+          <p id="project-line"><a id="project-link" href="https://github.com/wenxiuncle/Sitopia" target="_blank" rel="noopener noreferrer">github.com/wenxiuncle/Sitopia</a></p>
+          <p id="credit">Wenxi闻西 用❤️制作</p>
+        </div>
+      </aside>
     </div>
-    <button id="drawer-toggle" type="button" aria-controls="drawer" aria-expanded="false">导航</button>
-    <aside id="drawer" hidden>
-      <p class="drawer-label">名称</p>
-      <form id="name-form">
-        <input id="nav-name" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
-        <button type="submit">保存</button>
-      </form>
-      <label id="map-switch">
-        <input id="map-visible" type="checkbox" checked>
-        显示地图
-      </label>
-      <p class="drawer-label">在馆</p>
-      <ul id="people"></ul>
-      <p class="drawer-label">聊天</p>
-      <ol id="chat-log"></ol>
-      <p class="drawer-label">更新日志</p>
-      <ol id="changelog">
-        <li><time datetime="2026-09-24">9月24日</time>进馆先起名字，导航里也能改。地图可以关掉。聊天发出去，输入框就收起，再按回车才出现。离开这个页面只算离开，回到页面才再进入。夜晚鼠标改成白色，地图和导航更透一些。</li>
-        <li><time datetime="2026-09-23">9月23日</time>画框上的图直接用图片站。最里面那面墙，左右各空出一列。</li>
-      </ol>
-    </aside>
   </div>
   <div id="toasts"></div>
   <p id="self-bubble" hidden></p>

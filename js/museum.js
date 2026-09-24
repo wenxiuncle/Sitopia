@@ -54,6 +54,7 @@ const panelPortal = document.getElementById("panel-portal");
 const panelArticle = document.getElementById("panel-article");
 const panelClose = document.getElementById("panel-close");
 const dayNav = document.getElementById("day");
+const corner = document.getElementById("corner");
 
 const down = new Set();
 const fwd = new THREE.Vector3();
@@ -80,6 +81,7 @@ let coneMat = null;
 let discMat = null;
 let shadowMat = null;
 let presence = null;
+let navHoldsLook = false;
 
 const SKY_R = 520;
 const SUN_FAR = 280;
@@ -198,7 +200,7 @@ function updatePlace() {
 
 let hoverClock = 0;
 function step(dt, now) {
-  const locked = document.pointerLockElement === view;
+  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open");
   document.body.classList.toggle("walking", locked);
   if (!locked) {
     vx = 0;
@@ -279,6 +281,7 @@ function publishSelfTest() {
 function bind() {
   view.addEventListener("click", () => {
     if (performance.now() < ignoreUntil) return;
+    if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) {
       view.requestPointerLock();
       return;
@@ -287,6 +290,7 @@ function bind() {
     if (index >= 0) openFrame(index);
   });
   document.addEventListener("mousemove", (event) => {
+    if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
     camera.rotation.y -= event.movementX * 0.0022;
     camera.rotation.x -= event.movementY * 0.0022;
@@ -294,8 +298,9 @@ function bind() {
     if (camera.rotation.x < -1.15) camera.rotation.x = -1.15;
   });
   document.addEventListener("keydown", (event) => {
+    if (event.code === "Tab") return;
     const typing = event.target;
-    if (typing && typing.closest && typing.closest("input, textarea, button, select, #drawer, #name-gate, #day, #panel")) return;
+    if (typing && typing.closest && typing.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #day, #panel")) return;
     if (event.code === "KeyR") {
       resetPose();
       return;
@@ -311,6 +316,14 @@ function bind() {
     down.add(event.code);
   });
   document.addEventListener("keyup", (event) => down.delete(event.code));
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement === view) return;
+    // 锁定松开后，画布上的系统指针会停在一张被放大的糊图上。先换成按钮那种指针，下一帧再回到箭头，浏览器才会重新取清晰的原生光标。
+    view.style.cursor = "pointer";
+    requestAnimationFrame(() => {
+      view.style.cursor = "auto";
+    });
+  });
   window.addEventListener("blur", () => down.clear());
   panelClose.addEventListener("click", closePanel);
   window.addEventListener("resize", resize);
@@ -573,6 +586,20 @@ function buildScene(data) {
     },
     onTyping: (active) => {
       if (active) down.clear();
+    },
+    onNav: (open) => {
+      if (open) {
+        down.clear();
+        if (document.pointerLockElement === view) {
+          navHoldsLook = true;
+          document.exitPointerLock();
+        }
+        return;
+      }
+      if (!navHoldsLook) return;
+      navHoldsLook = false;
+      const pending = view.requestPointerLock();
+      if (pending && typeof pending.catch === "function") pending.catch(() => {});
     },
   });
   loading.hidden = true;
