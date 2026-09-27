@@ -16,7 +16,7 @@ node tools/serve.mjs
 
 浏览器打开 http://127.0.0.1:4173/ 。换端口可以设环境变量 `PORT`。
 
-进馆前先起一个名字，以后点地图下面的在线人数改。本机打开时，同一个服务里的窗口互相看得见。线上预览页另有一间共用的聊天室，打开那个地址的人互相看得见。两间不串门。
+进馆前先起一个名字，以后点地图下面的在线人数改。本机打开时，同一个服务里的窗口互相看得见。线上预览页的聊天室在有趣网址之家，国内可以直接连上。两间不串门。
 
 ## 怎么逛
 
@@ -64,7 +64,8 @@ node tools/selftest.mjs
 | `index.html`、`museum.css` | 页面和浮层 |
 | `js/` | 展厅、走动、时辰、在线的人 |
 | `tools/serve.mjs` | 本机打开，并带上同一台电脑上的联机 |
-| `worker/lobby.js` | 线上那间聊天室 |
+| `server/youqu-lobby/index.php` | 线上聊天室，挂在有趣网址之家，国内可直接连 |
+| `worker/lobby.js` | 早先的 Cloudflare 房间，页面已经不连它 |
 | `tools/fetch-sites.mjs` | 从有趣网址之家拉展品 |
 | `tools/selftest.mjs` | 检查布局、朝向和能不能走到 |
 | `data/sites.json` | 展品清单 |

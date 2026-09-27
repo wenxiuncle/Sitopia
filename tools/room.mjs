@@ -1,3 +1,4 @@
+// 线上同一套规则在 server/youqu-lobby/index.php。改这里时那份一起改。
 export const MAX_PEOPLE = 24;
 export const LOG_MAX = 40;
 

@@ -544,6 +544,12 @@ function openClient(url) {
   });
 }
 
+async function checkPublicLobby() {
+  const source = await readFile(path.join(root, "js", "presence.js"), "utf8");
+  assert(source.includes('const PUBLIC_LOBBY = "https://youquhome.com/sitopia-lobby/index.php"'), "public lobby stays on youquhome");
+  assert(!source.includes("workers.dev"), "public lobby does not use workers.dev");
+}
+
 async function checkLobby() {
   const server = http.createServer((req, res) => {
     res.writeHead(404);
@@ -630,6 +636,7 @@ if (!process.argv.includes("--fixture")) {
 }
 
 try {
+  await checkPublicLobby();
   await checkLobby();
 } catch (err) {
   failures.push("lobby: " + err.message);

@@ -2,7 +2,8 @@ import { PLAZA } from "./layout.js";
 import { forwardFromYaw } from "./basis.js";
 import { createCrowd } from "./avatar.js";
 
-const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby";
+// 线上房间放在有趣网址之家。Cloudflare 的预览域名在国内被墙，不要改回去。
+const PUBLIC_LOBBY = "https://youquhome.com/sitopia-lobby/index.php";
 
 const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
@@ -65,6 +66,7 @@ export function mountPresence(options) {
   let confirmed = readConfirmed();
   let linked = false;
   let socket = null;
+  let http = null;
   let retry = 0;
   let dead = false;
   let publishAt = 0;
@@ -98,6 +100,7 @@ export function mountPresence(options) {
 
   function send(obj) {
     if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+    else if (http && !http.stopped) httpEnqueue(obj);
   }
 
   function toast(text) {
@@ -240,6 +243,7 @@ export function mountPresence(options) {
   }
 
   function socketLive() {
+    if (http && !http.stopped) return true;
     return socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
   }
 
@@ -250,8 +254,114 @@ export function mountPresence(options) {
       return proto + "//" + location.host + "/lobby";
     }
     const custom = new URLSearchParams(location.search).get("lobby");
-    if (custom && /^wss?:\/\//.test(custom)) return custom;
+    if (custom && /^(https?|wss?):\/\//.test(custom)) return custom;
     return PUBLIC_LOBBY;
+  }
+
+  function scheduleHttp(session) {
+    window.clearTimeout(session.timer);
+    if (session.stopped || session.inflight || http !== session) return;
+    const urgent = session.queue.some((item) => item.t !== "move");
+    const wait = session.queue.length ? (urgent ? 0 : 50) : (document.hidden ? 15000 : 200);
+    session.timer = window.setTimeout(() => pumpHttp(session), wait);
+  }
+
+  function httpEnqueue(obj) {
+    if (!http || http.stopped) return;
+    if (obj.t === "move") {
+      const idx = http.queue.findIndex((item) => item.t === "move");
+      if (idx >= 0) http.queue[idx] = obj;
+      else http.queue.push(obj);
+    } else {
+      http.queue.push(obj);
+    }
+    scheduleHttp(http);
+  }
+
+  function stopHttp(session) {
+    session.stopped = true;
+    window.clearTimeout(session.timer);
+    if (http === session) http = null;
+  }
+
+  function beaconLeave(address, id) {
+    if (!id || typeof navigator.sendBeacon !== "function") return;
+    const body = new Blob(
+      [JSON.stringify({ id, msgs: [{ t: "leave" }] })],
+      { type: "text/plain;charset=UTF-8" },
+    );
+    try {
+      navigator.sendBeacon(address, body);
+    } catch {
+      /* 页面正在关，留下的人等超时。 */
+    }
+  }
+
+  function failHttp(session) {
+    const id = session.id;
+    const address = session.address;
+    stopHttp(session);
+    linked = false;
+    if (id) beaconLeave(address, id);
+    online.textContent = confirmed ? "未连接" : "先起个名字";
+    window.clearTimeout(retry);
+    if (dead || document.hidden || !confirmed) return;
+    retry = window.setTimeout(arm, 1500);
+  }
+
+  function pumpHttp(session) {
+    if (!session || session.stopped || session.inflight || http !== session) return;
+    session.inflight = true;
+    window.clearTimeout(session.timer);
+    const msgs = session.queue.splice(0, 6);
+    fetch(session.address, {
+      method: "POST",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { "content-type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify({ id: session.id, msgs }),
+    }).then(async (res) => {
+      if (session.stopped || http !== session) return null;
+      if (res.status === 429) {
+        session.inflight = false;
+        session.queue = msgs.concat(session.queue);
+        session.timer = window.setTimeout(() => pumpHttp(session), 800);
+        return null;
+      }
+      if (!res.ok) throw new Error("http " + res.status);
+      return res.json();
+    }).then((data) => {
+      if (!data || session.stopped || http !== session) return;
+      session.inflight = false;
+      if (typeof data.id === "string" && data.id) session.id = data.id;
+      const events = data.events || [];
+      for (let i = 0; i < events.length; i++) onMessage(events[i]);
+      if (data.close) {
+        failHttp(session);
+        return;
+      }
+      scheduleHttp(session);
+    }).catch(() => {
+      if (session.stopped || http !== session) return;
+      session.inflight = false;
+      failHttp(session);
+    });
+  }
+
+  function startHttp(address) {
+    const session = {
+      address,
+      id: "",
+      queue: [],
+      stopped: false,
+      inflight: false,
+      timer: 0,
+    };
+    http = session;
+    online.textContent = "连接中";
+    session.queue.push({ t: "hi", name: myName, away: document.hidden });
+    pumpHttp(session);
   }
 
   function arm() {
@@ -262,6 +372,10 @@ export function mountPresence(options) {
       return;
     }
     window.clearTimeout(retry);
+    if (address.startsWith("http://") || address.startsWith("https://")) {
+      startHttp(address);
+      return;
+    }
     const ws = new WebSocket(address);
     socket = ws;
     ws.addEventListener("open", () => {
@@ -485,7 +599,7 @@ export function mountPresence(options) {
     window.clearTimeout(holdTimer);
     holdUntil = 0;
     if (dead || !confirmed || !myName) return;
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if ((socket && socket.readyState === WebSocket.OPEN) || (http && !http.stopped)) {
       if (linked) send({ t: "back" });
       return;
     }
@@ -495,6 +609,11 @@ export function mountPresence(options) {
   window.addEventListener("pagehide", () => {
     dead = true;
     window.clearTimeout(retry);
+    if (http) {
+      const leaving = http;
+      stopHttp(leaving);
+      beaconLeave(leaving.address, leaving.id);
+    }
     if (socket) socket.close();
   });
 
