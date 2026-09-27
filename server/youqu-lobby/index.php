@@ -138,6 +138,7 @@ respond(200, [
 
 function originOk(string $origin): bool {
     if ($origin === "https://wenxiuncle.github.io") return true;
+    if ($origin === "https://youquhome.com" || $origin === "https://www.youquhome.com") return true;
     return (bool) preg_match("#^http://(127\\.0\\.0\\.1|localhost)(:\\d+)?$#", $origin);
 }
 

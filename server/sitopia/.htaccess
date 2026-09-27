@@ -1,0 +1,12 @@
+# 这个目录是静态展厅。样式和脚本不要跟全站一样缓存一年。
+<IfModule mod_expires.c>
+ExpiresActive on
+ExpiresByType text/html "access plus 5 minutes"
+ExpiresByType text/css "access plus 1 hours"
+ExpiresByType application/javascript "access plus 1 hours"
+ExpiresByType text/javascript "access plus 1 hours"
+ExpiresByType application/json "access plus 5 minutes"
+</IfModule>
+<IfModule LiteSpeed>
+CacheDisable public /
+</IfModule>
