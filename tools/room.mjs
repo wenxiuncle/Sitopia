@@ -14,12 +14,14 @@ export function cleanText(value) {
 export function cleanPose(msg) {
   const x = Number(msg.x);
   const z = Number(msg.z);
+  const y = msg.y == null ? 0 : Number(msg.y);
   let yaw = Number(msg.yaw);
-  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return null;
-  if (x < -40 || x > 40 || z < -50 || z > 40) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(y) || !Number.isFinite(yaw)) return null;
+  if (x < -40 || x > 40 || z < -50 || z > 40 || y < -1 || y > 90) return null;
   yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
   return {
     x: Math.round(x * 1000) / 1000,
+    y: Math.round(y * 1000) / 1000,
     z: Math.round(z * 1000) / 1000,
     yaw: Math.round(yaw * 1000) / 1000,
   };
@@ -31,6 +33,7 @@ export function blankPerson(id, now) {
     name: "",
     named: false,
     x: 0,
+    y: 0,
     z: 15.5,
     yaw: 0,
     away: false,
@@ -52,7 +55,7 @@ function snapshot(people, exceptId) {
   const list = [];
   for (const person of people.values()) {
     if (person.id === exceptId || !person.named || person.away || person.gone) continue;
-    list.push({ id: person.id, name: person.name, x: person.x, z: person.z, yaw: person.yaw });
+    list.push({ id: person.id, name: person.name, x: person.x, y: person.y || 0, z: person.z, yaw: person.yaw });
   }
   return list;
 }
@@ -112,6 +115,7 @@ export function onClientMessage(people, log, person, msg, now) {
           id: person.id,
           name: person.name,
           x: person.x,
+          y: person.y || 0,
           z: person.z,
           yaw: person.yaw,
           n,
@@ -137,6 +141,7 @@ export function onClientMessage(people, log, person, msg, now) {
         id: person.id,
         name: person.name,
         x: person.x,
+        y: person.y || 0,
         z: person.z,
         yaw: person.yaw,
         n: namedCount(people),
@@ -160,10 +165,11 @@ export function onClientMessage(people, log, person, msg, now) {
     if (!pose) return { close: false, out };
     person.lastMove = now;
     person.x = pose.x;
+    person.y = pose.y;
     person.z = pose.z;
     person.yaw = pose.yaw;
     if (person.away) return { close: false, out };
-    out.push({ who: "others", obj: { t: "move", id: person.id, x: pose.x, z: pose.z, yaw: pose.yaw } });
+    out.push({ who: "others", obj: { t: "move", id: person.id, x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw } });
     return { close: false, out };
   }
   if (msg.t === "say") {

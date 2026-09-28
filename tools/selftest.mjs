@@ -12,14 +12,23 @@ import {
   FLOOR_TILT,
   FRAME,
   HALLS,
+  LIFT,
   PLAZA,
   PLAYER_RADIUS,
+  STORY,
+  WALL_T,
   buildMuseum,
   blocked,
+  doorBoxes,
+  doorWantsOpen,
+  groundAt,
+  liftLeaves,
   movePlayer,
+  pullCamera,
 } from "../js/layout.js";
 import { DAYS, findDay, groundShadow, openingQuads, sunVector } from "../js/day.js";
-import { atlasGrid, cellUv, coverRect, floorAndCeiling, frameMeshes, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { createLift } from "../js/lift.js";
+import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, liftRig, maskPaths, usableFrameImage, wallMesh } from "../js/meshes.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -103,9 +112,10 @@ function insideZone(x, z, zones) {
   return false;
 }
 
-function flood(built) {
+function flood(built, footY, origin) {
   const cell = 0.45;
-  const index = indexWalls(built.walls);
+  const y = footY || 0;
+  const start = origin || built.spawn;
   const minX = built.bounds.minX - 4;
   const maxX = built.bounds.maxX + 4;
   const minZ = built.bounds.minZ - 4;
@@ -119,15 +129,15 @@ function flood(built) {
   const qz = new Int32Array(cols * rows);
   let qs = 0;
   let qe = 0;
-  const sx = Math.floor(built.spawn.x / cell);
-  const sz = Math.floor(built.spawn.z / cell);
+  const sx = Math.floor(start.x / cell);
+  const sz = Math.floor(start.z / cell);
   const push = (x, z) => {
     if (x < x0 || z < z0 || x >= x0 + cols || z >= z0 + rows) return;
     const id = (z - z0) * cols + (x - x0);
     if (seen[id]) return;
     const wx = (x + 0.5) * cell;
     const wz = (z + 0.5) * cell;
-    if (blockedFast(wx, wz, index)) {
+    if (blocked(wx, wz, PLAYER_RADIUS, built.walls, y)) {
       seen[id] = 1;
       return;
     }
@@ -258,6 +268,65 @@ function checkPictureFacing() {
   }
 }
 
+function walkToDoor(walls) {
+  let z = 15.5;
+  for (let i = 0; i < 80; i++) {
+    const next = movePlayer(0, z, 0, -0.35, PLAYER_RADIUS, walls);
+    if (next.z === z) return z;
+    z = next.z;
+  }
+  return z;
+}
+
+function checkDoors() {
+  const closed = doorBoxes(0);
+  const open = doorBoxes(1);
+  const cz = (closed[0].minZ + closed[0].maxZ) / 2;
+  assert(blocked(0, cz, PLAYER_RADIUS, closed), "closed doors block the middle");
+  assert(!blocked(0, cz, PLAYER_RADIUS, open), "open doors leave the middle clear");
+  assert(open[0].maxX < closed[0].minX + 0.05, "left leaf slides left");
+  assert(open[1].minX > closed[1].maxX - 0.05, "right leaf slides right");
+  const shut = walkToDoor(closed);
+  assert(shut > 3.5 && shut < 6, `closed door stops outside, z=${shut}`);
+  const passed = walkToDoor(open);
+  assert(passed < 0, `open door lets the player in, z=${passed}`);
+  assert(doorWantsOpen(0, 15.5, false) === false, "spawn leaves the door shut");
+  assert(doorWantsOpen(0, 10, false) === true, "approach opens the door");
+  assert(doorWantsOpen(0, 12.5, true) === true, "door stays open a little past the sensor");
+  assert(doorWantsOpen(0, 14.5, true) === false, "door shuts once the player is clear");
+  const rig = doorRig(new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial());
+  rig.update(0);
+  const shutX = (closed[0].minX + closed[0].maxX) / 2;
+  assert(Math.abs(rig.leaves[0].position.x - shutX) < 1e-6, "left mesh matches the closed collider");
+  rig.update(1);
+  const openX = (open[0].minX + open[0].maxX) / 2;
+  const openRight = (open[1].minX + open[1].maxX) / 2;
+  assert(Math.abs(rig.leaves[0].position.x - openX) < 1e-6, "left mesh matches the open collider");
+  assert(Math.abs(rig.leaves[1].position.x - openRight) < 1e-6, "right mesh matches the open collider");
+  assert(rig.leaves[0].position.x < shutX, "left mesh moves toward -X");
+  assert(rig.leaves[1].position.x > 0, "right mesh moves toward +X");
+  const seam = closed[1].minX - closed[0].maxX;
+  assert(seam > 0 && seam < 0.012, `closed door seam ${seam}`);
+
+  const glass = new THREE.MeshBasicMaterial();
+  const frame = new THREE.MeshBasicMaterial();
+  const rigLift = liftRig(glass, frame, frame, frame, 1);
+  const liftLeavesMesh = () => rigLift.root.children.filter((child) => child.userData.span);
+  const shutLeaf = liftLeaves(0, 0)[0];
+  const shutSlot = (shutLeaf.minX + shutLeaf.maxX) / 2;
+  rigLift.update([0], 0);
+  assert(liftLeavesMesh().every((leaf) => leaf.visible), "closed lift door is drawn");
+  assert(Math.abs(liftLeavesMesh()[0].position.x - shutSlot) < 1e-4, "closed lift door sits in the slot");
+  rigLift.update([0.5], 0);
+  assert(Math.abs(liftLeavesMesh()[0].position.x - shutSlot) < 1e-4, "half-open lift door stays in the slot");
+  rigLift.update([1], 0);
+  const parked = liftLeavesMesh();
+  assert(parked.length === 2 && parked.every((leaf) => leaf.visible), "open lift door stays visible");
+  assert(parked.every((leaf) => Math.abs(leaf.position.x - shutSlot) < 1e-4), "open lift door stays in the slot");
+  const zs = parked.map((leaf) => leaf.position.z).sort((a, b) => a - b);
+  assert(zs[0] < LIFT.cz - 0.4 && zs[1] > LIFT.cz + 0.4, "open lift door slides aside");
+}
+
 function checkMotion(built) {
   const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 900);
   camera.rotation.order = "YXZ";
@@ -289,13 +358,27 @@ function checkMotion(built) {
 
   x = built.spawn.x;
   z = built.spawn.z;
+  for (let i = 0; i < 200 && z > 0.2; i++) {
+    const next = movePlayer(x, z, 0, -0.35, PLAYER_RADIUS, built.walls);
+    if (next.z === z) break;
+    x = next.x;
+    z = next.z;
+  }
+  assert(z < 1 && z > -1, "front door leads into the foyer");
+  for (let i = 0; i < 12; i++) {
+    const next = movePlayer(x, z, 0.35, 0, PLAYER_RADIUS, built.walls);
+    if (next.x === x) break;
+    x = next.x;
+    z = next.z;
+  }
+  assert(x > 3 && x < 6, "foyer has room beside the aisle");
   for (let i = 0; i < 90; i++) {
     const next = movePlayer(x, z, 0, -0.35, PLAYER_RADIUS, built.walls);
     if (next.z === z) break;
     x = next.x;
     z = next.z;
   }
-  assert(z < -12, "front door leads into the halls");
+  assert(z < -8.8 && z > -10.2, "first wall stops the player after the foyer");
 
   const floor = new THREE.Object3D();
   floor.rotation.x = FLOOR_TILT;
@@ -331,6 +414,7 @@ function checkDay(built) {
   }
   assert(east > 2, "dusk shadow reaches the east plaza");
   assert(built.openings.length === 6, `sun openings ${built.openings.length}`);
+  assert(!built.openings.some((opening) => opening.nx < 0 && opening.maxZ > -2), "light slit between the lift and the door");
   const limits = {
     minX: built.interior.minX + 0.15,
     maxX: built.interior.maxX - 0.15,
@@ -349,55 +433,109 @@ function checkDay(built) {
       assert(point[1] <= limits.maxZ + 1e-6 && point[1] >= limits.minZ - 1e-6, "streak stays inside z");
     }
   }
-  assert(lit >= 2, "dawn opens at least two light streaks");
+  assert(lit >= 1, "dawn opens a light streak through the door");
+  for (const name of ["清晨", "正午", "黄昏"]) {
+    const quadsAt = openingQuads(built.openings, sunVector(findDay(name)), limits, 1);
+    for (let i = 0; i < quadsAt.length; i++) {
+      const quad = quadsAt[i];
+      if (!quad) continue;
+      for (let k = 0; k < quad.pts.length; k++) {
+        const point = quad.pts[k];
+        assert(!(point[0] < limits.minX + 0.45 && point[1] > limits.maxZ - 0.45), `${name} light is pinned in the foyer corner`);
+      }
+    }
+  }
   assert(DAYS.map((day) => day.name).join(",") === "清晨,上午,正午,午后,黄昏,夜晚", "day names");
 }
 
-function hangCapacity() {
-  const sites = [];
-  for (let i = 0; i < 500; i++) sites.push({ cat: HALLS[0].cat });
-  return buildMuseum(sites).frames.length;
-}
-
-const HANG_CAPACITY = hangCapacity();
-
 function checkBuild(sites, label) {
   const built = buildMuseum(sites);
-  let qianqi = 0;
-  for (let i = 0; i < sites.length; i++) if (sites[i].cat === HALLS[0].cat) qianqi++;
-  const expect = Math.min(HANG_CAPACITY, qianqi);
-  assert(built.frames.length === expect, `${label} frame count ${built.frames.length} != ${expect}`);
-  let prev = -1;
+  const cats = new Set(HALLS.map((hall) => hall.cat));
+  const rank = new Map(HALLS.map((hall, index) => [hall.cat, index]));
+  let want = 0;
+  for (let i = 0; i < sites.length; i++) if (cats.has(sites[i].cat)) want++;
+  assert(built.frames.length === want, `${label} frame count ${built.frames.length} != ${want}`);
+  let prevRank = -1;
+  let prevIndex = -1;
+  let prev = null;
   let backA = 0;
   let backB = 0;
-  let northN = 0;
-  let northMin = Infinity;
-  let northMax = -Infinity;
+  const onFloor = new Map();
   for (let i = 0; i < built.frames.length; i++) {
     const frame = built.frames[i];
-    assert(frame.siteIndex > prev, `${label} frames left the date order`);
-    prev = frame.siteIndex;
-    if (frame.nz < 0 && frame.z < -8 && frame.z > -16) backA++;
-    if (frame.nz < 0 && frame.z < -18 && frame.z > -26) backB++;
-    if (frame.nz > 0 && frame.z < -30) {
-      northN++;
-      if (frame.x < northMin) northMin = frame.x;
-      if (frame.x > northMax) northMax = frame.x;
+    const cat = sites[frame.siteIndex].cat;
+    const place = rank.get(cat);
+    assert(place != null && place >= prevRank, `${label} frames left the category order`);
+    if (place === prevRank) assert(frame.siteIndex > prevIndex, `${label} frames left the date order`);
+    prevRank = place;
+    prevIndex = frame.siteIndex;
+    prev = frame;
+    onFloor.set(frame.floor, (onFloor.get(frame.floor) || 0) + 1);
+    if (frame.floor === 0 && frame.nz < 0 && frame.z < -9.6 && frame.z > -11.2) backA++;
+    if (frame.floor === 0 && frame.nz < 0 && frame.z < -21.6 && frame.z > -23.2) backB++;
+  }
+  const floorCounts = Array.from(onFloor.entries()).sort((a, b) => a[0] - b[0]);
+  const full = floorCounts.length ? floorCounts[0][1] : 0;
+  if (floorCounts.length > 1) {
+    for (let i = 0; i < floorCounts.length - 1; i++) {
+      assert(floorCounts[i][1] === full, `${label} floor ${floorCounts[i][0]} left space ${floorCounts[i][1]} != ${full}`);
+    }
+    assert(floorCounts[floorCounts.length - 1][1] <= full, `${label} top floor overfilled`);
+  }
+  prev = null;
+  for (let i = 0; i < built.frames.length; i++) {
+    const frame = built.frames[i];
+    const place = rank.get(sites[frame.siteIndex].cat);
+    if (prev && place > rank.get(sites[prev.siteIndex].cat) && frame.floor !== prev.floor) {
+      assert((onFloor.get(prev.floor) || 0) === full, `${label} category opened a new floor with room left`);
+    }
+    prev = frame;
+  }
+  if (full > 100) {
+    assert(backA >= 18 && backB >= 18, `${label} middle walls are missing back frames`);
+    for (const [floor, count] of onFloor) {
+      if (count !== full) continue;
+      let northN = 0;
+      let northMin = Infinity;
+      let northMax = -Infinity;
+      for (let i = 0; i < built.frames.length; i++) {
+        const frame = built.frames[i];
+        if (frame.floor !== floor || frame.nz <= 0 || frame.z >= -32) continue;
+        northN++;
+        if (frame.x < northMin) northMin = frame.x;
+        if (frame.x > northMax) northMax = frame.x;
+      }
+      assert(northN === 42 && northMin < -13.5 && northMin > -15.2 && northMax > 13.5 && northMax < 15.2, `${label} floor ${floor} north wall side margin ${northMin}..${northMax} n=${northN}`);
     }
   }
-  if (qianqi >= HANG_CAPACITY) {
-    assert(backA >= 18 && backB >= 18, `${label} middle walls are missing back frames`);
-    assert(northN === 42 && northMin < -13.5 && northMin > -15.2 && northMax > 13.5 && northMax < 15.2, `${label} north wall side margin ${northMin}..${northMax} n=${northN}`);
-  }
   assert(Math.abs(FRAME.w / FRAME.h - 3.7 / 1.8) < 1e-9, `${label} frame ratio`);
-  const ys = new Set();
+  const rows = new Map();
   for (let i = 0; i < built.frames.length; i++) {
-    ys.add(built.frames[i].y.toFixed(3));
-    assert(sites[built.frames[i].siteIndex].cat === HALLS[0].cat, `${label} frame ${i} is not 千奇百怪`);
+    const frame = built.frames[i];
+    const rel = (frame.y - frame.floor * STORY).toFixed(3);
+    if (!rows.has(frame.floor)) rows.set(frame.floor, new Set());
+    rows.get(frame.floor).add(rel);
   }
-  assert(ys.size === 3, `${label} frame rows ${ys.size}`);
+  for (const [floor, set] of rows) {
+    assert(set.size >= 1 && set.size <= 3, `${label} floor ${floor} frame rows ${set.size}`);
+    if ((onFloor.get(floor) || 0) === full && full > 40) assert(set.size === 3, `${label} full floor ${floor} rows ${set.size}`);
+  }
   assert(!built.dress.some((item) => item.kind === "wash"), `${label} frames hang on the bare wall`);
   assert(!blocked(built.spawn.x, built.spawn.z, PLAYER_RADIUS, built.walls), `${label} spawn is inside a wall`);
+  let doorInner = null;
+  for (let i = 0; i < built.stone.length; i++) {
+    const wall = built.stone[i];
+    if (wall.minZ > 2 && wall.maxZ < 6 && wall.maxX < 0 && wall.minX < -10) doorInner = wall.minZ;
+  }
+  let firstNear = -Infinity;
+  for (let i = 0; i < built.white.length; i++) {
+    const wall = built.white[i];
+    if (wall.maxX - wall.minX < 8 || wall.maxZ >= doorInner || wall.maxZ <= firstNear) continue;
+    firstNear = wall.maxZ;
+  }
+  const foyerGap = doorInner - firstNear;
+  assert(Math.abs(foyerGap - 13.8) < 0.05, `${label} foyer gap ${foyerGap}`);
+  if (label === "fixture") checkDoors();
 
   const scene = new THREE.Scene();
   const borderMat = new THREE.MeshLambertMaterial();
@@ -415,9 +553,10 @@ function checkBuild(sites, label) {
     raycaster.set(origin, dir);
     const hits = raycaster.intersectObject(meshes.mat, false);
     assert(hits.length > 0 && hits[0].instanceId === index, `${label} raycast frame ${index}`);
-    const into = blocked(frame.x, frame.z - frame.nz * 0.2, 0.02, built.walls);
+    const foot = frame.y - 1;
+    const into = blocked(frame.x, frame.z - frame.nz * 0.2, 0.02, built.walls, foot);
     const approachZ = frame.z + frame.nz * 0.75;
-    const approachFree = !blocked(frame.x, approachZ, PLAYER_RADIUS, built.walls);
+    const approachFree = !blocked(frame.x, approachZ, PLAYER_RADIUS, built.walls, foot);
     assert(into, `${label} frame ${index} is not mounted on a wall`);
     assert(approachFree, `${label} frame ${index} approach is blocked`);
   }
@@ -436,7 +575,7 @@ function checkBuild(sites, label) {
 
   for (let i = 0; i < built.plants.length; i++) {
     const plant = built.plants[i];
-    assert(!blocked(plant.x, plant.z, 0.05, built.walls), `${label} plant ${i} inside a wall`);
+    assert(!blocked(plant.x, plant.z, 0.05, built.walls, plant.y || 0), `${label} plant ${i} inside a wall`);
   }
 
   const level = floorAndCeiling(
@@ -453,14 +592,127 @@ function checkBuild(sites, label) {
   const floorNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(level.floor.quaternion);
   assert(floorNormal.y > 0.9, `${label} built floor faces up`);
 
+  const kinds = [new Set(), new Set()];
+  for (let i = 0; i < built.plants.length; i++) {
+    const plant = built.plants[i];
+    if (plant.floor < 2) kinds[plant.floor].add(plant.kind);
+  }
+  assert(built.plants.length === built.floors * 3 + Math.max(0, built.floors - 1), `${label} plants ${built.plants.length}`);
+  assert(built.yard && built.yard.filter((item) => item.kind === "tree").length >= 12, `${label} plaza trees`);
+  assert(built.yard.every((item) => Math.abs(item.x) > 6 || item.z > 12), `${label} plaza dress blocks the door`);
+  const liftFace = LIFT.xDoor + 0.12;
+  const liftInner = LIFT.xRear + WALL_T;
+  const cheeks = built.white.filter((wall) => wall.minX < liftInner + 0.001 && wall.minX > liftInner - 0.04 && Math.abs(wall.maxX - liftFace) < 1e-6 && wall.maxX - wall.minX > 2);
+  assert(cheeks.length === 2, `${label} lift cheeks ${cheeks.length}`);
+  assert(kinds[0].size === 3, `${label} lobby plants repeat a kind`);
+  if (built.floors > 1) {
+    const sig = (floor) => built.plants.filter((plant) => plant.floor === floor).map((plant) => plant.kind).join(",");
+    assert(sig(0) !== sig(1), `${label} second lobby copies the first plants`);
+  }
+  assert(LIFT.capacity === 10 && LIFT.carW >= 3.4 && LIFT.carD >= 2.4 && Math.abs(LIFT.doorW - 1.8) < 0.02 && LIFT.winW > LIFT.doorW + 0.3 && LIFT.cabH >= 3.4, `${label} lift is not the widened 10-person car`);
+  assert(LIFT.cz < -1 && LIFT.cz > -6, `${label} lift is not mid-lobby ${LIFT.cz}`);
+  assert(blocked(LIFT.xDoor, LIFT.z0 - 0.08, 0.05, built.walls, 0), `${label} lift side is open`);
+  assert(blocked(LIFT.xDoor, LIFT.z0 - 0.08, 0.05, built.walls, STORY), `${label} lift side stops at the ground`);
+  assert(!blocked(LIFT.xDoor + 0.35, LIFT.cz, 0.05, built.walls, 0), `${label} lift door is a solid wall`);
+  assert(blocked(LIFT.xRear - 0.02, LIFT.cz, 0.05, built.walls, STORY), `${label} lift rear glass can be walked through`);
+  const shutDoor = liftLeaves(0, 1);
+  const openDoor = liftLeaves(1, 1);
+  assert(shutDoor.length === 2, `${label} lift has a second door`);
+  assert(blocked(LIFT.xDoor, LIFT.cz, 0.05, shutDoor, STORY), `${label} closed front door can be walked through`);
+  assert(!blocked(LIFT.xDoor, LIFT.cz, 0.05, openDoor, STORY), `${label} open front door stays shut`);
+  assert(built.dress.some((item) => item.kind === "glass" && item.minX < LIFT.xRear + 0.08 && item.maxX > LIFT.xRear - 0.08 && item.minY < STORY + 1 && item.maxY > STORY + 2.2 && item.maxZ - item.minZ > LIFT.doorW + 0.2), `${label} rear wall is not glass`);
+  assert(groundAt(LIFT.xRear - 0.6, LIFT.cz, STORY, built.floors) == null, `${label} rear balcony is still there`);
+  if (built.floors > 1) {
+    const stair = built.stair;
+    const zMid = (stair.f1z0 + stair.f1z1) / 2;
+    const xMid = (stair.f2x0 + stair.f2x1) / 2;
+    assert(stair.f1x0 > 6, `${label} stair mouth is too close to the door ${stair.f1x0}`);
+    assert(stair.f1x1 - stair.f1x0 > 4 && stair.f1z1 - stair.f1z0 > 2.4, `${label} stair is still narrow`);
+    const yStart = groundAt(stair.f1x0 + 0.2, zMid, 0.05, built.floors);
+    const yClimb = groundAt((stair.f1x0 + stair.f1x1) / 2, zMid, stair.half * 0.6, built.floors);
+    const yLand = groundAt((stair.landX0 + stair.landX1) / 2, (stair.landZ0 + stair.landZ1) / 2, stair.half, built.floors);
+    const yBack = groundAt(xMid, (stair.f2z0 + stair.f2z1) / 2, stair.half + 0.4, built.floors);
+    const yTop = groundAt(xMid, stair.f2z0 + 0.2, STORY - 0.05, built.floors);
+    assert(Math.abs(yStart) < 0.25, `${label} stair does not start on the ground ${yStart}`);
+    assert(yClimb > yStart + 0.7, `${label} first flight does not rise east ${yClimb}`);
+    assert(Math.abs(yLand - stair.half) < 0.25, `${label} stair has no corner landing ${yLand}`);
+    assert(yBack > yLand + 0.4 && yTop > yBack, `${label} second flight does not rise north`);
+    assert(Math.abs(yTop - STORY) < 0.25, `${label} stair does not arrive on the next floor ${yTop}`);
+    let x = xMid;
+    let z = stair.f2z0 + 0.25;
+    let left = false;
+    for (let i = 0; i < 8; i++) {
+      const next = movePlayer(x, z, 0, -0.28, PLAYER_RADIUS, built.walls, STORY);
+      if (next.z < z - 0.05) left = true;
+      x = next.x;
+      z = next.z;
+    }
+    assert(left && Math.abs(groundAt(x, z, STORY, built.floors) - STORY) < 0.08, `${label} stair sticks at floor 2`);
+    if (built.floors > 2) {
+      const yUpper = groundAt(stair.f1x0 + 0.25, zMid, STORY + 0.05, built.floors);
+      const yThird = groundAt(xMid, stair.f2z0 + 0.2, STORY * 2 - 0.05, built.floors);
+      assert(Math.abs(yUpper - STORY) < 0.25, `${label} floor 2 has no onward stair ${yUpper}`);
+      assert(Math.abs(yThird - STORY * 2) < 0.25, `${label} stair does not reach floor 3 ${yThird}`);
+      x = xMid;
+      z = stair.f2z0 + 0.25;
+      left = false;
+      for (let i = 0; i < 8; i++) {
+        const next = movePlayer(x, z, 0, -0.28, PLAYER_RADIUS, built.walls, STORY * 2);
+        if (next.z < z - 0.05) left = true;
+        x = next.x;
+        z = next.z;
+      }
+      assert(left, `${label} stair sticks at floor 3`);
+    }
+    assert(built.dress.some((item) => item.kind === "wood"), `${label} stair has no wood rail`);
+    const landX = (stair.landX0 + stair.landX1) / 2;
+    const landZ = (stair.landZ0 + stair.landZ1) / 2;
+    assert(built.slabs.some((slab) => slab.maxY < 0.08 && slab.minX <= landX && slab.maxX >= landX && slab.minZ <= landZ && slab.maxZ >= landZ), `${label} ground under the stair is missing`);
+    assert(built.white.some((wall) => wall.minX < -1 && wall.maxX > 1 && wall.base > 2.4 && wall.base < 3.2 && wall.minZ > 3.5 && wall.minZ < 4.05), `${label} inside of the door head is not white`);
+    assert(built.dress.some((item) => item.kind === "glass" && item.minY > STORY && item.minY < STORY + 0.2 && item.minX > 12), `${label} floor 2 stair corner has no glass rail`);
+    assert(built.dress.some((item) => item.kind === "glass" && item.minY > STORY && item.minY < STORY + 0.2 && item.maxX > 14 && item.maxX < 17 && item.minZ < -3), `${label} corner glass stops short of the stair mouth`);
+    assert(built.signs.some((sign) => sign.text === "1F" && sign.x > LIFT.xDoor), `${label} lift door has no floor mark`);
+    const facadeTitle = built.signs.find((sign) => sign.text === "趣站博物馆");
+    const facadeEntry = built.signs.find((sign) => sign.text === "入口");
+    assert(facadeTitle && facadeEntry && facadeEntry.y < facadeTitle.y, `${label} facade title and entry are out of order`);
+    assert(built.plants.some((plant) => plant.floor === 1 && plant.x > 12), `${label} floor 2 stair corner has no plant`);
+    assert(built.handrails.some((rail) => rail.y0 > STORY + 0.5 && rail.y0 < STORY + 1.4 && rail.x0 > 12), `${label} floor 2 stair corner has no wood rail`);
+    const steps = built.dress.filter((item) => item.kind === "step");
+    assert(steps.length > 0 && steps.every((item) => item.maxY - item.minY < 0.1), `${label} stair treads are solid`);
+    const deck = built.deck;
+    const onDeck = groundAt(0, deck.z + 2.2, STORY, built.floors);
+    const outer = groundAt(0, deck.z + deck.r - 0.6, STORY, built.floors);
+    assert(onDeck != null && Math.abs(onDeck - STORY) < 0.05, `${label} upper door has no deck ${onDeck}`);
+    assert(outer != null && Math.abs(outer - STORY) < 0.05, `${label} semicircle deck is missing ${outer}`);
+    assert(groundAt(0, deck.z + deck.r + 1.4, STORY, built.floors) == null, `${label} viewing deck has no edge`);
+    assert(groundAt(-7.5, 6.5, STORY, built.floors) == null, `${label} viewing deck reaches the side`);
+    assert(blocked(0, deck.z + deck.r, 0.2, built.walls, STORY), `${label} viewing rail does not stop the player`);
+    assert(!blocked(0, deck.z - 1.1, 0.2, built.walls, STORY), `${label} viewing rail blocks the foyer`);
+    assert(built.lobes.length === built.floors - 1, `${label} lobes ${built.lobes.length}`);
+  }
+
   const flooded = flood(built);
   assert(flooded.leaks === 0, `${label} walkable leak cells ${flooded.leaks}`);
   let missed = 0;
   for (let i = 0; i < built.frames.length; i += 7) {
     const frame = built.frames[i];
+    if (frame.floor !== 0) continue;
     if (!reachable(flooded, frame.x, frame.z + frame.nz * 0.75)) missed++;
   }
   assert(missed === 0, `${label} unreachable frames ${missed}`);
+  if (built.floors > 1) {
+    const up = flood(built, STORY, { x: 0, z: 0 });
+    assert(up.leaks === 0, `${label} upper leak cells ${up.leaks}`);
+    assert(reachable(up, 0, 6.5), `${label} upper deck is cut off`);
+    assert(!reachable(up, 0, 16), `${label} upper floor walks onto the plaza air`);
+    let upperMiss = 0;
+    for (let i = 0; i < built.frames.length; i += 11) {
+      const frame = built.frames[i];
+      if (frame.floor !== 1) continue;
+      if (!reachable(up, frame.x, frame.z + frame.nz * 0.75)) upperMiss++;
+    }
+    assert(upperMiss === 0, `${label} unreachable upper frames ${upperMiss}`);
+  }
   checkMotion(built);
   if (label === "fixture") checkDay(built);
   return built;
@@ -546,8 +798,7 @@ function openClient(url) {
 
 async function checkPublicLobby() {
   const source = await readFile(path.join(root, "js", "presence.js"), "utf8");
-  assert(source.includes('const PUBLIC_LOBBY = "https://youquhome.com/sitopia-lobby/index.php"'), "public lobby stays on youquhome");
-  assert(!source.includes("workers.dev"), "public lobby does not use workers.dev");
+  assert(source.includes('const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby"'), "public lobby stays on the cloudflare worker");
 }
 
 async function checkLobby() {
@@ -619,7 +870,107 @@ async function checkLobby() {
   await new Promise((resolve) => server.close(resolve));
 }
 
+function checkLift() {
+  const lift = createLift(4, STORY);
+  lift.call(2);
+  let guard = 0;
+  while ((lift.current !== 2 || lift.phase !== "open") && guard < 900) {
+    lift.tick(0.05, false);
+    guard += 1;
+  }
+  assert(guard < 900 && lift.current === 2 && lift.door > 0.95 && lift.phase === "open", "lift opens on the called floor");
+  const parked = lift.y;
+  for (let i = 0; i < 80; i++) lift.tick(0.05, true);
+  assert(lift.phase !== "moving" && Math.abs(lift.y - parked) < 1e-6, "a person in the doorway keeps the lift put");
+  for (let i = 0; i < 120; i++) lift.tick(0.05, false);
+  lift.call(0);
+  guard = 0;
+  while ((lift.current !== 0 || lift.phase !== "open") && guard < 900) {
+    lift.tick(0.05, false);
+    guard += 1;
+  }
+  assert(lift.current === 0 && lift.y < 0.05 && lift.door > 0.95, "lift returns to the ground floor and opens");
+  const fine = createLift(13, STORY);
+  fine.call(0);
+  for (let i = 0; i < 120; i++) fine.tick(1 / 60, false);
+  fine.call(5);
+  guard = 0;
+  while ((fine.current !== 5 || fine.phase !== "open") && guard < 4000) {
+    fine.tick(1 / 60, false);
+    guard += 1;
+  }
+  assert(guard < 4000 && fine.current === 5 && fine.door > 0.95, "lift opens after a ride at frame rate");
+  const y = lift.y;
+  lift.call(3);
+  lift.tick(0.05, false);
+  assert(lift.phase !== "moving" && Math.abs(lift.y - y) < 1e-6, "lift does not leave while the door is open");
+  const once = createLift(3, STORY);
+  let opens = 0;
+  let prev = once.phase;
+  once.call(0);
+  if (prev !== "opening" && once.phase === "opening") opens += 1;
+  prev = once.phase;
+  for (let i = 0; i < 500; i++) {
+    once.tick(1 / 60, false);
+    if (prev !== "opening" && once.phase === "opening") opens += 1;
+    prev = once.phase;
+  }
+  assert(opens === 1 && once.phase === "idle" && once.door < 0.02, `door cycles twice (${opens}, ${once.phase}, ${once.door})`);
+  const ride = createLift(8, STORY);
+  ride.call(6);
+  let passed = false;
+  let aimed = true;
+  guard = 0;
+  while (!(ride.current === 6 && ride.phase === "open") && guard < 5000) {
+    ride.tick(1 / 60, false);
+    if (ride.phase === "moving") {
+      if (ride.dest !== 6) aimed = false;
+      if (ride.y > STORY * 1.2 && ride.y < STORY * 4) passed = true;
+    }
+    guard += 1;
+  }
+  assert(aimed && passed && ride.dest === 6, "moving lift keeps the destination floor");
+}
+
+function checkPull() {
+  const open = pullCamera(0, 1.6, 0, 0, 0, -1, 3, []);
+  assert(Math.abs(open.x) < 1e-6 && Math.abs(open.z - 3) < 1e-6, "camera backs away from look -Z");
+  const side = pullCamera(0, 1.6, 0, 1, 0, 0, 3, []);
+  assert(side.x < -2.5 && Math.abs(side.z) < 1e-6, "camera backs away from look +X");
+  const wall = { minX: -1, maxX: 1, minZ: 1, maxZ: 1.5, h: 3, base: 0 };
+  const stopped = pullCamera(0, 1.6, 0, 0, 0, -1, 4, [wall]);
+  assert(stopped.z < 1 && stopped.z > 0.4, "camera stops before the wall behind");
+}
+
+function checkMask() {
+  const w = 9;
+  const h = 9;
+  const mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const on = x >= 1 && x < 8 && y >= 1 && y < 8;
+      const hole = x >= 3 && x < 6 && y >= 3 && y < 6;
+      if (on && !hole) mask[y * w + x] = 1;
+    }
+  }
+  const shapes = maskPaths(mask, w, h);
+  assert(shapes.length === 1 && shapes[0].holes.length === 1, "outline keeps its hole");
+  const area = (path) => {
+    let sum = 0;
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      const q = path[(i + 1) % path.length];
+      sum += p[0] * q[1] - q[0] * p[1];
+    }
+    return sum / 2;
+  };
+  assert(area(shapes[0].pts) > 0 && area(shapes[0].holes[0]) < 0, "outer winds CCW and the hole winds CW");
+}
+
 checkFacing();
+checkPull();
+checkMask();
+checkLift();
 checkParser();
 const fixtureSites = fixture();
 checkBuild(fixtureSites, "fixture");

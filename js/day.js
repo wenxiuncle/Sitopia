@@ -152,19 +152,19 @@ export const DAYS = [
     gainGround: 0.08,
     fillOpen: 0.38,
     gainOpen: 0.12,
-    fillRoom: 0.5,
-    gainRoom: 0.1,
-    fillGlass: 0.55,
-    gainGlass: 0.06,
+    fillRoom: 0.8,
+    gainRoom: 0.3,
+    fillGlass: 0.92,
+    gainGlass: 0.1,
     shade: 0.78,
     sun: 0xe4eef8,
     disc: 6,
-    cone: 0xffd8b0,
-    coneOpacity: 0.22,
-    pool: 0xffe6c8,
-    poolOpacity: 0.58,
+    cone: 0xe4eef8,
+    coneOpacity: 0.1,
+    pool: 0xeef4fb,
+    poolOpacity: 0.42,
     streak: 0xd5e2f4,
-    streakGain: 0.28,
+    streakGain: 0,
     blob: 0.16,
   },
 ];
@@ -197,19 +197,95 @@ function smoothstep(edge0, edge1, value) {
   return t * t * (3 - 2 * t);
 }
 
-// 与 meshes.js 屋顶落影同一公式：把地面点沿阳光抬到屋顶高度，看是否落在屋顶范围内。
+function rayEnter(x, z, dx, dz, minX, maxX, minZ, maxZ) {
+  let t0 = 0;
+  let t1 = 1e9;
+  if (Math.abs(dx) < 1e-6) {
+    if (x < minX || x > maxX) return null;
+  } else {
+    let a = (minX - x) / dx;
+    let b = (maxX - x) / dx;
+    if (a > b) {
+      const swap = a;
+      a = b;
+      b = swap;
+    }
+    if (a > t0) t0 = a;
+    if (b < t1) t1 = b;
+  }
+  if (Math.abs(dz) < 1e-6) {
+    if (z < minZ || z > maxZ) return null;
+  } else {
+    let a = (minZ - z) / dz;
+    let b = (maxZ - z) / dz;
+    if (a > b) {
+      const swap = a;
+      a = b;
+      b = swap;
+    }
+    if (a > t0) t0 = a;
+    if (b < t1) t1 = b;
+  }
+  if (t0 > t1 || t1 < 0) return null;
+  return t0 > 0 ? t0 : 0;
+}
+
+// 与 meshes.js 同一公式：阳光射向楼体，碰到屋顶高度以前就算挡住。
 export function groundShadow(x, z, sun, block, roofY) {
-  const t = roofY / Math.max(sun.y, 0.05);
-  const qx = x + sun.x * t;
-  const qz = z + sun.z * t;
-  const cx = (block.minX + block.maxX) * 0.5;
-  const cz = (block.minZ + block.maxZ) * 0.5;
-  const hx = (block.maxX - block.minX) * 0.5;
-  const hz = (block.maxZ - block.minZ) * 0.5;
-  const dx = Math.abs(qx - cx) - hx;
-  const dz = Math.abs(qz - cz) - hz;
-  const dist = Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) + Math.min(Math.max(dx, dz), 0);
-  return 1 - smoothstep(SHADOW_IN, SHADOW_OUT, dist);
+  const enter = rayEnter(x, z, sun.x, sun.z, block.minX, block.maxX, block.minZ, block.maxZ);
+  if (enter == null) return 0;
+  const yHit = sun.y * enter;
+  const slack = ((yHit - roofY) / Math.max(sun.y, 0.05)) * Math.hypot(sun.x, sun.z);
+  return 1 - smoothstep(SHADOW_IN, SHADOW_OUT, slack);
+}
+
+function rawFloor(x, y, z, sun) {
+  const t = y / Math.max(sun.y, 0.05);
+  return [x - sun.x * t, z - sun.z * t];
+}
+
+function inRoom(x, z, limits) {
+  const slack = 0.28;
+  return x >= limits.minX - slack && x <= limits.maxX + slack && z >= limits.minZ - slack && z <= limits.maxZ + slack;
+}
+
+// 南墙两端在室内是实墙。光斑若被夹到墙角，看起来就像从墙缝里漏进来。
+function pinnedCorner(pts, limits) {
+  for (let i = 0; i < pts.length; i++) {
+    const south = pts[i][1] > limits.maxZ - 0.45;
+    const west = pts[i][0] < limits.minX + 0.45;
+    const east = pts[i][0] > limits.maxX - 0.45;
+    if (south && (west || east)) return true;
+  }
+  return false;
+}
+
+// 高窗投到地上往往只剩一条。又长又薄的亮带看起来像地缝漏光。
+function paperSliver(pts) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const x = pts[i][0];
+    const z = pts[i][1];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  const w = maxX - minX;
+  const d = maxZ - minZ;
+  return Math.min(w, d) < 0.7 && Math.max(w, d) > 2.5;
+}
+
+function collapsed(pts) {
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      if (Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]) < 0.08) return true;
+    }
+  }
+  return false;
 }
 
 function throwOnFloor(x, y, z, sun, limits) {
@@ -243,12 +319,70 @@ export function openingQuads(openings, sun, limits, gain) {
       [opening.minX, opening.maxY, opening.minZ],
     ];
     const pts = [];
+    let spill = false;
     for (let k = 0; k < 4; k++) {
+      const raw = rawFloor(corners[k][0], corners[k][1], corners[k][2], sun);
+      if (!inRoom(raw[0], raw[1], limits)) spill = true;
       pts.push(throwOnFloor(corners[k][0], corners[k][1], corners[k][2], sun, limits));
+    }
+    if (spill && opening.minX < -16 && opening.nz > 0) {
+      out[i] = null;
+      continue;
+    }
+    if (pinnedCorner(pts, limits) || collapsed(pts) || paperSliver(pts)) {
+      out[i] = null;
+      continue;
     }
     out[i] = { pts, near, far: near * 0.22 };
   }
   return out;
+}
+
+// 夜里室内的光从一楼大门和电梯后窗落到室外地面。近边亮，远处淡掉。
+export function nightSpillQuads(openings, dress) {
+  let door = null;
+  for (let i = 0; i < openings.length; i++) {
+    const opening = openings[i];
+    if (opening.nz > 0 && opening.minY < 0.05 && opening.maxX < 3 && opening.minX > -3) door = opening;
+  }
+  let win = null;
+  for (let i = 0; i < dress.length; i++) {
+    const item = dress[i];
+    if (item.kind === "glass" && item.minX < -18 && item.minY < 0.2 && item.maxY > 2) {
+      win = item;
+      break;
+    }
+  }
+  const quads = [null, null];
+  if (door) {
+    const nearZ = 4.52;
+    const farZ = 11.4;
+    quads[0] = {
+      pts: [
+        [door.minX, nearZ],
+        [door.maxX, nearZ],
+        [door.maxX + 1.15, farZ],
+        [door.minX - 1.15, farZ],
+      ],
+      near: 0.7,
+      far: 0,
+    };
+  }
+  if (win) {
+    const nearX = win.minX - 0.45;
+    const farX = nearX - 6.4;
+    quads[1] = {
+      pts: [
+        [nearX, win.minZ],
+        [nearX, win.maxZ],
+        [farX, win.maxZ + 0.8],
+        [farX, win.minZ - 0.8],
+      ],
+      near: 0.62,
+      far: 0,
+    };
+  }
+  return quads;
 }
 
 export function plantShadowShift(sun, height) {

@@ -1,6 +1,6 @@
 <?php
-// 线上房间。国内页面连这里，不走 workers.dev。
-// 规则和 tools/room.mjs 对齐。改房间行为时两处一起改。
+// 有趣网址之家上已经挂着的房间。GitHub 预览页不连这里。
+// 规则和 tools/room.mjs 对齐。改房间行为时两处一起改。这次不传到主机。
 declare(strict_types=1);
 
 const MAX_PEOPLE = 24;
@@ -214,6 +214,7 @@ function blankPerson(string $id, int $now): array {
         "name" => "",
         "named" => false,
         "x" => 0,
+        "y" => 0,
         "z" => 15.5,
         "yaw" => 0,
         "away" => false,
@@ -244,13 +245,19 @@ function cleanPose(array $msg): ?array {
     if (!is_int($msg["x"]) && !is_float($msg["x"])) return null;
     if (!is_int($msg["z"]) && !is_float($msg["z"])) return null;
     if (!is_int($msg["yaw"]) && !is_float($msg["yaw"])) return null;
+    $y = 0.0;
+    if (isset($msg["y"])) {
+        if (!is_int($msg["y"]) && !is_float($msg["y"])) return null;
+        $y = (float) $msg["y"];
+    }
     $x = (float) $msg["x"];
     $z = (float) $msg["z"];
     $yaw = (float) $msg["yaw"];
-    if ($x < -40 || $x > 40 || $z < -50 || $z > 40) return null;
+    if ($x < -40 || $x > 40 || $z < -50 || $z > 40 || $y < -1 || $y > 90) return null;
     $yaw = atan2(sin($yaw), cos($yaw));
     return [
         "x" => round($x, 3),
+        "y" => round($y, 3),
         "z" => round($z, 3),
         "yaw" => round($yaw, 3),
     ];
@@ -272,6 +279,7 @@ function snapshot(array $people, string $exceptId): array {
             "id" => $person["id"],
             "name" => $person["name"],
             "x" => $person["x"],
+            "y" => $person["y"] ?? 0,
             "z" => $person["z"],
             "yaw" => $person["yaw"],
         ];
@@ -361,6 +369,7 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
                     "id" => $person["id"],
                     "name" => $person["name"],
                     "x" => $person["x"],
+                    "y" => $person["y"] ?? 0,
                     "z" => $person["z"],
                     "yaw" => $person["yaw"],
                     "n" => $n,
@@ -386,6 +395,7 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
                 "id" => $person["id"],
                 "name" => $person["name"],
                 "x" => $person["x"],
+                "y" => $person["y"] ?? 0,
                 "z" => $person["z"],
                 "yaw" => $person["yaw"],
                 "n" => namedCount($people),
@@ -409,10 +419,11 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
         if ($pose === null) return ["close" => false, "out" => $out];
         $person["lastMove"] = $now;
         $person["x"] = $pose["x"];
+        $person["y"] = $pose["y"];
         $person["z"] = $pose["z"];
         $person["yaw"] = $pose["yaw"];
         if (!empty($person["away"])) return ["close" => false, "out" => $out];
-        $out[] = ["who" => "others", "obj" => ["t" => "move", "id" => $person["id"], "x" => $pose["x"], "z" => $pose["z"], "yaw" => $pose["yaw"]]];
+        $out[] = ["who" => "others", "obj" => ["t" => "move", "id" => $person["id"], "x" => $pose["x"], "y" => $pose["y"], "z" => $pose["z"], "yaw" => $pose["yaw"]]];
         return ["close" => false, "out" => $out];
     }
     if ($msg["t"] === "say") {

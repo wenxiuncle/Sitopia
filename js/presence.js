@@ -1,13 +1,14 @@
-import { PLAZA } from "./layout.js";
+import { PLAZA, STORY, zoneAt } from "./layout.js";
 import { forwardFromYaw } from "./basis.js";
 import { createCrowd } from "./avatar.js";
 
-// 线上房间放在有趣网址之家。Cloudflare 的预览域名在国内被墙，不要改回去。
-const PUBLIC_LOBBY = "https://youquhome.com/sitopia-lobby/index.php";
+// GitHub 预览页连以前的 Cloudflare 房间。本机仍走自己的 /lobby。
+const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby";
 
 const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
+const ONLINE_KEY = "quzhan-museum-online";
 const BUBBLE_LIFE = 6000;
 const HOLD_MS = 30000;
 
@@ -35,19 +36,24 @@ export function mountPresence(options) {
     bounds,
     interior,
     getPose,
+    zones,
     onTyping,
     onNav,
+    onExclusive,
+    onReleaseLook,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
   const mapCanvas = document.getElementById("map");
   const mapToggle = document.getElementById("map-visible");
+  const onlineToggle = document.getElementById("online-visible");
   const online = document.getElementById("online");
   const rosterEl = document.getElementById("roster");
   const toggle = document.getElementById("drawer-toggle");
   const drawer = document.getElementById("drawer");
   const peopleEl = document.getElementById("people");
   const logEl = document.getElementById("chat-log");
+  const chatterEl = document.getElementById("chatter");
   const toasts = document.getElementById("toasts");
   const chatBar = document.getElementById("chat-bar");
   const chatInput = document.getElementById("chat-input");
@@ -71,11 +77,15 @@ export function mountPresence(options) {
   let dead = false;
   let publishAt = 0;
   let sentX = NaN;
+  let sentY = NaN;
   let sentZ = NaN;
   let sentYaw = NaN;
   let selfBubbleUntil = 0;
   let composing = false;
   let showMap = true;
+  let showOnline = true;
+  let planAt = 0;
+  let peopleAt = 0;
   let holdUntil = 0;
   let holdTimer = 0;
   let holdToken = 0;
@@ -116,6 +126,14 @@ export function mountPresence(options) {
     online.textContent = n + " 人在线";
   }
 
+  function placeShort(x, z, y) {
+    const zone = zones ? zoneAt(x, z, zones, y || 0) : null;
+    if (zone && zone.name === "广场") return "广场";
+    let floor = Math.round((y || 0) / STORY);
+    if (floor < 0) floor = 0;
+    return (floor + 1) + "楼";
+  }
+
   function renderPeople() {
     const rows = Array.from(roster.values());
     rows.sort((a, b) => {
@@ -127,7 +145,9 @@ export function mountPresence(options) {
     for (let i = 0; i < rows.length; i++) {
       const li = document.createElement("li");
       const row = rows[i];
-      li.textContent = me && row.id === me.id ? row.name + " · 你" : row.name;
+      const pose = me && row.id === me.id ? getPose() : row;
+      const where = placeShort(pose.x || 0, pose.z || 0, pose.y || 0);
+      li.textContent = where + " · " + row.name + (me && row.id === me.id ? " · 你" : "");
       if (me && row.id === me.id) li.className = "me";
       peopleEl.append(li);
     }
@@ -139,12 +159,21 @@ export function mountPresence(options) {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  function pushChatter(msg) {
+    if (!chatterEl || !msg || !msg.text) return;
+    const li = document.createElement("li");
+    li.textContent = msg.name + "：" + msg.text;
+    chatterEl.prepend(li);
+    while (chatterEl.children.length > 5) chatterEl.lastChild.remove();
+  }
+
   function appendSay(msg) {
     const li = document.createElement("li");
     const who = document.createElement("b");
     who.textContent = msg.name;
     li.append(who, document.createTextNode(" " + msg.text));
     appendLine(li);
+    pushChatter(msg);
   }
 
   function appendSys(text) {
@@ -168,7 +197,7 @@ export function mountPresence(options) {
       linked = true;
       roster.clear();
       crowd.clear();
-      roster.set(msg.id, { id: msg.id, name: msg.name });
+      roster.set(msg.id, { id: msg.id, name: msg.name, x: 0, y: 0, z: 0 });
       const others = msg.people || [];
       for (let i = 0; i < others.length; i++) {
         roster.set(others[i].id, others[i]);
@@ -187,6 +216,7 @@ export function mountPresence(options) {
       else if (msg.away) send({ t: "back" });
       publishAt = 0;
       sentX = NaN;
+      sentY = NaN;
       return;
     }
     if (msg.t === "join") {
@@ -223,10 +253,16 @@ export function mountPresence(options) {
     }
     if (msg.t === "move") {
       const row = roster.get(msg.id);
+      if (row) {
+        row.x = msg.x;
+        row.y = msg.y || 0;
+        row.z = msg.z;
+      }
       crowd.upsert({
         id: msg.id,
         name: row ? row.name : "",
         x: msg.x,
+        y: msg.y || 0,
         z: msg.z,
         yaw: msg.yaw,
       }, false);
@@ -414,7 +450,8 @@ export function mountPresence(options) {
     if (composing) return;
     const name = String(raw || "").trim().slice(0, 12);
     if (!name) {
-      nameInput.focus();
+      if (!nameGate.hidden) nameInput.focus();
+      else navName.focus();
       return;
     }
     const changed = !me || me.name !== name;
@@ -433,7 +470,8 @@ export function mountPresence(options) {
     chatBar.hidden = false;
     document.body.classList.add("chatting");
     if (onTyping) onTyping(true);
-    if (document.pointerLockElement) document.exitPointerLock();
+    if (onReleaseLook) onReleaseLook();
+    else if (document.pointerLockElement) document.exitPointerLock();
     chatInput.focus();
   }
 
@@ -447,6 +485,10 @@ export function mountPresence(options) {
 
   function setDrawer(open) {
     const changed = corner.classList.contains("nav-open") !== open;
+    if (!open) {
+      const el = document.activeElement;
+      if (el && el.blur && (el === toggle || drawer.contains(el))) el.blur();
+    }
     corner.classList.toggle("nav-open", open);
     drawer.inert = !open;
     drawer.setAttribute("aria-hidden", open ? "false" : "true");
@@ -488,6 +530,18 @@ export function mountPresence(options) {
     holdPresence();
   }
 
+  function applyOnline(show) {
+    showOnline = show;
+    online.hidden = !show;
+    if (onlineToggle) onlineToggle.checked = show;
+    if (!show) setRoster(false);
+    try {
+      localStorage.setItem(ONLINE_KEY, show ? "1" : "0");
+    } catch {
+      /* 记不住就这次先按按钮上的来。 */
+    }
+  }
+
   function applyMap(show) {
     showMap = show;
     mapCard.classList.toggle("map-off", !show);
@@ -505,6 +559,12 @@ export function mountPresence(options) {
     showMap = true;
   }
   applyMap(showMap);
+  try {
+    showOnline = localStorage.getItem(ONLINE_KEY) !== "0";
+  } catch {
+    showOnline = true;
+  }
+  applyOnline(showOnline);
 
   toggle.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -513,7 +573,9 @@ export function mountPresence(options) {
 
   online.addEventListener("click", (event) => {
     event.stopPropagation();
-    setRoster(rosterEl.hidden);
+    const opening = rosterEl.hidden;
+    if (opening && onExclusive) onExclusive("roster");
+    setRoster(opening);
   });
 
   document.addEventListener("click", outboundLink);
@@ -522,6 +584,11 @@ export function mountPresence(options) {
   mapToggle.addEventListener("change", () => {
     applyMap(mapToggle.checked);
   });
+  if (onlineToggle) {
+    onlineToggle.addEventListener("change", () => {
+      applyOnline(onlineToggle.checked);
+    });
+  }
 
   nameGate.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -563,17 +630,20 @@ export function mountPresence(options) {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!nameGate.hidden || event.repeat) return;
+    const el = event.target;
+    if (el && el.closest && el.closest("input, textarea")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDrawer(!corner.classList.contains("nav-open"));
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
     const el = event.target;
     if (el === chatInput && event.key === "Escape") {
       event.preventDefault();
       closeChat();
-      return;
-    }
-    if (event.key === "Tab" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
-      if (!nameGate.hidden || event.repeat) return;
-      if (el && el.closest && el.closest("input, textarea, select, #drawer, #roster, #panel")) return;
-      event.preventDefault();
-      setDrawer(!corner.classList.contains("nav-open"));
       return;
     }
     if (el && el.closest && el.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #day, #panel")) return;
@@ -622,6 +692,9 @@ export function mountPresence(options) {
     nameGate.hidden = true;
     if (document.hidden) online.textContent = "未连接";
     else arm();
+  } else if (new URLSearchParams(location.search).has("noname")) {
+    nameGate.hidden = true;
+    online.textContent = "先起个名字";
   } else {
     online.textContent = "先起个名字";
     showNameGate();
@@ -696,18 +769,34 @@ export function mountPresence(options) {
     );
 
     const others = crowd.list();
+    const myFloor = Math.round((pose.y || 0) / STORY);
     for (let i = 0; i < others.length; i++) {
       const person = others[i];
+      if (Math.round((person.y || 0) / STORY) !== myFloor) continue;
       drawDot(X(person.x), Y(person.z), person.yaw, false, person.name);
     }
     drawDot(X(pose.x), Y(pose.z), pose.yaw, true, "你");
   }
 
   return {
+    others() { return crowd.list(); },
+    closeRoster() { setRoster(false); },
+    dismiss(keepRoster) {
+      if (!keepRoster) setRoster(false);
+      if (corner.classList.contains("nav-open")) setDrawer(false);
+      closeChat();
+    },
     update(dt, now) {
       crowd.update(dt, now);
       const pose = getPose();
-      if (showMap) drawPlan(pose);
+      if (showMap && (!planAt || now - planAt > 140)) {
+        planAt = now;
+        drawPlan(pose);
+      }
+      if (showOnline && !rosterEl.hidden && (!peopleAt || now - peopleAt > 280)) {
+        peopleAt = now;
+        renderPeople();
+      }
       if (selfBubbleUntil && now > selfBubbleUntil) {
         selfBubble.hidden = true;
         selfBubbleUntil = 0;
@@ -716,13 +805,15 @@ export function mountPresence(options) {
       const turn = Math.atan2(Math.sin(pose.yaw - sentYaw), Math.cos(pose.yaw - sentYaw));
       const moved = !Number.isFinite(sentX)
         || Math.hypot(pose.x - sentX, pose.z - sentZ) > 0.03
+        || Math.abs((pose.y || 0) - sentY) > 0.03
         || Math.abs(turn) > 0.04;
       if (!moved && now < publishAt) return;
       publishAt = now + (moved ? 100 : 2000);
       sentX = pose.x;
       sentZ = pose.z;
+      sentY = pose.y || 0;
       sentYaw = pose.yaw;
-      send({ t: "move", x: pose.x, z: pose.z, yaw: pose.yaw });
+      send({ t: "move", x: pose.x, y: pose.y || 0, z: pose.z, yaw: pose.yaw });
     },
   };
 }

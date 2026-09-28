@@ -189,9 +189,11 @@ export function createCrowd(scene, material, shadowMaterial) {
         visitor,
         x: person.x,
         z: person.z,
+        feet: person.y || 0,
         yaw: person.yaw || 0,
         tx: person.x,
         tz: person.z,
+        tFeet: person.y || 0,
         ty: person.yaw || 0,
         lx: person.x,
         lz: person.z,
@@ -206,10 +208,12 @@ export function createCrowd(scene, material, shadowMaterial) {
     row.name = person.name || row.name;
     row.tx = person.x;
     row.tz = person.z;
+    row.tFeet = person.y || 0;
     row.ty = person.yaw || 0;
     if (snap) {
       row.x = person.x;
       row.z = person.z;
+      row.feet = row.tFeet;
       row.yaw = row.ty;
       row.lx = person.x;
       row.lz = person.z;
@@ -259,6 +263,7 @@ export function createCrowd(scene, material, shadowMaterial) {
         const beforeZ = row.z;
         row.x += (row.tx - row.x) * k;
         row.z += (row.tz - row.z) * k;
+        row.feet += ((row.tFeet || 0) - (row.feet || 0)) * k;
         const turn = Math.atan2(Math.sin(row.ty - row.yaw), Math.cos(row.ty - row.yaw));
         row.yaw += turn * k;
         const moving = Math.hypot(row.x - beforeX, row.z - beforeZ) > 0.0015;
@@ -266,7 +271,7 @@ export function createCrowd(scene, material, shadowMaterial) {
         row.swing += ((moving ? 1 : 0) - row.swing) * (1 - Math.exp(-dt * 8));
         poseVisitor(row.visitor.parts, row.phase, row.swing);
         const idle = Math.sin(now * 0.002 + row.phase) * 0.01;
-        row.visitor.group.position.set(row.x, idle, row.z);
+        row.visitor.group.position.set(row.x, (row.feet || 0) + idle, row.z);
         row.visitor.group.rotation.y = row.yaw;
         if (row.bubble && now > row.bubbleUntil) dropBubble(row);
       }
@@ -278,7 +283,7 @@ export function createCrowd(scene, material, shadowMaterial) {
     },
     list() {
       const out = [];
-      for (const row of people.values()) out.push({ id: row.id, name: row.name, x: row.x, z: row.z, yaw: row.yaw });
+      for (const row of people.values()) out.push({ id: row.id, name: row.name, x: row.x, y: row.feet || 0, z: row.z, yaw: row.yaw });
       return out;
     },
   };

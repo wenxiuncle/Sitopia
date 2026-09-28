@@ -1,12 +1,25 @@
 import * as THREE from "../vendor/three.module.js";
+import { createVisitor, poseVisitor } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
-import { DAYS, dayIndex, openingQuads, plantShadowShift, sunVector } from "./day.js";
+import { DAYS, dayIndex, nightSpillQuads, openingQuads, plantShadowShift, sunVector } from "./day.js";
+import { createLift } from "./lift.js";
 import {
   EYE,
+  FRAME,
   HALLS,
+  LIFT,
   PLAYER_RADIUS,
+  STORY,
+  WALL_H,
   buildMuseum,
+  doorBoxes,
+  doorWantsOpen,
+  groundAt,
+  inLiftCar,
+  liftDoorBoxes,
   movePlayer,
+  nearLiftHall,
+  pullCamera,
   zoneAt,
 } from "./layout.js";
 import { mountPresence } from "./presence.js";
@@ -19,21 +32,35 @@ import {
   colliderLines,
   coverRect,
   usableFrameImage,
+  doorRig,
   floorAndCeiling,
+  deckRailMesh,
   floorDiscMesh,
   frameMeshes,
+  handrailMesh,
+  labelMeshes,
   lightConeMesh,
+  liftRig,
+  lobbyPropMeshes,
+  lobeMeshes,
+  paneMesh,
+  plateMesh,
+  setFacadeSignNight,
+  dropShadowMesh,
+  placeDropShadows,
   placePlantShadows,
   plantMeshes,
   plantShadowMesh,
+  spotHeadMesh,
   sunPatchMesh,
   wallMesh,
+  yardMeshes,
+  horizonMeshes,
 } from "./meshes.js";
 
 const WALK = 6.2;
 const SPRINT = 11.2;
 const MAX_STEP = 0.05;
-const CENTER = new THREE.Vector2(0, 0);
 const params = new URLSearchParams(location.search);
 
 const view = document.getElementById("view");
@@ -42,7 +69,6 @@ const boot = document.getElementById("boot");
 const where = document.getElementById("where");
 const place = document.getElementById("place");
 const legendEl = document.getElementById("legend");
-const hint = document.getElementById("hint");
 const hoverEl = document.getElementById("hover");
 const crosshair = document.getElementById("crosshair");
 const panel = document.getElementById("panel");
@@ -55,6 +81,9 @@ const panelArticle = document.getElementById("panel-article");
 const panelClose = document.getElementById("panel-close");
 const dayNav = document.getElementById("day");
 const corner = document.getElementById("corner");
+const liftToggle = document.getElementById("lift-toggle");
+const liftPad = document.getElementById("lift-pad");
+const liftHint = document.getElementById("lift-hint");
 
 const down = new Set();
 const fwd = new THREE.Vector3();
@@ -69,6 +98,7 @@ let ignoreUntil = 0;
 let vx = 0;
 let vz = 0;
 let px = 0;
+let py = 0;
 let pz = 0;
 let dayCursor = dayIndex(params.get("time"));
 let sunShared = null;
@@ -76,12 +106,67 @@ let sunRoles = null;
 let skyMesh = null;
 let sunMesh = null;
 let patchMesh = null;
+let nightSpillMesh = null;
+let beacons = null;
+let dayIsNight = false;
 let shadowMesh = null;
 let coneMat = null;
 let discMat = null;
 let shadowMat = null;
+let nightCeilMat = null;
+let nightCeilPlateMat = null;
+let nightBeamMat = null;
 let presence = null;
 let navHoldsLook = false;
+let doors = null;
+let liftDoors = null;
+let lift = null;
+let doorOpen = [];
+let doorHeld = [];
+let shownFloor = -1;
+let pictureGrid = null;
+const imageCache = new Map();
+let loadWait = [];
+let loadActive = 0;
+let loadPumping = false;
+const LOAD_CAP = 2;
+let liftPadOpen = false;
+let doorCall = false;
+let revealFloor = -1;
+let pictureAim = -1;
+let thirdPerson = false;
+let orbiting = false;
+let orbitYaw = 0;
+let orbitPitch = 0;
+let lookReleasedByPage = false;
+let blurUnlock = false;
+const bodyLook = new THREE.PerspectiveCamera();
+const orbitRig = new THREE.PerspectiveCamera();
+bodyLook.rotation.order = "YXZ";
+orbitRig.rotation.order = "YXZ";
+let selfVisitor = null;
+let walkPhase = 0;
+const lookDir = new THREE.Vector3();
+let solidList = null;
+let solidWalls = 0;
+let clickShieldUntil = 0;
+let escWantsCard = false;
+let atlasGridSize = null;
+const atlasSlots = [];
+const atlasReady = new Map();
+let shownAtlas = -1;
+let buildSerial = 0;
+let horizon = null;
+let dropMesh = null;
+let dropItems = null;
+const WINDOW_GLOW = {
+  dawn: 0xd2c2a6,
+  morning: 0xb7c3c8,
+  noon: 0xa9b8c0,
+  afternoon: 0xc2bba8,
+  dusk: 0xe8b56e,
+  night: 0xf0d2a0,
+};
 
 const SKY_R = 520;
 const SUN_FAR = 280;
@@ -98,15 +183,10 @@ renderer.shadowMap.enabled = false;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8ec8f2);
-scene.fog = new THREE.Fog(0xb7d6ea, 48, 130);
+scene.fog = new THREE.Fog(0xb7d6ea, 60, 420);
 
 const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 900);
 camera.rotation.order = "YXZ";
-
-const raycaster = new THREE.Raycaster();
-raycaster.far = 7;
-
-
 
 function showFatal(message) {
   loading.hidden = false;
@@ -136,8 +216,81 @@ function setHover(index) {
   mats.instanceColor.needsUpdate = true;
 }
 
-function closePanel() {
+function showEscCard() {
+  escWantsCard = false;
+  boot.hidden = false;
+  document.body.classList.add("esc-card");
+}
+
+function hideEscCard() {
+  document.body.classList.remove("esc-card");
+  boot.hidden = true;
+}
+
+function requestWalk() {
+  parkFocus();
+  const pending = view.requestPointerLock();
+  if (pending && typeof pending.catch === "function") pending.catch(() => {});
+}
+
+function releaseLook() {
+  if (document.pointerLockElement !== view) return;
+  lookReleasedByPage = true;
+  document.exitPointerLock();
+}
+
+function beginOrbit() {
+  if (orbiting || !thirdPerson) return;
+  if (document.pointerLockElement !== view) return;
+  if (corner.classList.contains("nav-open")) return;
+  bodyLook.rotation.copy(camera.rotation);
+  bodyLook.rotation.z = 0;
+  orbitYaw = camera.rotation.y;
+  orbitPitch = camera.rotation.x;
+  orbiting = true;
+}
+
+function endOrbit() {
+  if (!orbiting) return;
+  orbiting = false;
+  camera.rotation.copy(bodyLook.rotation);
+  camera.rotation.z = 0;
+}
+
+function lookSource() {
+  if (!orbiting) return camera;
+  bodyLook.updateMatrixWorld();
+  return bodyLook;
+}
+
+function closePanel(relock) {
   panel.hidden = true;
+  document.body.classList.remove("reading");
+  if (!relock || corner.classList.contains("nav-open")) return;
+  requestWalk();
+}
+
+function interactiveTarget(target) {
+  return !!(target && target.closest && target.closest(
+    "#panel, #roster, #drawer, #name-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
+  ));
+}
+
+function enterWalk() {
+  hideEscCard();
+  if (presence) presence.dismiss(true);
+  closePanel(false);
+  if (liftPadOpen) return;
+  requestWalk();
+}
+
+function parkFocus() {
+  const gate = document.getElementById("name-gate");
+  if (gate && !gate.hidden) return;
+  const el = document.activeElement;
+  if (el && el.closest && el.closest("#chat-bar, #name-gate")) return;
+  if (el && el !== view && el !== document.body && el.blur) el.blur();
+  view.focus({ preventScroll: true });
 }
 
 function openFrame(index) {
@@ -157,57 +310,353 @@ function openFrame(index) {
   }
   panelArticle.href = site.article;
   panel.hidden = false;
+  document.body.classList.add("reading");
   panel.style.pointerEvents = "none";
   ignoreUntil = performance.now() + 420;
   window.setTimeout(() => {
     panel.style.pointerEvents = "auto";
   }, 420);
-  if (document.pointerLockElement) document.exitPointerLock();
+  releaseLook();
 }
 
 function pickFrame() {
-  if (!mats) return -1;
-  raycaster.setFromCamera(CENTER, camera);
-  const hits = raycaster.intersectObject(mats, false);
-  return hits.length ? hits[0].instanceId : -1;
+  if (!built) return -1;
+  camera.getWorldDirection(lookDir);
+  const ox = camera.position.x;
+  const oy = camera.position.y;
+  const oz = camera.position.z;
+  let minT = 0.15;
+  if (thirdPerson) {
+    const gap = Math.hypot(ox - px, oy - (py + EYE), oz - pz);
+    if (gap > minT) minT = gap - 0.25;
+  }
+  const floor = playerFloor();
+  let best = -1;
+  let bestT = 7;
+  const frames = built.frames;
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    if (frame.floor !== floor) continue;
+    const denom = frame.nx * lookDir.x + frame.nz * lookDir.z;
+    if (denom > -1e-4) continue;
+    const t = ((frame.x - ox) * frame.nx + (frame.z - oz) * frame.nz) / denom;
+    if (t < minT || t >= bestT) continue;
+    const hy = oy + lookDir.y * t;
+    if (Math.abs(hy - frame.y) > FRAME.h * 0.5) continue;
+    const hx = ox + lookDir.x * t;
+    const hz = oz + lookDir.z * t;
+    const along = Math.abs(frame.nz) > 0.5 ? Math.abs(hx - frame.x) : Math.abs(hz - frame.z);
+    if (along > FRAME.w * 0.5) continue;
+    best = i;
+    bestT = t;
+  }
+  return best;
 }
 
 function resetPose() {
   px = built.spawn.x;
   pz = built.spawn.z;
+  py = 0;
   vx = 0;
   vz = 0;
   camera.rotation.set(0, 0, 0);
-  camera.position.set(px, EYE, pz);
+  camera.position.set(px, py + EYE, pz);
   closePanel();
+  closeLiftPad(false);
 }
 
-function paintLegend(name) {
+function paintLegend(names) {
   const items = legendEl.children;
+  const on = names || [];
   for (let i = 0; i < items.length; i++) {
-    items[i].classList.toggle("on", items[i].dataset.name === name);
+    items[i].classList.toggle("on", on.indexOf(items[i].dataset.name) >= 0);
   }
 }
 
 function updatePlace() {
-  const zone = zoneAt(px, pz, built.zones);
+  const zone = zoneAt(px, pz, built.zones, py);
   const name = zone ? zone.name : "馆内";
   if (place.textContent !== name) {
     place.textContent = name;
-    paintLegend(name);
+    paintLegend(zone && zone.legend);
   }
 }
 
 let hoverClock = 0;
+
+function playerFloor() {
+  let floor = Math.round(py / STORY);
+  if (floor < 0) floor = 0;
+  if (built && floor >= built.floors) floor = built.floors - 1;
+  return floor;
+}
+
+function othersInCar() {
+  const people = presence && presence.others ? presence.others() : [];
+  let n = 0;
+  for (let i = 0; i < people.length; i++) {
+    const person = people[i];
+    if (!inLiftCar(person.x, person.z)) continue;
+    if (Math.abs((person.y || 0) - lift.y) > 0.85) continue;
+    n += 1;
+  }
+  return n;
+}
+
+function liftOpenVisual(floor) {
+  if (!lift || Math.abs(lift.y - floor * STORY) > 0.22) return 0;
+  return lift.door;
+}
+
+function liftOpenSolid(floor) {
+  const open = liftOpenVisual(floor);
+  const inside = lift && inLiftCar(px, pz) && Math.abs(py - lift.y) < 0.9;
+  if (!inside && othersInCar() >= LIFT.capacity) return 0;
+  return open;
+}
+
+function collide() {
+  if (!solidList) {
+    solidList = built.walls.slice();
+    solidWalls = solidList.length;
+  }
+  solidList.length = solidWalls;
+  for (let f = 0; f < built.floors; f++) {
+    const leaves = doorBoxes(doorOpen[f] || 0, f);
+    solidList.push(leaves[0], leaves[1]);
+    const shut = liftDoorBoxes(liftOpenSolid(f), f);
+    for (let i = 0; i < shut.length; i++) solidList.push(shut[i]);
+  }
+  return solidList;
+}
+
+function insideLift() {
+  return !!(lift && inLiftCar(px, pz) && Math.abs(py - lift.y) < 0.9);
+}
+
+function atLiftDoor() {
+  if (!built) return false;
+  return nearLiftHall(px, pz) && Math.abs(py - playerFloor() * STORY) < 1.2;
+}
+
+// 门洞和轿厢、大厅门口连成一片。标签不要在跨过门扇的那一截灭掉。
+function inLiftMouth(x, z) {
+  const half = LIFT.doorW / 2 + 0.35;
+  if (Math.abs(z - LIFT.cz) >= half) return false;
+  return x > LIFT.xRear + 0.2 && x < LIFT.xDoor + 1.7;
+}
+
+function liftLabelOn() {
+  if (!built) return false;
+  if (insideLift()) return true;
+  if (Math.abs(py - playerFloor() * STORY) > 1.2) return false;
+  return atLiftDoor() || inLiftMouth(px, pz);
+}
+
+// 人还停在门上时不算进了电梯。完全进到轿厢里，门才可以关。
+function holdingLiftDoor() {
+  if (!lift || Math.abs(py - lift.y) > 0.9) return false;
+  if (inLiftCar(px, pz)) return false;
+  const half = LIFT.doorW / 2 + 0.45;
+  if (Math.abs(pz - LIFT.cz) > half) return false;
+  return px > LIFT.xDoor - 0.55 && px < LIFT.xDoor + 1.5;
+}
+
+function settleFeet(dt) {
+  if (lift && inLiftCar(px, pz) && (Math.abs(py - lift.y) < 1.15 || lift.phase === "moving")) {
+    py = lift.y;
+    return;
+  }
+  const support = groundAt(px, pz, py, built.floors);
+  if (support == null) {
+    py -= 9 * dt;
+    if (py < 0) py = 0;
+    return;
+  }
+  if (py > support + 0.35) py = Math.max(support, py - 9 * dt);
+  else py = support;
+}
+
+function closeLiftPad(relock) {
+  if (!liftPadOpen) return;
+  liftPadOpen = false;
+  if (liftPad) liftPad.hidden = true;
+  if (liftToggle) liftToggle.setAttribute("aria-expanded", "false");
+  if (!relock) return;
+  requestWalk();
+}
+
+function openLiftPad() {
+  if (!liftPad || liftPadOpen) return;
+  if (presence) presence.closeRoster();
+  liftPadOpen = true;
+  liftPad.hidden = false;
+  if (liftToggle) liftToggle.setAttribute("aria-expanded", "true");
+  down.clear();
+  releaseLook();
+}
+
+function toggleLiftMenu() {
+  if (liftPadOpen) closeLiftPad(false);
+  else openLiftPad();
+}
+
+function fillLiftPad() {
+  if (!liftPad) return;
+  liftPad.replaceChildren();
+  const note = document.createElement("p");
+  note.id = "lift-note";
+  note.textContent = "限乘 " + LIFT.capacity + " 人";
+  const list = document.createElement("div");
+  list.id = "lift-list";
+  liftPad.append(note, list);
+  for (let f = built.floors - 1; f >= 0; f--) {
+    const button = document.createElement("button");
+    button.type = "button";
+    const names = built.floorNames[f];
+    button.textContent = (f + 1) + " 楼" + (names && names.length ? " · " + names.join("、") : "");
+    button.addEventListener("click", () => {
+      lift.call(f);
+      closeLiftPad(true);
+    });
+    list.appendChild(button);
+  }
+}
+
+function onDoorKey() {
+  if (!lift || !built) return;
+  if (insideLift()) {
+    if (lift.phase === "moving") return;
+    lift.call(lift.current);
+    return;
+  }
+  if (!atLiftDoor()) return;
+  doorCall = true;
+  lift.call(playerFloor());
+}
+
+function onFloorKey() {
+  if (!lift || !built || !insideLift()) return;
+  if (liftPadOpen) closeLiftPad(true);
+  else openLiftPad();
+}
+
+function syncLiftHud() {
+  if (!liftToggle || !lift) return;
+  const inside = insideLift();
+  if (!atLiftDoor()) doorCall = false;
+  if (liftPadOpen && !inside) {
+    liftPadOpen = false;
+    if (liftPad) liftPad.hidden = true;
+    liftToggle.setAttribute("aria-expanded", "false");
+  }
+  const showStatus = liftLabelOn();
+  liftToggle.hidden = !showStatus;
+  if (liftPad) liftPad.hidden = !liftPadOpen;
+  const level = lift.y / STORY;
+  const rounded = Math.round(level);
+  const shown = Math.abs(level - rounded) > 0.18 ? (lift.dir < 0 ? Math.floor(level) : Math.ceil(level)) : rounded;
+  const arrow = lift.dir > 0 && lift.phase === "moving" ? " ▲" : lift.dir < 0 && lift.phase === "moving" ? " ▼" : "";
+  const label = (shown + 1) + "F" + arrow;
+  if (liftToggle.textContent !== label) liftToggle.textContent = label;
+  const note = document.getElementById("lift-note");
+  if (note && liftPadOpen) {
+    const next = inside ? "E 开门，点一层就走" : othersInCar() >= LIFT.capacity ? "这趟已经满了" : "点一层，电梯过来开门";
+    if (note.textContent !== next) note.textContent = next;
+  }
+}
+
+// 轿厢和大厅门口中间有一截两边的判断都够不着，提示会在过门时灭掉。
+function crossingLiftDoor() {
+  if (!built || insideLift() || atLiftDoor()) return false;
+  const onFoot = Math.abs(py - playerFloor() * STORY) < 1.2;
+  const inCarY = lift && Math.abs(py - lift.y) < 0.9;
+  if (!onFoot && !inCarY) return false;
+  if (Math.abs(pz - LIFT.cz) >= LIFT.doorW / 2 + 0.12) return false;
+  return px > LIFT.xDoor - 0.55 && px < LIFT.xDoor + 0.08;
+}
+
+function syncLiftHint() {
+  if (!liftHint) return;
+  let text = "";
+  if (hoverIndex < 0 && (insideLift() || crossingLiftDoor())) text = "按 E 开门\n按 F 选层";
+  else if (hoverIndex < 0 && atLiftDoor()) text = "按 E 叫电梯";
+  if (!text) {
+    liftHint.hidden = true;
+    return;
+  }
+  if (liftHint.textContent !== text) liftHint.textContent = text;
+  liftHint.hidden = false;
+}
+
+function poseSelf(pulled) {
+  if (!selfVisitor) return;
+  selfVisitor.group.visible = pulled.dist > 0.9;
+  selfVisitor.group.position.set(px, py, pz);
+  planarBasis(lookSource(), fwd, right);
+  selfVisitor.group.rotation.y = yawFacing(fwd);
+  const speed = Math.hypot(vx, vz);
+  if (speed > 0.2) walkPhase += speed * 0.045;
+  poseVisitor(selfVisitor.parts, walkPhase, speed > 0.2 ? 1 : 0);
+}
+
+function placeCamera() {
+  const eyeY = py + EYE;
+  const aimY = py + EYE * 0.7;
+  if (thirdPerson && orbiting) {
+    orbitRig.rotation.set(orbitPitch, orbitYaw, 0);
+    orbitRig.updateMatrixWorld();
+    orbitRig.getWorldDirection(lookDir);
+    const pulled = pullCamera(px, aimY, pz, lookDir.x, lookDir.y, lookDir.z, 3.2, collide());
+    let top = py + WALL_H - 0.45;
+    if (insideLift()) top = Math.min(top, py + LIFT.cabH - 0.35);
+    camera.position.set(pulled.x, Math.min(top, Math.max(py + 0.28, pulled.y)), pulled.z);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(px, aimY, pz);
+    poseSelf(pulled);
+    return;
+  }
+  if (!thirdPerson) {
+    camera.position.set(px, eyeY, pz);
+    if (selfVisitor) selfVisitor.group.visible = false;
+    return;
+  }
+  camera.updateMatrixWorld();
+  camera.getWorldDirection(lookDir);
+  const pulled = pullCamera(px, aimY, pz, lookDir.x, lookDir.y, lookDir.z, 3.2, collide());
+  let top = py + WALL_H - 0.45;
+  if (insideLift()) top = Math.min(top, py + LIFT.cabH - 0.35);
+  camera.position.set(pulled.x, Math.min(top, Math.max(py + 0.28, pulled.y)), pulled.z);
+  poseSelf(pulled);
+}
+
 function step(dt, now) {
-  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open");
+  const floorNow = playerFloor();
+  for (let f = 0; f < built.floors; f++) {
+    const want = f === floorNow && Math.abs(py - f * STORY) < 1.35 && doorWantsOpen(px, pz, doorHeld[f]);
+    doorHeld[f] = want;
+    const aim = want ? 1 : 0;
+    doorOpen[f] += (aim - (doorOpen[f] || 0)) * (1 - Math.exp(-dt * 8));
+    if (doorOpen[f] < 0.0008) doorOpen[f] = 0;
+    else if (doorOpen[f] > 0.9992) doorOpen[f] = 1;
+  }
+  if (doors) doors.update(doorOpen);
+  if (lift) {
+    lift.tick(dt, holdingLiftDoor());
+    if (liftDoors) {
+      const opens = [];
+      for (let f = 0; f < built.floors; f++) opens.push(liftOpenVisual(f));
+      liftDoors.update(opens, lift.y);
+    }
+  }
+  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !liftPadOpen;
   document.body.classList.toggle("walking", locked);
   if (!locked) {
     vx = 0;
     vz = 0;
     if (hoverIndex >= 0) setHover(-1);
   } else {
-    planarBasis(camera, fwd, right);
+    planarBasis(lookSource(), fwd, right);
     let ix = 0;
     let iz = 0;
     if (down.has("KeyW") || down.has("ArrowUp")) { ix += fwd.x; iz += fwd.z; }
@@ -220,7 +669,7 @@ function step(dt, now) {
     const rate = 1 - Math.exp(-dt * 12);
     vx += (ix * speed - vx) * rate;
     vz += (iz * speed - vz) * rate;
-    const moved = movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, built.walls);
+    const moved = movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), py);
     px = moved.x;
     pz = moved.z;
     if (now >= hoverClock) {
@@ -228,14 +677,71 @@ function step(dt, now) {
       setHover(pickFrame());
     }
   }
-  camera.position.set(px, EYE, pz);
+  settleFeet(dt);
+  placeCamera();
   updatePlace();
+  syncLiftHud();
+  syncLiftHint();
+  trackPictures();
   if (presence) presence.update(dt, now);
 }
 
+const fpsReadout = document.getElementById("fps");
+let fpsCount = 0;
+let fpsStamp = 0;
+
+function noteFps(now) {
+  if (!fpsReadout) return;
+  fpsCount += 1;
+  if (!fpsStamp) fpsStamp = now;
+  const span = now - fpsStamp;
+  if (span < 400) return;
+  fpsReadout.textContent = Math.round((fpsCount * 1000) / span) + " 帧";
+  fpsCount = 0;
+  fpsStamp = now;
+}
+
+function makeBeacons(roof) {
+  if (!roof) return null;
+  const group = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0x3a0a08, fog: false });
+  const glow = new THREE.MeshBasicMaterial({
+    color: 0xff2200,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    fog: false,
+  });
+  const y = roof.maxY + 0.45;
+  const spots = [
+    [roof.minX - 0.2, roof.minZ - 0.2],
+    [roof.maxX + 0.2, roof.minZ - 0.2],
+    [roof.minX - 0.2, roof.maxZ + 0.2],
+    [roof.maxX + 0.2, roof.maxZ + 0.2],
+  ];
+  for (let i = 0; i < spots.length; i++) {
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), mat);
+    lamp.position.set(spots[i][0], y, spots[i][1]);
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.58, 8, 6), glow);
+    halo.position.copy(lamp.position);
+    group.add(lamp, halo);
+  }
+  group.visible = false;
+  return { group, mat, glow };
+}
+
 function animate(now) {
+  noteFps(now);
+  if (beacons) {
+    const phase = now % 1300;
+    const blink = dayIsNight && (phase < 120 || (phase > 240 && phase < 360));
+    beacons.group.visible = dayIsNight;
+    beacons.mat.color.setHex(blink ? 0xff2a18 : 0xc41410);
+    beacons.glow.opacity = blink ? 0.45 : 0.14;
+  }
   const dt = Math.min(MAX_STEP, seconds(now));
   step(dt, now);
+  if (horizon) horizon.drift(now);
   renderer.render(scene, camera);
   if (params.has("selftest") && !animate.done) {
     const ready = document.documentElement.dataset.frames === "ready";
@@ -278,29 +784,107 @@ function publishSelfTest() {
   document.body.appendChild(pre);
 }
 
+function foldChangelog() {
+  const list = document.getElementById("changelog");
+  if (!list || list.dataset.folded) return;
+  const items = Array.from(list.children);
+  items.forEach((li, index) => {
+    if (li.tagName !== "LI" || li.querySelector("details")) return;
+    const time = li.querySelector("time");
+    const text = (time ? li.textContent.replace(time.textContent, "") : li.textContent).trim();
+    const details = document.createElement("details");
+    if (index === 0) details.open = true;
+    const summary = document.createElement("summary");
+    if (time) summary.append(time);
+    const body = document.createElement("p");
+    body.textContent = text;
+    details.append(summary, body);
+    li.replaceChildren(details);
+  });
+  list.dataset.folded = "1";
+}
+
 function bind() {
+  foldChangelog();
   view.addEventListener("click", () => {
     if (performance.now() < ignoreUntil) return;
-    if (corner.classList.contains("nav-open")) return;
-    if (document.pointerLockElement !== view) {
-      view.requestPointerLock();
-      return;
-    }
+    if (document.pointerLockElement !== view) return;
     const index = pickFrame();
     if (index >= 0) openFrame(index);
   });
+  document.addEventListener("click", (event) => {
+    if (performance.now() < ignoreUntil) return;
+    const gate = document.getElementById("name-gate");
+    if (gate && !gate.hidden) return;
+    if (interactiveTarget(event.target)) return;
+    if (performance.now() < clickShieldUntil) return;
+    if (document.pointerLockElement === view) return;
+    enterWalk();
+  }, true);
+  if (liftToggle) {
+    liftToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!insideLift()) return;
+      toggleLiftMenu();
+    });
+  }
   document.addEventListener("mousemove", (event) => {
     if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
+    if (orbiting) {
+      orbitYaw -= event.movementX * 0.0022;
+      orbitPitch += event.movementY * 0.0022;
+      if (orbitPitch > 1.15) orbitPitch = 1.15;
+      if (orbitPitch < -1.05) orbitPitch = -1.05;
+      return;
+    }
     camera.rotation.y -= event.movementX * 0.0022;
     camera.rotation.x -= event.movementY * 0.0022;
     if (camera.rotation.x > 1.15) camera.rotation.x = 1.15;
     if (camera.rotation.x < -1.15) camera.rotation.x = -1.15;
   });
+  document.addEventListener("click", (event) => {
+    if (performance.now() > clickShieldUntil) return;
+    const target = event.target;
+    if (!target || target === view) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
   document.addEventListener("keydown", (event) => {
     if (event.code === "Tab") return;
     const typing = event.target;
-    if (typing && typing.closest && typing.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #day, #panel")) return;
+    if (typing && typing.closest && typing.closest("input, textarea, select")) return;
+    if (typing && typing !== view && typing !== document.body && typing.blur && document.pointerLockElement === view) {
+      if (typing.closest && typing.closest("button, a")) typing.blur();
+    }
+    if (event.code === "AltLeft" || event.code === "AltRight") {
+      if (event.repeat) return;
+      if (thirdPerson) {
+        event.preventDefault();
+        beginOrbit();
+      }
+      return;
+    }
+    if (event.code === "KeyE") {
+      if (event.repeat) return;
+      event.preventDefault();
+      onDoorKey();
+      return;
+    }
+    if (event.code === "KeyF") {
+      if (event.repeat) return;
+      event.preventDefault();
+      onFloorKey();
+      return;
+    }
+    if (event.code === "KeyV") {
+      if (event.repeat) return;
+      event.preventDefault();
+      if (thirdPerson) endOrbit();
+      thirdPerson = !thirdPerson;
+      if (thirdPerson && event.altKey) beginOrbit();
+      return;
+    }
     if (event.code === "KeyR") {
       resetPose();
       return;
@@ -311,21 +895,51 @@ function bind() {
       selectDay(dayCursor + (event.code === "BracketRight" ? 1 : -1));
       return;
     }
-    if (event.code === "Escape" && !panel.hidden) closePanel();
+    if (event.code === "Escape") {
+      if (event.repeat) return;
+      escWantsCard = true;
+      if (liftPadOpen) closeLiftPad(false);
+      if (!panel.hidden) closePanel(false);
+      if (document.pointerLockElement !== view) showEscCard();
+      return;
+    }
     if (event.repeat) return;
     down.add(event.code);
   });
-  document.addEventListener("keyup", (event) => down.delete(event.code));
+  document.addEventListener("keyup", (event) => {
+    if ((event.code === "AltLeft" || event.code === "AltRight") && !event.altKey) endOrbit();
+    down.delete(event.code);
+  });
   document.addEventListener("pointerlockchange", () => {
-    if (document.pointerLockElement === view) return;
+    if (document.pointerLockElement === view) {
+      lookReleasedByPage = false;
+      blurUnlock = false;
+      hideEscCard();
+      return;
+    }
+    endOrbit();
+    const fromEsc = !lookReleasedByPage && !blurUnlock && document.hasFocus();
+    lookReleasedByPage = false;
+    blurUnlock = false;
+    clickShieldUntil = performance.now() + 200;
+    if (fromEsc || escWantsCard) showEscCard();
+    else hideEscCard();
     // 锁定松开后，画布上的系统指针会停在一张被放大的糊图上。先换成按钮那种指针，下一帧再回到箭头，浏览器才会重新取清晰的原生光标。
     view.style.cursor = "pointer";
     requestAnimationFrame(() => {
       view.style.cursor = "auto";
     });
   });
-  window.addEventListener("blur", () => down.clear());
-  panelClose.addEventListener("click", closePanel);
+  window.addEventListener("blur", () => {
+    blurUnlock = true;
+    endOrbit();
+    down.clear();
+  });
+  panelClose.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closePanel(true);
+  });
   window.addEventListener("resize", resize);
 }
 
@@ -361,6 +975,30 @@ function paintSky(day) {
   col.needsUpdate = true;
 }
 
+function writeQuad(pos, col, index, quad, y, color) {
+  for (let k = 0; k < 4; k++) {
+    const vi = index * 4 + k;
+    if (!quad) {
+      pos.setXYZ(vi, 0, 0, 0);
+      col.setXYZW(vi, 0, 0, 0, 0);
+      continue;
+    }
+    pos.setXYZ(vi, quad.pts[k][0], y, quad.pts[k][1]);
+    col.setXYZW(vi, color.r, color.g, color.b, k < 2 ? quad.near : quad.far);
+  }
+}
+
+function writeNightSpill(day) {
+  if (!nightSpillMesh || !built) return;
+  const pos = nightSpillMesh.geometry.attributes.position;
+  const col = nightSpillMesh.geometry.attributes.color;
+  const quads = day.id === "night" ? nightSpillQuads(built.openings, built.dress) : [null, null];
+  const color = new THREE.Color(0xd5e6f6);
+  for (let i = 0; i < quads.length; i++) writeQuad(pos, col, i, quads[i], 0.05, color);
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
+}
+
 function writePatches(day, sun) {
   const limits = {
     minX: built.interior.minX + 0.15,
@@ -393,34 +1031,52 @@ function applyDay(day) {
   const sun = sunVector(day);
   sunShared.dir.value.set(sun.x, sun.y, sun.z);
   sunShared.tint.value.set(day.tint);
+  // 馆内的灯、玻璃和天棚一律按正午，不随时辰变。外面的天色照旧。
+  const noonLight = DAYS[2];
+  const nightRoom = day.id === "night";
+  const roomDay = noonLight;
+  const roomSun = sunVector(noonLight);
+  sunRoles.room.tint.value.set(roomDay.tint);
+  sunRoles.glass.tint.value.set(roomDay.tint);
+  if (sunRoles.room.dir) sunRoles.room.dir.value.set(roomSun.x, roomSun.y, roomSun.z);
+  if (sunRoles.glass.dir) sunRoles.glass.dir.value.set(roomSun.x, roomSun.y, roomSun.z);
   sunShared.shade.value = day.shade;
   sunRoles.ground.fill.value = day.fillGround;
   sunRoles.ground.gain.value = day.gainGround;
   sunRoles.open.fill.value = day.fillOpen;
   sunRoles.open.gain.value = day.gainOpen;
-  sunRoles.room.fill.value = day.fillRoom;
-  sunRoles.room.gain.value = day.gainRoom;
-  sunRoles.glass.fill.value = day.fillGlass;
-  sunRoles.glass.gain.value = day.gainGlass;
-  const horizon = new THREE.Color(day.horizon);
-  scene.background.copy(horizon);
-  scene.fog.color.copy(horizon);
-  renderer.setClearColor(horizon);
-  document.body.style.background = horizon.getStyle();
+  sunRoles.room.fill.value = roomDay.fillRoom;
+  sunRoles.room.gain.value = roomDay.gainRoom;
+  sunRoles.glass.fill.value = roomDay.fillGlass;
+  sunRoles.glass.gain.value = roomDay.gainGlass;
+  const skyline = new THREE.Color(day.horizon);
+  scene.background.copy(skyline);
+  scene.fog.color.copy(skyline);
+  renderer.setClearColor(skyline);
+  document.body.style.background = skyline.getStyle();
   document.body.classList.toggle("dark-sky", day.id === "night");
+  dayIsNight = day.id === "night";
+  writeNightSpill(day);
   paintSky(day);
   sunMesh.material.color.set(day.sun);
   sunMesh.position.set(sun.x, sun.y, sun.z).multiplyScalar(SUN_FAR);
   sunMesh.scale.setScalar(day.disc);
-  coneMat.color.set(day.cone);
-  coneMat.opacity = day.coneOpacity;
-  discMat.color.set(day.pool);
-  discMat.opacity = day.poolOpacity;
+  coneMat.color.set(roomDay.cone);
+  coneMat.opacity = roomDay.coneOpacity;
+  discMat.color.set(roomDay.pool);
+  discMat.opacity = roomDay.poolOpacity;
+  setFacadeSignNight(nightRoom);
+  sunShared.indoor.value = 0;
+  if (nightCeilMat) nightCeilMat.color.setHex(0x2c2c31);
+  if (nightCeilPlateMat) nightCeilPlateMat.color.setHex(0x2c2c31);
+  if (nightBeamMat) nightBeamMat.color.setHex(0x1c1c20);
   if (shadowMat) shadowMat.opacity = day.blob;
-  writePatches(day, sun);
+  if (horizon && horizon.glow) horizon.glow.color.set(WINDOW_GLOW[day.id] || WINDOW_GLOW.noon);
+  writePatches(roomDay, roomSun);
   if (shadowMesh) {
-    placePlantShadows(shadowMesh, built.plants, (plant) => plantShadowShift(sun, 0.9 * plant.s));
+    placePlantShadows(shadowMesh, built.plants, (plant) => plantShadowShift(roomSun, 0.9 * plant.s));
   }
+  if (dropMesh && dropItems) placeDropShadows(dropMesh, dropItems, sun);
 }
 
 function buildScene(data) {
@@ -432,9 +1088,23 @@ function buildScene(data) {
     block: { value: new THREE.Vector4() },
     roof: { value: 6.5 },
     shade: { value: 0.66 },
+    indoor: { value: 0 },
+    indoorFill: { value: 1 },
+    indoorTint: { value: new THREE.Color(0xfff4e4) },
+    roomBox: { value: new THREE.Vector4(
+      built.interior.minX - 0.12,
+      built.interior.maxX + 0.12,
+      built.interior.minZ - 0.12,
+      built.interior.maxZ + 0.12,
+    ) },
   };
   const role = () => ({ fill: { value: 1 }, gain: { value: 0 }, cast: { value: 0 } });
   sunRoles = { ground: role(), open: role(), room: role(), glass: role() };
+  const noonDir = sunVector(DAYS[2]);
+  sunRoles.room.dir = { value: new THREE.Vector3(noonDir.x, noonDir.y, noonDir.z) };
+  sunRoles.glass.dir = { value: new THREE.Vector3(noonDir.x, noonDir.y, noonDir.z) };
+  sunRoles.room.tint = { value: new THREE.Color(0xffffff) };
+  sunRoles.glass.tint = { value: new THREE.Color(0xffffff) };
   sunRoles.ground.cast.value = 1;
   const roof = built.dress.find((item) => item.kind === "roof");
   sunShared.block.value.set(roof.minX, roof.maxX, roof.minZ, roof.maxZ);
@@ -461,6 +1131,7 @@ function buildScene(data) {
   const floorMat = lit(0xc5c8cc, "ground");
   const roomMat = lit(0xb3a28c, "room");
   const ceilMat = lit(0x2c2c31, "room");
+  nightCeilMat = ceilMat;
   const borderMat = lit(0xd5cfc6, "room");
   const matMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   attachFramePicture(matMat, sunShared, sunRoles.room);
@@ -471,11 +1142,29 @@ function buildScene(data) {
   const grooveMat = lit(0xd4cfc4, "open");
   const roofMat = lit(0xe7e2d8, "open");
   const beamMat = lit(0x1c1c20, "room");
+  nightBeamMat = beamMat;
   const glassMat = lit(0xb5d0de, "glass", {
     transparent: true,
     opacity: 0.38,
     depthWrite: false,
     side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const doorGlass = lit(0xc5dde8, "glass", {
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const doorFrame = lit(0x4c5550, "room", {
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
   // 光锥在人走进光池时仍要看得见，所以双面、不写深度。不参与阳光，避免锥面被切成明暗条。
   coneMat = new THREE.MeshBasicMaterial({
@@ -490,27 +1179,135 @@ function buildScene(data) {
     transparent: true,
     opacity: 0.42,
     depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 
   const stone = wallMesh(built.stone, stoneMat);
+  const cornerMat = lit(0xe5e0d6, "open", {
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const cornerMesh = wallMesh(built.corners, cornerMat);
+  const bandMat = lit(0x7a4036, "open", {
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const bandMesh = boxMesh(built.bandCorners, bandMat);
   const inner = wallMesh(built.white.concat(built.liners), whiteMat);
   const curb = wallMesh(built.curb, curbMat);
   if (stone) scene.add(stone);
+  if (cornerMesh) scene.add(cornerMesh);
+  if (bandMesh) scene.add(bandMesh);
   if (inner) scene.add(inner);
   if (curb) scene.add(curb);
-  const level = floorAndCeiling(built.bounds, floorMat, ceilMat, built.interior, roomMat);
+  const level = floorAndCeiling(built.bounds, floorMat, ceilMat, null, roomMat);
   scene.add(level.floor);
-  if (level.roomFloor) scene.add(level.roomFloor);
-  if (level.ceil) scene.add(level.ceil);
-  const byKind = { lattice: latticeMat, fin: finMat, groove: grooveMat, roof: roofMat, beam: beamMat, glass: glassMat };
-  const kinds = ["lattice", "fin", "groove", "roof", "beam", "glass"];
+  const pathMat = lit(0xddd6c8, "ground", {
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  horizon = horizonMeshes({
+    grass: lit(0x6f8b58, "ground"),
+    water: lit(0x5e93a6, "open"),
+    path: pathMat,
+    disc: lit(0xe4dcc8, "ground", {
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    }),
+    plaster: lit(0xffffff, "open"),
+    roof: lit(0xffffff, "open"),
+    glass: lit(0x6d8494, "open"),
+    glow: new THREE.MeshBasicMaterial({
+      color: WINDOW_GLOW.noon,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
+    hill: lit(0xffffff, "open"),
+    cloud: lit(0xf7f4ee, "open", { transparent: true, opacity: 0.78, depthWrite: false }),
+  });
+  scene.add(horizon.root);
+  const yard = yardMeshes(
+    built.yard,
+    lit(0x6b5142, "open"),
+    lit(0x3f6a45, "open"),
+    lit(0x4f7c52, "open"),
+    lit(0xa68462, "open"),
+  );
+  if (yard) scene.add(yard);
+  const stepMat = lit(0xd9d0c4, "room");
+  const railMat = lit(0x5e6764, "open");
+  const woodMat = lit(0xa67c52, "room");
+  const byKind = {
+    lattice: latticeMat,
+    fin: finMat,
+    groove: grooveMat,
+    roof: roofMat,
+    beam: beamMat,
+    glass: glassMat,
+    step: stepMat,
+    rail: railMat,
+    wood: woodMat,
+  };
+  const kinds = ["lattice", "fin", "groove", "roof", "beam", "glass", "step", "rail", "wood"];
   for (let k = 0; k < kinds.length; k++) {
     const kind = kinds[k];
-    const mesh = boxMesh(built.dress.filter((item) => item.kind === kind), byKind[kind]);
+    const items = built.dress.filter((item) => item.kind === kind);
+    const mesh = kind === "glass" ? paneMesh(items, byKind[kind]) : boxMesh(items, byKind[kind]);
     if (!mesh) continue;
     if (kind === "glass") mesh.renderOrder = 3;
     scene.add(mesh);
   }
+  const plateMat = lit(0xb3a28c, "room", {
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const ceilPlateMat = lit(0x2c2c31, "room", {
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  nightCeilPlateMat = ceilPlateMat;
+  const storySlabs = plateMesh(built.floorPlates, plateMat);
+  const storyCeils = plateMesh(built.ceilPlates, ceilPlateMat);
+  if (storySlabs) scene.add(storySlabs);
+  if (storyCeils) scene.add(storyCeils);
+  const props = lobbyPropMeshes(built.extinguishers, built.tables, {
+    red: lit(0xc52828, "room"),
+    metal: lit(0x2a2c2e, "room"),
+    wood: woodMat,
+    chair: lit(0xffffff, "room"),
+    vase: lit(0xf3f0ea, "room"),
+    stem: leafMat,
+    flowers: [lit(0xd24b4b, "room"), lit(0xe7c14a, "room"), lit(0xf4f1ea, "room"), lit(0xd46a8c, "room")],
+  });
+  if (props) scene.add(props);
+  const deckMat = lit(0xb3a28c, "ground", { side: THREE.DoubleSide });
+  const lobes = lobeMeshes(built.lobes, deckMat);
+  if (lobes) scene.add(lobes);
+  const hands = handrailMesh(built.handrails, woodMat);
+  if (hands) scene.add(hands);
+  const labels = labelMeshes(built.signs);
+  if (labels) scene.add(labels);
+  const deckRail = deckRailMesh(built.lobes, glassMat, railMat);
+  if (deckRail) scene.add(deckRail);
+  doorOpen = new Array(built.floors).fill(0);
+  doorHeld = new Array(built.floors).fill(false);
+  doors = doorRig(doorGlass, doorFrame, built.floors);
+  doors.update(doorOpen);
+  scene.add(doors.root);
+  lift = createLift(built.floors, STORY);
+  liftDoors = liftRig(doorGlass, doorFrame, roomMat, ceilMat, built.floors);
+  liftDoors.update(doorOpen, 0);
+  scene.add(liftDoors.root);
+  fillLiftPad();
   const frames = frameMeshes(built.frames, borderMat, matMat);
   scene.add(frames.border, frames.mat);
   mats = frames.mat;
@@ -523,7 +1320,8 @@ function buildScene(data) {
   }
   if (built.plants.length) {
     const plants = plantMeshes(built.plants, potMat, leafMat);
-    scene.add(plants.pots, plants.leaves);
+    if (plants.pots) scene.add(plants.pots);
+    for (let i = 0; i < plants.leaves.length; i++) if (plants.leaves[i]) scene.add(plants.leaves[i]);
     shadowMat = new THREE.MeshBasicMaterial({
       color: 0x3e3832,
       transparent: true,
@@ -533,12 +1331,40 @@ function buildScene(data) {
     shadowMesh = plantShadowMesh(built.plants, shadowMat);
     if (shadowMesh) scene.add(shadowMesh);
   }
+  dropItems = horizon && horizon.shadows ? horizon.shadows.slice() : [];
+  for (let i = 0; i < built.yard.length; i++) {
+    const item = built.yard[i];
+    if (item.kind !== "tree") continue;
+    dropItems.push({ x: item.x, z: item.z, rx: 1.65, rz: 1.2, h: 3.5, y: 0.04 });
+  }
+  if (dropItems.length) {
+    if (!shadowMat) {
+      shadowMat = new THREE.MeshBasicMaterial({
+        color: 0x3e3832,
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+      });
+    }
+    dropMesh = dropShadowMesh(dropItems.length, shadowMat);
+    if (dropMesh) scene.add(dropMesh);
+  }
   patchMesh = sunPatchMesh(built.openings.length);
   scene.add(patchMesh);
+  nightSpillMesh = sunPatchMesh(2);
+  scene.add(nightSpillMesh);
+  beacons = makeBeacons(built.dress.find((item) => item.kind === "roof"));
+  if (beacons) scene.add(beacons.group);
   const cones = lightConeMesh(built.cones, coneMat);
   const discs = floorDiscMesh(built.cones, discMat);
+  const heads = spotHeadMesh(
+    built.cones,
+    beamMat,
+    lit(0xd5cfc6, "room"),
+  );
   if (cones) scene.add(cones);
   if (discs) scene.add(discs);
+  if (heads) scene.add(heads);
   if (params.has("debug")) scene.add(colliderLines(built.walls));
 
   legendEl.replaceChildren();
@@ -552,16 +1378,25 @@ function buildScene(data) {
 
   applyDay(DAYS[dayCursor]);
   resetPose();
-  if (params.has("preview")) {
+  if (params.has("preview") && built.frames.length) {
     const frame = built.frames[Math.min(24, built.frames.length - 1)];
     px = frame.x;
     pz = frame.z + frame.nz * 4.8;
-    camera.position.set(px, frame.y, pz);
+    py = frame.y - EYE;
+    camera.position.set(px, py + EYE, pz);
     camera.lookAt(frame.x, frame.y, frame.z);
   }
   if (params.has("x")) px = Number(params.get("x"));
   if (params.has("z")) pz = Number(params.get("z"));
-  if (params.has("x") || params.has("z")) camera.position.set(px, EYE, pz);
+  if (params.has("car") && lift) {
+    const level = Number(params.get("car"));
+    if (Number.isFinite(level)) {
+      lift.place(level);
+      if (!params.has("y")) py = lift.y;
+    }
+  }
+  if (params.has("y")) py = Number(params.get("y"));
+  if (params.has("x") || params.has("z") || params.has("y") || params.has("car")) camera.position.set(px, py + EYE, pz);
   if (params.has("yaw")) {
     camera.rotation.y = Number(params.get("yaw")) * Math.PI / 180;
     camera.rotation.x = Number(params.get("pitch") || 0) * Math.PI / 180;
@@ -574,52 +1409,126 @@ function buildScene(data) {
     opacity: 0.2,
     depthWrite: false,
   });
+  selfVisitor = createVisitor(visitorMat, visitorShadow);
+  selfVisitor.group.visible = false;
+  scene.add(selfVisitor.group);
   presence = mountPresence({
     scene,
     material: visitorMat,
     shadowMaterial: visitorShadow,
     bounds: built.bounds,
     interior: built.interior,
+    zones: built.zones,
+    onReleaseLook: releaseLook,
     getPose: () => {
-      planarBasis(camera, fwd, right);
-      return { x: px, z: pz, yaw: yawFacing(fwd) };
+      planarBasis(lookSource(), fwd, right);
+      return { x: px, z: pz, y: py, yaw: yawFacing(fwd) };
     },
     onTyping: (active) => {
       if (active) down.clear();
     },
     onNav: (open) => {
+      parkFocus();
       if (open) {
         down.clear();
         if (document.pointerLockElement === view) {
           navHoldsLook = true;
-          document.exitPointerLock();
+          clickShieldUntil = performance.now() + 200;
+          releaseLook();
         }
         return;
       }
       if (!navHoldsLook) return;
       navHoldsLook = false;
-      const pending = view.requestPointerLock();
-      if (pending && typeof pending.catch === "function") pending.catch(() => {});
+      requestWalk();
+    },
+    onExclusive: (which) => {
+      if (which === "roster") closeLiftPad(false);
     },
   });
+  prepareAtlases();
   loading.hidden = true;
-  boot.hidden = false;
+  hideEscCard();
   where.hidden = false;
-  legendEl.hidden = false;
-  hint.hidden = false;
   crosshair.hidden = false;
   resize();
-  mountPictures();
+  shownFloor = playerFloor();
+  if (params.get("person") === "3") thirdPerson = true;
+  if (params.has("nav")) {
+    const toggle = document.getElementById("drawer-toggle");
+    if (toggle) toggle.click();
+    if (params.has("more")) {
+      document.querySelectorAll("#changelog details").forEach((item) => {
+        item.open = true;
+      });
+    }
+  }
+  trackPictures();
   requestAnimationFrame(animate);
 }
 
+function yieldTurn(fn) {
+  requestAnimationFrame(() => {
+    window.setTimeout(fn, 0);
+  });
+}
+
+function dropQueued() {
+  const keep = [];
+  for (let i = 0; i < loadWait.length; i++) {
+    const job = loadWait[i];
+    if (job.token === buildSerial) keep.push(job);
+    else {
+      if (imageCache.get(job.url) === job.pending) imageCache.delete(job.url);
+      job.resolve(null);
+    }
+  }
+  loadWait = keep;
+}
+
+function pumpLoads() {
+  if (loadPumping) return;
+  loadPumping = true;
+  while (loadActive < LOAD_CAP && loadWait.length) {
+    const job = loadWait.shift();
+    if (job.token !== buildSerial) {
+      if (imageCache.get(job.url) === job.pending) imageCache.delete(job.url);
+      job.resolve(null);
+      continue;
+    }
+    loadActive += 1;
+    const finish = (value) => {
+      loadActive -= 1;
+      job.resolve(value);
+      loadPumping = false;
+      pumpLoads();
+    };
+    fetch(job.url, { mode: "cors" })
+      .then((res) => (res.ok ? res.blob() : null))
+      .then((blob) => {
+        if (!blob || typeof createImageBitmap !== "function") return null;
+        return createImageBitmap(blob);
+      })
+      .then((bmp) => finish(bmp && bmp.width > 0 ? bmp : null))
+      .catch(() => finish(null));
+  }
+  loadPumping = false;
+}
+
 function loadImage(url) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    if (/^https:\/\//i.test(url)) img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img.naturalWidth > 0 && img.naturalHeight > 0 ? img : null);
-    img.onerror = () => resolve(null);
-    img.src = url;
+  const cached = imageCache.get(url);
+  if (cached) return cached;
+  let resolve;
+  const pending = new Promise((done) => {
+    resolve = done;
+  });
+  const job = { url, resolve, token: buildSerial, pending };
+  imageCache.set(url, pending);
+  loadWait.push(job);
+  pumpLoads();
+  return pending.then((bmp) => {
+    if (!bmp && imageCache.get(url) === pending) imageCache.delete(url);
+    return bmp;
   });
 }
 
@@ -628,55 +1537,46 @@ function markPictures(count) {
   document.documentElement.dataset.pictures = String(count);
 }
 
-function mountPictures() {
-  const frames = built.frames;
+function floorPictureJobs(floor) {
   const jobs = [];
+  if (!built || floor < 0 || floor >= built.floors) return jobs;
+  const frames = built.frames;
   for (let i = 0; i < frames.length; i++) {
+    if (frames[i].floor !== floor) continue;
     const site = sites[frames[i].siteIndex];
     const src = usableFrameImage(site && site.image);
-    if (!src) continue;
-    jobs.push(loadImage(src).then((img) => ({ index: i, img })));
+    if (src) jobs.push({ index: i, src });
   }
-  if (!jobs.length) {
-    markPictures(0);
-    return;
+  return jobs;
+}
+
+function blankUv() {
+  const uv = new Float32Array(built.frames.length * 4);
+  const cell = cellUv(0, 0, atlasGridSize.cols, atlasGridSize.rows);
+  for (let i = 0; i < built.frames.length; i++) uv.set(cell, i * 4);
+  return uv;
+}
+
+function prepareAtlases() {
+  let most = 1;
+  for (let f = 0; f < built.floors; f++) {
+    const n = floorPictureJobs(f).length;
+    if (n > most) most = n;
   }
-  Promise.all(jobs).then((loaded) => {
-    const pictures = [];
-    for (let i = 0; i < loaded.length; i++) if (loaded[i].img) pictures.push(loaded[i]);
-    if (!pictures.length || !mats) {
-      markPictures(0);
-      return;
-    }
-    const maxSize = Math.min(renderer.capabilities.maxTextureSize || 4096, 4096);
-    const grid = atlasGrid(pictures.length + 1, maxSize);
+  const maxSize = Math.min(renderer.capabilities.maxTextureSize || 4096, 4096);
+  const grid = atlasGrid(most + 1, maxSize);
+  grid.cellW = Math.max(4, Math.floor(grid.cellW / 4) * 4);
+  grid.cellH = Math.max(2, Math.floor(grid.cellH / 2) * 2);
+  atlasGridSize = grid;
+  const w = grid.cols * grid.cellW;
+  const h = grid.rows * grid.cellH;
+  for (let s = 0; s < 2; s++) {
     const canvas = document.createElement("canvas");
-    canvas.width = grid.cols * grid.cellW;
-    canvas.height = grid.rows * grid.cellH;
-    const ctx = canvas.getContext("2d");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { alpha: false });
     ctx.fillStyle = "#f7f5f2";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const uv = new Float32Array(frames.length * 4);
-    for (let i = 0; i < frames.length; i++) {
-      uv.set(cellUv(0, 0, grid.cols, grid.rows), i * 4);
-    }
-    for (let p = 0; p < pictures.length; p++) {
-      const slot = p + 1;
-      const col = slot % grid.cols;
-      const row = Math.floor(slot / grid.cols);
-      const ox = col * grid.cellW;
-      const oy = row * grid.cellH;
-      const img = pictures[p].img;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(ox, oy, grid.cellW, grid.cellH);
-      ctx.clip();
-      const fit = coverRect(img.naturalWidth, img.naturalHeight, grid.cellW, grid.cellH);
-      ctx.drawImage(img, ox + fit.x, oy + fit.y, fit.w, fit.h);
-      ctx.restore();
-      const frame = frames[pictures[p].index];
-      uv.set(cellUv(col, row, grid.cols, grid.rows), pictures[p].index * 4);
-    }
+    ctx.fillRect(0, 0, w, h);
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.generateMipmaps = false;
@@ -684,19 +1584,187 @@ function mountPictures() {
     texture.magFilter = THREE.LinearFilter;
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.needsUpdate = true;
-    mats.geometry.setAttribute("frameUv", new THREE.InstancedBufferAttribute(uv, 4));
-    const white = new THREE.Color("#ffffff");
-    for (let i = 0; i < frames.length; i++) {
-      baseColors[i].copy(white);
-      hoverColors[i].copy(white);
-      mats.setColorAt(i, hoverIndex === i ? hoverColors[i] : baseColors[i]);
+    renderer.initTexture(texture);
+    texture.needsUpdate = false;
+    atlasSlots.push({ canvas, ctx, texture, w, h });
+  }
+  const strip = document.createElement("canvas");
+  strip.width = w;
+  strip.height = 128;
+  const stripTex = new THREE.CanvasTexture(strip);
+  stripTex.generateMipmaps = false;
+  stripTex.minFilter = THREE.LinearFilter;
+  stripTex.magFilter = THREE.LinearFilter;
+  atlasSlots.strip = strip;
+  atlasSlots.stripTex = stripTex;
+  atlasSlots.stripCtx = strip.getContext("2d", { alpha: false });
+  const attr = new THREE.InstancedBufferAttribute(blankUv(), 4);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  mats.geometry.setAttribute("frameUv", attr);
+  mats.material.map = atlasSlots[0].texture;
+  mats.material.needsUpdate = true;
+  const white = new THREE.Color("#ffffff");
+  for (let i = 0; i < built.frames.length; i++) {
+    baseColors[i].copy(white);
+    hoverColors[i].copy(white);
+    mats.setColorAt(i, white);
+  }
+  mats.instanceColor.needsUpdate = true;
+  shownAtlas = 0;
+  pictureGrid = grid;
+}
+
+function applyAtlas(pack) {
+  const attr = mats.geometry.getAttribute("frameUv");
+  if (!attr) return;
+  attr.array.set(pack.uv);
+  attr.needsUpdate = true;
+  if (mats.material.map !== pack.texture) mats.material.map = pack.texture;
+  pictureGrid = atlasGridSize;
+  shownAtlas = pack.slot;
+  markPictures(pack.count);
+}
+
+function claimSlot() {
+  const slot = shownAtlas === 0 ? 1 : 0;
+  for (const [floor, pack] of atlasReady) {
+    if (pack.slot === slot) atlasReady.delete(floor);
+  }
+  return slot;
+}
+
+function uploadBands(token, canvas, texture, done) {
+  const band = 24;
+  let y = 0;
+  const strip = atlasSlots.strip;
+  const stripTex = atlasSlots.stripTex;
+  const sctx = atlasSlots.stripCtx;
+  const step = () => {
+    if (token !== buildSerial) return;
+    const h = Math.min(band, canvas.height - y);
+    if (strip.height !== h) strip.height = h;
+    sctx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+    renderer.copyTextureToTexture(stripTex, texture, null, { x: 0, y: canvas.height - y - h });
+    y += h;
+    if (y < canvas.height) {
+      yieldTurn(step);
+      return;
     }
-    mats.instanceColor.needsUpdate = true;
-    mats.material.map = texture;
-    mats.material.needsUpdate = true;
-    markPictures(pictures.length);
-  }).catch(() => markPictures(0));
+    done();
+  };
+  yieldTurn(step);
+}
+
+function drawCover(ctx, img, ox, oy, cellW, cellH) {
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  const fit = coverRect(srcW, srcH, cellW, cellH);
+  const dx = ox + fit.x;
+  const dy = oy + fit.y;
+  const x0 = Math.max(dx, ox);
+  const y0 = Math.max(dy, oy);
+  const x1 = Math.min(dx + fit.w, ox + cellW);
+  const y1 = Math.min(dy + fit.h, oy + cellH);
+  if (x1 - x0 < 0.5 || y1 - y0 < 0.5) return;
+  const sx = ((x0 - dx) / fit.w) * srcW;
+  const sy = ((y0 - dy) / fit.h) * srcH;
+  const sw = ((x1 - x0) / fit.w) * srcW;
+  const sh = ((y1 - y0) / fit.h) * srcH;
+  ctx.drawImage(img, sx, sy, sw, sh, x0, y0, x1 - x0, y1 - y0);
+}
+
+function paintIntoSlot(token, floor, pictures) {
+  if (token !== buildSerial || !mats) return;
+  const slot = claimSlot();
+  const holder = atlasSlots[slot];
+  const grid = atlasGridSize;
+  const uv = blankUv();
+  let cursor = 0;
+  let clearY = 0;
+  const step = () => {
+    if (token !== buildSerial) return;
+    if (clearY < holder.h) {
+      const h = Math.min(128, holder.h - clearY);
+      holder.ctx.fillStyle = "#f7f5f2";
+      holder.ctx.fillRect(0, clearY, holder.w, h);
+      clearY += h;
+      yieldTurn(step);
+      return;
+    }
+    if (cursor < pictures.length) {
+      const picture = pictures[cursor];
+      const cell = cursor + 1;
+      const col = cell % grid.cols;
+      const row = Math.floor(cell / grid.cols);
+      drawCover(holder.ctx, picture.img, col * grid.cellW, row * grid.cellH, grid.cellW, grid.cellH);
+      uv.set(cellUv(col, row, grid.cols, grid.rows), picture.index * 4);
+      cursor += 1;
+      yieldTurn(step);
+      return;
+    }
+    uploadBands(token, holder.canvas, holder.texture, () => {
+      if (token !== buildSerial) return;
+      const pack = { floor, texture: holder.texture, uv, slot, count: pictures.length };
+      atlasReady.set(floor, pack);
+      if (revealFloor === floor) applyAtlas(pack);
+    });
+  };
+  yieldTurn(step);
+}
+
+function startBuild(floor, showWhenDone) {
+  if (!built || floor < 0 || floor >= built.floors) return;
+  if (showWhenDone) revealFloor = floor;
+  const cached = atlasReady.get(floor);
+  if (cached) {
+    if (revealFloor === floor) applyAtlas(cached);
+    return;
+  }
+  const token = ++buildSerial;
+  dropQueued();
+  const jobs = floorPictureJobs(floor);
+  if (!jobs.length) {
+    const slot = claimSlot();
+    const pack = { floor, texture: atlasSlots[slot].texture, uv: blankUv(), slot, count: 0 };
+    atlasReady.set(floor, pack);
+    if (revealFloor === floor) applyAtlas(pack);
+    else markPictures(0);
+    return;
+  }
+  const pictures = [];
+  let left = jobs.length;
+  for (let i = 0; i < jobs.length; i++) {
+    loadImage(jobs[i].src).then((img) => {
+      if (token !== buildSerial) return;
+      if (img) pictures.push({ index: jobs[i].index, img });
+      left -= 1;
+      if (left === 0) paintIntoSlot(token, floor, pictures);
+    });
+  }
+}
+
+function trackPictures() {
+  if (!built) return;
+  const riding = !!(lift && inLiftCar(px, pz) && lift.phase === "moving");
+  if (riding) {
+    const dest = lift.dest;
+    if (dest === pictureAim) return;
+    pictureAim = dest;
+    revealFloor = -1;
+    startBuild(dest, false);
+    return;
+  }
+  const standing = playerFloor();
+  shownFloor = standing;
+  if (pictureAim !== standing) {
+    pictureAim = standing;
+    revealFloor = standing;
+    startBuild(standing, true);
+    return;
+  }
+  revealFloor = standing;
+  const pack = atlasReady.get(standing);
+  if (pack && mats && mats.material.map !== pack.texture) applyAtlas(pack);
 }
 
 for (let i = 0; i < DAYS.length; i++) {
