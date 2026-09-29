@@ -6,7 +6,7 @@ Sitopia 是 [有趣网址之家](https://youquhome.com/) 的一座浏览器展�
 
 用电脑和键鼠打开。手机上能看，不适合逛。
 
-线上展厅：https://youquhome.com/sitopia/
+线上展厅：https://sitopia.youquhome.com/
 
 ## 在本机打开
 
