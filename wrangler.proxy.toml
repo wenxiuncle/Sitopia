@@ -1,0 +1,10 @@
+name = "sitopia-lobby-proxy"
+main = "worker/youqu-proxy.js"
+account_id = "68934c71299cc419f74f09fd0d1b1e79"
+compatibility_date = "2026-09-24"
+workers_dev = false
+
+[[routes]]
+pattern = "lobby.youquhome.com"
+custom_domain = true
+zone_name = "youquhome.com"

@@ -798,7 +798,12 @@ function openClient(url) {
 
 async function checkPublicLobby() {
   const source = await readFile(path.join(root, "js", "presence.js"), "utf8");
-  assert(source.includes('const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby"'), "public lobby stays on the cloudflare worker");
+  assert(source.includes('const PUBLIC_LOBBY = "wss://lobby.youquhome.com/lobby"'), "public lobby goes through the youquhome proxy");
+  const proxy = await readFile(path.join(root, "worker", "youqu-proxy.js"), "utf8");
+  assert(proxy.includes("sitopia-lobby.adhesive-quarter.workers.dev"), "proxy still forwards to the cloudflare room");
+  const worker = await readFile(path.join(root, "worker", "lobby.js"), "utf8");
+  assert(worker.includes('"https://sitopia.youquhome.com"'), "custom domain may enter the cloudflare room");
+  assert(worker.includes('"https://wenxiuncle.github.io"'), "github pages may enter the cloudflare room");
 }
 
 async function checkLobby() {

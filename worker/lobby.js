@@ -3,6 +3,7 @@ import { blankPerson, onClientMessage, onLeave } from "../tools/room.mjs";
 
 const ALLOW = new Set([
   "https://wenxiuncle.github.io",
+  "https://sitopia.youquhome.com",
   "http://127.0.0.1:4173",
   "http://localhost:4173",
 ]);

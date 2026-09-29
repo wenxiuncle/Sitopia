@@ -18,7 +18,7 @@ node tools/serve.mjs
 
 浏览器打开 http://127.0.0.1:4173/ 。换端口可以设环境变量 `PORT`。
 
-进馆前先起一个名字，以后点地图下面的在线人数改。本机打开时，同一个服务里的窗口互相看得见。GitHub 预览页的一起逛走 Cloudflare 的 sitopia-lobby，和本机不是同一间。有趣网址之家 `/sitopia/` 是另外传上去的，不跟这次仓库一起换。
+进馆前先起一个名字，以后点地图下面的在线人数改。本机打开时，同一个服务里的窗口互相看得见。线上页面的一起逛走 `wss://lobby.youquhome.com/lobby`，再转到 Cloudflare 的 sitopia-lobby，和本机不是同一间。有趣网址之家 `/sitopia/` 是另外传上去的，不跟这次仓库一起换。
 
 ## 怎么逛
 
@@ -67,7 +67,8 @@ node tools/selftest.mjs
 | `index.html`、`museum.css` | 页面和浮层 |
 | `js/` | 展厅、走动、时辰、在线的人 |
 | `tools/serve.mjs` | 本机打开，并带上同一台电脑上的联机 |
-| `worker/lobby.js` | GitHub 预览页的一起逛，Cloudflare 上的 sitopia-lobby |
+| `worker/lobby.js` | 一起逛的房间，Cloudflare 上的 sitopia-lobby |
+| `worker/youqu-proxy.js` | `lobby.youquhome.com` 的反代，转到上面的房间 |
 | `server/youqu-lobby/index.php` | 有趣网址之家那份房间。仓库里留着，这次不传到主机 |
 | `tools/fetch-sites.mjs` | 从有趣网址之家拉展品 |
 | `tools/selftest.mjs` | 检查布局、朝向和能不能走到 |

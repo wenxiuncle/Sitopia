@@ -2,8 +2,8 @@ import { PLAZA, STORY, zoneAt } from "./layout.js";
 import { forwardFromYaw } from "./basis.js";
 import { createCrowd } from "./avatar.js";
 
-// GitHub 预览页连以前的 Cloudflare 房间。本机仍走自己的 /lobby。
-const PUBLIC_LOBBY = "wss://sitopia-lobby.adhesive-quarter.workers.dev/lobby";
+// 线上页面经 lobby.youquhome.com 转到 Cloudflare 房间。本机仍走自己的 /lobby。
+const PUBLIC_LOBBY = "wss://lobby.youquhome.com/lobby";
 
 const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
