@@ -169,6 +169,20 @@ export function plantMeshes(plants, potMat, leafMat) {
 
 const SPOT_R = 1.85;
 const SPOT_BASE = 0.048;
+// 天花底面在 WALL_H - 0.06。灯罩顶埋进底面 2 厘米，和梁一样不留缝。
+const SPOT_APEX_GAP = 0.008;
+
+function spotApex(baseY) {
+  return (baseY || 0) + WALL_H - 0.032;
+}
+
+function spotConeHeight() {
+  return spotApex(0) - SPOT_BASE;
+}
+
+export function spotFixtureTop(baseY) {
+  return spotApex(baseY) - SPOT_APEX_GAP;
+}
 
 let spotPool = null;
 
@@ -193,15 +207,14 @@ function spotPoolTexture() {
 
 export function spotHeadMesh(cones, shadeMat, lampMat) {
   if (!cones.length) return null;
-  const coneH = WALL_H - 0.46;
   const shadeH = 0.1;
   const lampH = 0.03;
   const shade = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.045, 0.16, shadeH, 14, 1), shadeMat, cones.length);
   const lamp = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.055, 0.055, lampH, 12, 1), lampMat, cones.length);
   const root = new THREE.Group();
   for (let i = 0; i < cones.length; i++) {
-    const apex = (cones[i].y || 0) + SPOT_BASE + coneH;
-    const bottom = apex - shadeH - 0.008;
+    const apex = spotApex(cones[i].y);
+    const bottom = apex - shadeH - SPOT_APEX_GAP;
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
     dummy.position.set(cones[i].x, bottom + shadeH * 0.5, cones[i].z);
@@ -217,12 +230,12 @@ export function spotHeadMesh(cones, shadeMat, lampMat) {
 
 export function lightConeMesh(cones, material) {
   if (!cones.length) return null;
-  const coneH = WALL_H - 0.46;
+  const coneH = spotConeHeight();
   const mesh = new THREE.InstancedMesh(new THREE.ConeGeometry(SPOT_R, 1, 32, 1, true), material, cones.length);
   for (let i = 0; i < cones.length; i++) {
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, coneH, 1);
-    dummy.position.set(cones[i].x, (cones[i].y || 0) + SPOT_BASE + coneH / 2, cones[i].z);
+    dummy.position.set(cones[i].x, spotApex(cones[i].y) - coneH / 2, cones[i].z);
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
   }
@@ -607,14 +620,29 @@ function shaftLeaf(box, glassMat, frameMat) {
   return group;
 }
 
-export function liftRig(glassMat, frameMat, cabMat, ceilMat, floors) {
+// 大门的材质往镜头偏。电梯门整扇留在槽里，偏了会穿出正面墙。
+function liftDoorMaterials(glassMat, frameMat) {
+  const next = (material) => {
+    const copy = material.clone();
+    copy.onBeforeCompile = material.onBeforeCompile;
+    copy.customProgramCacheKey = material.customProgramCacheKey;
+    copy.polygonOffset = false;
+    copy.polygonOffsetFactor = 0;
+    copy.polygonOffsetUnits = 0;
+    return copy;
+  };
+  return { glass: next(glassMat), frame: next(frameMat) };
+}
+
+export function liftRig(glassMat, frameMat, cabMat, ceilMat, floors, floorMat) {
   const count = floors || 1;
   const root = new THREE.Group();
   const leaves = [];
+  const doorMats = liftDoorMaterials(glassMat, frameMat);
   for (let f = 0; f < count; f++) {
     const boxes = liftLeaves(0, f);
     for (let i = 0; i < boxes.length; i++) {
-      const leaf = shaftLeaf(boxes[i], glassMat, frameMat);
+      const leaf = shaftLeaf(boxes[i], doorMats.glass, doorMats.frame);
       leaf.userData.span = boxes[i].maxZ - boxes[i].minZ;
       placeLeaf(leaf, boxes[i]);
       root.add(leaf);
@@ -628,7 +656,7 @@ export function liftRig(glassMat, frameMat, cabMat, ceilMat, floors) {
   const cabX = (cabRear + cabFront) / 2;
   const deep = LIFT.carW - 0.08;
   const sideH = LIFT.cabH - 0.06;
-  const cabFloor = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.07, deep), cabMat);
+  const cabFloor = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.07, deep), floorMat || cabMat);
   const cabCeil = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.05, deep), ceilMat);
   const cabSideL = new THREE.Mesh(new THREE.BoxGeometry(wide, sideH, 0.06), cabMat);
   const cabSideR = new THREE.Mesh(new THREE.BoxGeometry(wide, sideH, 0.06), cabMat);
@@ -1124,10 +1152,10 @@ export function lobbyPropMeshes(extinguishers, tables, mats) {
   }
   if (!sets.length) return root.children.length ? root : null;
   const chairs = sets.length * 2;
-  const seatX = 1.12;
+  const seatX = 1.32;
   const footOf = (table) => table.y + 0.046;
   const tintChair = (index) => chairTint(sets[Math.floor(index / 2)].floor || 0);
-  root.add(paintInstances(new THREE.CylinderGeometry(0.68, 0.68, 0.05, 20), mats.wood, sets.length, (i) => {
+  root.add(paintInstances(new THREE.CylinderGeometry(0.8, 0.8, 0.05, 20), mats.wood, sets.length, (i) => {
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
     dummy.position.set(sets[i].x, footOf(sets[i]) + 0.84, sets[i].z);
@@ -1137,7 +1165,7 @@ export function lobbyPropMeshes(extinguishers, tables, mats) {
     dummy.scale.set(1, 1, 1);
     dummy.position.set(sets[i].x, footOf(sets[i]) + 0.42, sets[i].z);
   }));
-  root.add(paintInstances(new THREE.BoxGeometry(0.56, 0.05, 0.54), mats.chair, chairs, (i) => {
+  root.add(paintInstances(new THREE.BoxGeometry(0.66, 0.05, 0.64), mats.chair, chairs, (i) => {
     const table = sets[Math.floor(i / 2)];
     const side = i % 2 === 0 ? -1 : 1;
     const yaw = side < 0 ? -Math.PI / 2 : Math.PI / 2;
@@ -1145,11 +1173,11 @@ export function lobbyPropMeshes(extinguishers, tables, mats) {
     dummy.scale.set(1, 1, 1);
     dummy.position.set(table.x + side * seatX, footOf(table) + 0.52, table.z);
   }, tintChair));
-  root.add(paintInstances(new THREE.BoxGeometry(0.56, 0.58, 0.05), mats.chair, chairs, (i) => {
+  root.add(paintInstances(new THREE.BoxGeometry(0.66, 0.68, 0.06), mats.chair, chairs, (i) => {
     const table = sets[Math.floor(i / 2)];
     const side = i % 2 === 0 ? -1 : 1;
     const yaw = side < 0 ? -Math.PI / 2 : Math.PI / 2;
-    const back = spinFlat(yaw, 0, 0.27);
+    const back = spinFlat(yaw, 0, 0.32);
     dummy.rotation.set(0, yaw, 0);
     dummy.scale.set(1, 1, 1);
     dummy.position.set(table.x + side * seatX + back.x, footOf(table) + 0.8, table.z + back.z);
@@ -1160,8 +1188,8 @@ export function lobbyPropMeshes(extinguishers, tables, mats) {
     const side = chair % 2 === 0 ? -1 : 1;
     const yaw = side < 0 ? -Math.PI / 2 : Math.PI / 2;
     const corner = i % 4;
-    const lx = corner < 2 ? -0.21 : 0.21;
-    const lz = corner % 2 === 0 ? -0.2 : 0.2;
+    const lx = corner < 2 ? -0.25 : 0.25;
+    const lz = corner % 2 === 0 ? -0.24 : 0.24;
     const leg = spinFlat(yaw, lx, lz);
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
@@ -1371,10 +1399,13 @@ export function horizonMeshes(mats) {
     [-250, 214], [-168, 236], [-40, 222], [28, 258], [150, 228],
     [248, 252], [236, 338], [40, 312], [-80, 346], [-246, 318],
   ], 0.018));
-  const z0 = PLAZA_PATH.z0;
   const z1 = PLAZA_PATH.z1;
   const crossZ = PLAZA_CROSS_Z;
-  root.add(flat(mats.path, 3.6, z1 - z0, 0, 0.012, (z0 + z1) / 2));
+  // 北端收到正门外墙，压进门前楼板 2 厘米，中间不留一条广场原色。圆心仍用原来的交点。
+  const north = PLAZA.minZ - 0.02;
+  const approach = flat(mats.path, 3.6, z1 - north, 0, 0.012, (north + z1) / 2);
+  approach.name = "plaza-approach";
+  root.add(approach);
   root.add(flat(mats.path, PLAZA.maxX - PLAZA.minX - 14, 3.6, 0, 0.012, crossZ));
   const disc = new THREE.Mesh(new THREE.CircleGeometry(5.4, 28), mats.disc);
   disc.rotation.x = FLOOR_TILT;

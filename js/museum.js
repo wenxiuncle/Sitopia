@@ -1,4 +1,5 @@
 import * as THREE from "../vendor/three.module.js";
+import { createAmbience } from "./ambience.js";
 import { createVisitor, poseVisitor } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
 import { DAYS, dayIndex, nightSpillQuads, openingQuads, plantShadowShift, sunVector } from "./day.js";
@@ -15,6 +16,7 @@ import {
   doorBoxes,
   doorWantsOpen,
   groundAt,
+  hallBlend,
   inLiftCar,
   liftDoorBoxes,
   movePlayer,
@@ -100,6 +102,8 @@ let vz = 0;
 let px = 0;
 let py = 0;
 let pz = 0;
+let ambience = null;
+let heardGesture = false;
 let dayCursor = dayIndex(params.get("time"));
 let sunShared = null;
 let sunRoles = null;
@@ -134,6 +138,7 @@ let liftPadOpen = false;
 let doorCall = false;
 let revealFloor = -1;
 let pictureAim = -1;
+let prefetchFloor = -2;
 let thirdPerson = false;
 let orbiting = false;
 let orbitYaw = 0;
@@ -280,7 +285,6 @@ function enterWalk() {
   hideEscCard();
   if (presence) presence.dismiss(true);
   closePanel(false);
-  if (liftPadOpen) return;
   requestWalk();
 }
 
@@ -362,7 +366,7 @@ function resetPose() {
   camera.rotation.set(0, 0, 0);
   camera.position.set(px, py + EYE, pz);
   closePanel();
-  closeLiftPad(false);
+  closeLiftPad();
 }
 
 function paintLegend(names) {
@@ -477,28 +481,20 @@ function settleFeet(dt) {
   else py = support;
 }
 
-function closeLiftPad(relock) {
+function closeLiftPad() {
   if (!liftPadOpen) return;
   liftPadOpen = false;
   if (liftPad) liftPad.hidden = true;
   if (liftToggle) liftToggle.setAttribute("aria-expanded", "false");
-  if (!relock) return;
-  requestWalk();
 }
 
 function openLiftPad() {
   if (!liftPad || liftPadOpen) return;
-  if (presence) presence.closeRoster();
   liftPadOpen = true;
   liftPad.hidden = false;
   if (liftToggle) liftToggle.setAttribute("aria-expanded", "true");
   down.clear();
   releaseLook();
-}
-
-function toggleLiftMenu() {
-  if (liftPadOpen) closeLiftPad(false);
-  else openLiftPad();
 }
 
 function fillLiftPad() {
@@ -514,10 +510,17 @@ function fillLiftPad() {
     const button = document.createElement("button");
     button.type = "button";
     const names = built.floorNames[f];
+    button.dataset.floor = String(f);
+    button.setAttribute("aria-pressed", "false");
     button.textContent = (f + 1) + " 楼" + (names && names.length ? " · " + names.join("、") : "");
-    button.addEventListener("click", () => {
-      lift.call(f);
-      closeLiftPad(true);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!lift) return;
+      const chosen = lift.has(f);
+      if (chosen) lift.cancel(f);
+      else lift.call(f);
+      paintLiftChoices();
+      if (!chosen) requestWalk();
     });
     list.appendChild(button);
   }
@@ -535,21 +538,34 @@ function onDoorKey() {
   lift.call(playerFloor());
 }
 
+function paintLiftChoices() {
+  const list = document.getElementById("lift-list");
+  if (!list || !lift) return;
+  const buttons = list.children;
+  for (let i = 0; i < buttons.length; i++) {
+    const button = buttons[i];
+    const on = lift.has(Number(button.dataset.floor));
+    button.classList.toggle("chosen", on);
+    const pressed = on ? "true" : "false";
+    if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+  }
+}
+
 function onFloorKey() {
   if (!lift || !built || !insideLift()) return;
-  if (liftPadOpen) closeLiftPad(true);
-  else openLiftPad();
+  if (!liftPadOpen) {
+    openLiftPad();
+    return;
+  }
+  down.clear();
+  releaseLook();
 }
 
 function syncLiftHud() {
   if (!liftToggle || !lift) return;
   const inside = insideLift();
   if (!atLiftDoor()) doorCall = false;
-  if (liftPadOpen && !inside) {
-    liftPadOpen = false;
-    if (liftPad) liftPad.hidden = true;
-    liftToggle.setAttribute("aria-expanded", "false");
-  }
+  if (!inside && liftPadOpen) closeLiftPad();
   const showStatus = liftLabelOn();
   liftToggle.hidden = !showStatus;
   if (liftPad) liftPad.hidden = !liftPadOpen;
@@ -561,9 +577,10 @@ function syncLiftHud() {
   if (liftToggle.textContent !== label) liftToggle.textContent = label;
   const note = document.getElementById("lift-note");
   if (note && liftPadOpen) {
-    const next = inside ? "E 开门，点一层就走" : othersInCar() >= LIFT.capacity ? "这趟已经满了" : "点一层，电梯过来开门";
+    const next = "点一层就走，再点一次取消";
     if (note.textContent !== next) note.textContent = next;
   }
+  paintLiftChoices();
 }
 
 // 轿厢和大厅门口中间有一截两边的判断都够不着，提示会在过门时灭掉。
@@ -596,7 +613,7 @@ function poseSelf(pulled) {
   planarBasis(lookSource(), fwd, right);
   selfVisitor.group.rotation.y = yawFacing(fwd);
   const speed = Math.hypot(vx, vz);
-  if (speed > 0.2) walkPhase += speed * 0.045;
+  if (speed > 0.2) walkPhase += speed * 0.026;
   poseVisitor(selfVisitor.parts, walkPhase, speed > 0.2 ? 1 : 0);
 }
 
@@ -649,7 +666,7 @@ function step(dt, now) {
       liftDoors.update(opens, lift.y);
     }
   }
-  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !liftPadOpen;
+  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open");
   document.body.classList.toggle("walking", locked);
   if (!locked) {
     vx = 0;
@@ -684,6 +701,12 @@ function step(dt, now) {
   syncLiftHint();
   trackPictures();
   if (presence) presence.update(dt, now);
+  if (ambience && built) ambience.hear(hallBlend(px, pz, built.interior));
+}
+
+function noteGesture() {
+  heardGesture = true;
+  if (ambience) ambience.unlock();
 }
 
 const fpsReadout = document.getElementById("fps");
@@ -784,28 +807,7 @@ function publishSelfTest() {
   document.body.appendChild(pre);
 }
 
-function foldChangelog() {
-  const list = document.getElementById("changelog");
-  if (!list || list.dataset.folded) return;
-  const items = Array.from(list.children);
-  items.forEach((li, index) => {
-    if (li.tagName !== "LI" || li.querySelector("details")) return;
-    const time = li.querySelector("time");
-    const text = (time ? li.textContent.replace(time.textContent, "") : li.textContent).trim();
-    const details = document.createElement("details");
-    if (index === 0) details.open = true;
-    const summary = document.createElement("summary");
-    if (time) summary.append(time);
-    const body = document.createElement("p");
-    body.textContent = text;
-    details.append(summary, body);
-    li.replaceChildren(details);
-  });
-  list.dataset.folded = "1";
-}
-
 function bind() {
-  foldChangelog();
   view.addEventListener("click", () => {
     if (performance.now() < ignoreUntil) return;
     if (document.pointerLockElement !== view) return;
@@ -813,6 +815,7 @@ function bind() {
     if (index >= 0) openFrame(index);
   });
   document.addEventListener("click", (event) => {
+    noteGesture();
     if (performance.now() < ignoreUntil) return;
     const gate = document.getElementById("name-gate");
     if (gate && !gate.hidden) return;
@@ -821,19 +824,12 @@ function bind() {
     if (document.pointerLockElement === view) return;
     enterWalk();
   }, true);
-  if (liftToggle) {
-    liftToggle.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (!insideLift()) return;
-      toggleLiftMenu();
-    });
-  }
   document.addEventListener("mousemove", (event) => {
     if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
     if (orbiting) {
       orbitYaw -= event.movementX * 0.0022;
-      orbitPitch += event.movementY * 0.0022;
+      orbitPitch -= event.movementY * 0.0022;
       if (orbitPitch > 1.15) orbitPitch = 1.15;
       if (orbitPitch < -1.05) orbitPitch = -1.05;
       return;
@@ -851,6 +847,7 @@ function bind() {
     event.stopPropagation();
   }, true);
   document.addEventListener("keydown", (event) => {
+    noteGesture();
     if (event.code === "Tab") return;
     const typing = event.target;
     if (typing && typing.closest && typing.closest("input, textarea, select")) return;
@@ -885,6 +882,12 @@ function bind() {
       if (thirdPerson && event.altKey) beginOrbit();
       return;
     }
+    if (event.code === "KeyM") {
+      if (event.repeat) return;
+      event.preventDefault();
+      if (ambience) ambience.toggle();
+      return;
+    }
     if (event.code === "KeyR") {
       resetPose();
       return;
@@ -898,7 +901,6 @@ function bind() {
     if (event.code === "Escape") {
       if (event.repeat) return;
       escWantsCard = true;
-      if (liftPadOpen) closeLiftPad(false);
       if (!panel.hidden) closePanel(false);
       if (document.pointerLockElement !== view) showEscCard();
       return;
@@ -1125,11 +1127,14 @@ function buildScene(data) {
   sunMesh.renderOrder = -1;
   scene.add(skyMesh, sunMesh);
 
-  const stoneMat = lit(0xe5e0d6, "open");
+  const stoneColor = 0xe5e0d6;
+  const stoneMat = lit(stoneColor, "open");
   const whiteMat = lit(0xf7f5f2, "room");
   const curbMat = lit(0xc8c4bb, "open");
   const floorMat = lit(0xc5c8cc, "ground");
-  const roomMat = lit(0xb3a28c, "room");
+  // 深灰 0x3e4248 朝白走到一半是 0x9fa1a4。再往回收大约四分之一。
+  const storyFloor = 0x86898d;
+  const roomMat = lit(stoneColor, "room");
   const ceilMat = lit(0x2c2c31, "room");
   nightCeilMat = ceilMat;
   const borderMat = lit(0xd5cfc6, "room");
@@ -1206,7 +1211,8 @@ function buildScene(data) {
   if (curb) scene.add(curb);
   const level = floorAndCeiling(built.bounds, floorMat, ceilMat, null, roomMat);
   scene.add(level.floor);
-  const pathMat = lit(0xddd6c8, "ground", {
+  const plazaMark = 0xa8adb2;
+  const pathMat = lit(plazaMark, "ground", {
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
@@ -1215,7 +1221,7 @@ function buildScene(data) {
     grass: lit(0x6f8b58, "ground"),
     water: lit(0x5e93a6, "open"),
     path: pathMat,
-    disc: lit(0xe4dcc8, "ground", {
+    disc: lit(plazaMark, "ground", {
       polygonOffset: true,
       polygonOffsetFactor: -3,
       polygonOffsetUnits: -3,
@@ -1264,7 +1270,7 @@ function buildScene(data) {
     if (kind === "glass") mesh.renderOrder = 3;
     scene.add(mesh);
   }
-  const plateMat = lit(0xb3a28c, "room", {
+  const plateMat = lit(storyFloor, "room", {
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -1289,7 +1295,7 @@ function buildScene(data) {
     flowers: [lit(0xd24b4b, "room"), lit(0xe7c14a, "room"), lit(0xf4f1ea, "room"), lit(0xd46a8c, "room")],
   });
   if (props) scene.add(props);
-  const deckMat = lit(0xb3a28c, "ground", { side: THREE.DoubleSide });
+  const deckMat = lit(storyFloor, "ground", { side: THREE.DoubleSide });
   const lobes = lobeMeshes(built.lobes, deckMat);
   if (lobes) scene.add(lobes);
   const hands = handrailMesh(built.handrails, woodMat);
@@ -1304,7 +1310,7 @@ function buildScene(data) {
   doors.update(doorOpen);
   scene.add(doors.root);
   lift = createLift(built.floors, STORY);
-  liftDoors = liftRig(doorGlass, doorFrame, roomMat, ceilMat, built.floors);
+  liftDoors = liftRig(doorGlass, doorFrame, roomMat, ceilMat, built.floors, plateMat);
   liftDoors.update(doorOpen, 0);
   scene.add(liftDoors.root);
   fillLiftPad();
@@ -1442,9 +1448,6 @@ function buildScene(data) {
       navHoldsLook = false;
       requestWalk();
     },
-    onExclusive: (which) => {
-      if (which === "roster") closeLiftPad(false);
-    },
   });
   prepareAtlases();
   loading.hidden = true;
@@ -1457,13 +1460,10 @@ function buildScene(data) {
   if (params.has("nav")) {
     const toggle = document.getElementById("drawer-toggle");
     if (toggle) toggle.click();
-    if (params.has("more")) {
-      document.querySelectorAll("#changelog details").forEach((item) => {
-        item.open = true;
-      });
-    }
   }
   trackPictures();
+  ambience = createAmbience();
+  if (heardGesture) ambience.unlock();
   requestAnimationFrame(animate);
 }
 
@@ -1712,12 +1712,26 @@ function paintIntoSlot(token, floor, pictures) {
   yieldTurn(step);
 }
 
+// 这一层的图进了缓存之后，再去要楼上和楼下。不占图集，电梯里也不走这里。
+function prefetchAround(floor) {
+  if (prefetchFloor === floor) return;
+  prefetchFloor = floor;
+  const up = floorPictureJobs(floor + 1);
+  const down = floorPictureJobs(floor - 1);
+  const n = Math.max(up.length, down.length);
+  for (let i = 0; i < n; i++) {
+    if (i < up.length) loadImage(up[i].src);
+    if (i < down.length) loadImage(down[i].src);
+  }
+}
+
 function startBuild(floor, showWhenDone) {
   if (!built || floor < 0 || floor >= built.floors) return;
   if (showWhenDone) revealFloor = floor;
   const cached = atlasReady.get(floor);
   if (cached) {
     if (revealFloor === floor) applyAtlas(cached);
+    if (showWhenDone) prefetchAround(floor);
     return;
   }
   const token = ++buildSerial;
@@ -1729,6 +1743,7 @@ function startBuild(floor, showWhenDone) {
     atlasReady.set(floor, pack);
     if (revealFloor === floor) applyAtlas(pack);
     else markPictures(0);
+    if (showWhenDone) prefetchAround(floor);
     return;
   }
   const pictures = [];
@@ -1738,7 +1753,10 @@ function startBuild(floor, showWhenDone) {
       if (token !== buildSerial) return;
       if (img) pictures.push({ index: jobs[i].index, img });
       left -= 1;
-      if (left === 0) paintIntoSlot(token, floor, pictures);
+      if (left === 0) {
+        if (showWhenDone) prefetchAround(floor);
+        paintIntoSlot(token, floor, pictures);
+      }
     });
   }
 }
@@ -1765,6 +1783,7 @@ function trackPictures() {
   revealFloor = standing;
   const pack = atlasReady.get(standing);
   if (pack && mats && mats.material.map !== pack.texture) applyAtlas(pack);
+  if (pack) prefetchAround(standing);
 }
 
 for (let i = 0; i < DAYS.length; i++) {

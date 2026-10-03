@@ -17,6 +17,8 @@ const types = {
   ".png": "image/png",
   ".gif": "image/gif",
   ".avif": "image/avif",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
 };
 const port = Number(process.env.PORT) || 4173;
 

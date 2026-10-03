@@ -74,6 +74,14 @@ export function createLift(floors, story) {
     get dest() { return dest; },
     floors,
     story,
+    has(floor) {
+      const target = floor < 0 ? 0 : floor >= floors ? floors - 1 : floor | 0;
+      return stops.has(target);
+    },
+    cancel(floor) {
+      const target = floor < 0 ? 0 : floor >= floors ? floors - 1 : floor | 0;
+      return stops.delete(target);
+    },
     call(floor) {
       const target = floor < 0 ? 0 : floor >= floors ? floors - 1 : floor | 0;
       // 人就在这一层时，只负责把门打开。停靠表里若留下本层，门关严后又会被当成新的一趟，再开再关一次。
@@ -127,13 +135,33 @@ export function createLift(floors, story) {
         if (stops.size) phase = "moving";
         return;
       }
-      const target = nextStop();
+      let target = nextStop();
       if (target == null) {
-        phase = "idle";
-        dir = 0;
-        vel = 0;
-        dest = current;
-        return;
+        // 选层被取消时，不要停在两层楼之间。刚起步就回到出发层，已经走开就落到前方最近一层。
+        const level = y / story;
+        const goingUp = dir > 0 || vel > 0.02;
+        const goingDown = !goingUp && (dir < 0 || vel < -0.02);
+        if (!goingUp && !goingDown) {
+          y = current * story;
+          vel = 0;
+          dir = 0;
+          dest = current;
+          phase = "idle";
+          return;
+        }
+        const ahead = goingUp
+          ? Math.min(floors - 1, Math.ceil(level - 1e-4))
+          : Math.max(0, Math.floor(level + 1e-4));
+        const progressed = goingUp ? level - current : current - level;
+        if (ahead === current || progressed < 0.12) {
+          y = current * story;
+          vel = 0;
+          dir = 0;
+          dest = current;
+          phase = "opening";
+          return;
+        }
+        target = ahead;
       }
       dest = target;
       const goal = target * story;

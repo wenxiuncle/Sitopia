@@ -65,7 +65,7 @@ const LIFT_W = 3.5;
 const LIFT_D = 2.5;
 const LIFT_DOOR = 1.8;
 const LIFT_WIN = 2.4;
-const LIFT_CAB = 3.5;
+const LIFT_CAB = 4;
 const LIFT_CZ = (HALL_A + SOUTH) / 2;
 // 后墙与正门同厚。轿厢深 2.5，从这面墙的内侧起算，不把墙厚算进轿厢。
 const LIFT_REAR = -INNER - WALL_T;
@@ -74,7 +74,7 @@ const LIFT_DOOR_X = LIFT_INNER + LIFT_D;
 const LIFT_Z0 = LIFT_CZ - LIFT_W / 2;
 const LIFT_Z1 = LIFT_CZ + LIFT_W / 2;
 
-// 十人轿厢：沿墙宽 3.5、进深 2.5，内顶 3.5。门净宽仍是 1.8。后窗比门宽一截。
+// 十人轿厢：沿墙宽 3.5、进深 2.5，内顶 4。门净宽仍是 1.8。后窗比门宽一截。
 export const LIFT = {
   capacity: 10,
   carW: LIFT_W,
@@ -397,6 +397,19 @@ export function inLiftCar(x, z) {
   return x > LIFT.xRear + 0.16 && x < LIFT.xDoor - 0.12 && z > LIFT.z0 + 0.1 && z < LIFT.z1 - 0.1;
 }
 
+// 馆内琴声有多满。1 是展厅和轿厢，0 是广场和观景台，门口这一两步取中间。
+export function hallBlend(x, z, interior) {
+  if (inLiftCar(x, z)) return 1;
+  if (!interior) return 0;
+  if (x < interior.minX - 0.5 || x > interior.maxX + 0.35) return 0;
+  if (z < interior.minZ - 0.25) return 0;
+  const enter = interior.maxZ + 0.5;
+  const full = interior.maxZ - 1.5;
+  if (z >= enter) return 0;
+  if (z <= full) return 1;
+  return (enter - z) / (enter - full);
+}
+
 export function nearLiftHall(x, z) {
   const half = LIFT.doorW / 2 + 0.15;
   return x > LIFT.xDoor + 0.02 && x < LIFT.xDoor + 1.7 && Math.abs(z - LIFT.cz) < half;
@@ -517,12 +530,16 @@ function beamRun(zSouth, zNorth, count) {
 
 function addBeam(dress, z, halfZ, base) {
   const y = base || 0;
+  // 天花底面在 WALL_H - 0.06。梁顶埋进底面 2 厘米，下面不再留缝。
+  const soffit = y + WALL_H - 0.06;
+  const beamH = 0.4;
+  const top = soffit + 0.02;
   dress.push({
     kind: "beam",
     minX: -14.7,
     maxX: 14.7,
-    minY: y + 4.52,
-    maxY: y + 4.92,
+    minY: top - beamH,
+    maxY: top,
     minZ: z - halfZ,
     maxZ: z + halfZ,
   });
@@ -710,11 +727,11 @@ function pushAlignedPosts(dress, x0, z0, x1, z1, y, top, skipEnd) {
   }
 }
 
-// 二楼及以上，楼梯孔靠大厅的两侧：玻璃接到上楼的出口，木扶手压住玻璃上沿，竖杆站在横杆中线上。
+// 二楼及以上，楼梯孔靠大厅的两侧：玻璃落到楼板边上，底边埋进地面，不再悬在洞口里。
 function addTurnGuard(blocks, dress, handrails, floor) {
   const y = floor * STORY;
-  const x1 = LAND_X0;
-  const z1 = LAND_Z0;
+  const x1 = LAND_X0 - 0.06;
+  const z1 = LAND_Z0 - 0.06;
   const x0 = F1_X0 + 0.04;
   const z0 = F2_Z0 + 0.06;
   const t = 0.016;
@@ -858,13 +875,13 @@ function addLobbyDress(blocks, floors) {
   const tables = [];
   const colZ = (-3.55 + -2.8) / 2;
   const tableX = (-INNER - DOOR) / 2;
-  const tableR = 0.68;
+  const tableR = 0.8;
   const tableZ = SOUTH - tableR - 0.28;
   for (let f = 0; f < floors; f++) {
     const y = f * STORY;
     const spots = [
-      { x: 7.86, z: colZ },
-      { x: -7.86, z: colZ },
+      { x: 8.04, z: colZ },
+      { x: -8.04, z: colZ },
     ];
     for (let i = 0; i < spots.length; i++) {
       const spot = spots[i];
@@ -880,11 +897,11 @@ function addLobbyDress(blocks, floors) {
     }
     tables.push({ x: tableX, y, z: tableZ, floor: f });
     blocks.push({
-      minX: tableX - 1.48,
-      maxX: tableX + 1.48,
-      minZ: tableZ - 0.86,
-      maxZ: tableZ + 0.8,
-      h: 1.15,
+      minX: tableX - 1.78,
+      maxX: tableX + 1.78,
+      minZ: tableZ - 1.05,
+      maxZ: tableZ + 0.96,
+      h: 1.28,
       base: y,
     });
   }
@@ -1150,7 +1167,7 @@ export function buildMuseum(sites) {
   floorPlates.push({
     minY: 0.012,
     maxY: 0.04,
-    outer: floorOuterPoly(SOUTH + T),
+    outer: floorOuterPoly(PLAZA_PATH.z0),
     holes: [],
   });
   const stairCut = stairHolePoly(0.03);

@@ -14,21 +14,25 @@ import {
   HALLS,
   LIFT,
   PLAZA,
+  PLAZA_PATH,
   PLAYER_RADIUS,
   STORY,
+  WALL_H,
   WALL_T,
   buildMuseum,
   blocked,
   doorBoxes,
   doorWantsOpen,
   groundAt,
+  hallBlend,
   liftLeaves,
   movePlayer,
   pullCamera,
 } from "../js/layout.js";
 import { DAYS, findDay, groundShadow, openingQuads, sunVector } from "../js/day.js";
 import { createLift } from "../js/lift.js";
-import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, liftRig, maskPaths, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, maskPaths, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { bakeLoop, museumImpulse } from "../js/ambience.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -319,12 +323,33 @@ function checkDoors() {
   assert(Math.abs(liftLeavesMesh()[0].position.x - shutSlot) < 1e-4, "closed lift door sits in the slot");
   rigLift.update([0.5], 0);
   assert(Math.abs(liftLeavesMesh()[0].position.x - shutSlot) < 1e-4, "half-open lift door stays in the slot");
+  assert(liftLeavesMesh().every((leaf) => leaf.visible), "half-open lift door is still drawn");
   rigLift.update([1], 0);
   const parked = liftLeavesMesh();
   assert(parked.length === 2 && parked.every((leaf) => leaf.visible), "open lift door stays visible");
   assert(parked.every((leaf) => Math.abs(leaf.position.x - shutSlot) < 1e-4), "open lift door stays in the slot");
   const zs = parked.map((leaf) => leaf.position.z).sort((a, b) => a - b);
   assert(zs[0] < LIFT.cz - 0.4 && zs[1] > LIFT.cz + 0.4, "open lift door slides aside");
+  let doorMat = null;
+  parked[0].traverse((obj) => {
+    if (obj.material && doorMat == null) doorMat = obj.material;
+  });
+  assert(doorMat && doorMat.polygonOffset === false, "open lift door is not pulled through the front wall");
+  const openingLo = LIFT.cz - LIFT.doorW / 2;
+  const openingHi = LIFT.cz + LIFT.doorW / 2;
+  const reach = parked.map((leaf) => {
+    const half = leaf.userData.span * 0.5;
+    return [leaf.position.z - half, leaf.position.z + half];
+  });
+  const leftEdge = Math.max(...reach.map((span) => span[1]).filter((z) => z <= LIFT.cz + 1e-4));
+  const rightEdge = Math.min(...reach.map((span) => span[0]).filter((z) => z >= LIFT.cz - 1e-4));
+  assert(Math.abs(leftEdge - openingLo) < 1e-4, "open lift door meets the left frame");
+  assert(Math.abs(rightEdge - openingHi) < 1e-4, "open lift door meets the right frame");
+  let clipped = false;
+  parked[0].traverse((obj) => {
+    if (obj.material && obj.material.clippingPlanes && obj.material.clippingPlanes.length) clipped = true;
+  });
+  assert(!clipped, "open lift door is not clipped away");
 }
 
 function checkMotion(built) {
@@ -422,21 +447,21 @@ function checkDay(built) {
     maxZ: built.interior.maxZ - 0.15,
   };
   const quads = openingQuads(built.openings, dawn, limits, 1);
-  let lit = 0;
   for (let i = 0; i < quads.length; i++) {
     const quad = quads[i];
     if (!quad) continue;
-    lit++;
     for (let k = 0; k < quad.pts.length; k++) {
       const point = quad.pts[k];
       assert(point[0] <= limits.maxX + 1e-6 && point[0] >= limits.minX - 1e-6, "streak stays inside x");
       assert(point[1] <= limits.maxZ + 1e-6 && point[1] >= limits.minZ - 1e-6, "streak stays inside z");
     }
   }
-  assert(lit >= 1, "dawn opens a light streak through the door");
   for (const name of ["清晨", "正午", "黄昏"]) {
     const quadsAt = openingQuads(built.openings, sunVector(findDay(name)), limits, 1);
     for (let i = 0; i < quadsAt.length; i++) {
+      const opening = built.openings[i];
+      const door = opening.nz > 0 && opening.minY < 0.05 && opening.maxX < 3 && opening.minX > -3;
+      assert(!(door && quadsAt[i]), `${name} door does not leak onto the foyer floor`);
       const quad = quadsAt[i];
       if (!quad) continue;
       for (let k = 0; k < quad.pts.length; k++) {
@@ -522,6 +547,14 @@ function checkBuild(sites, label) {
   }
   assert(!built.dress.some((item) => item.kind === "wash"), `${label} frames hang on the bare wall`);
   assert(!blocked(built.spawn.x, built.spawn.z, PLAYER_RADIUS, built.walls), `${label} spawn is inside a wall`);
+  assert(hallBlend(built.spawn.x, built.spawn.z, built.interior) === 0, `${label} plaza is quiet`);
+  const midZ = (built.interior.minZ + built.interior.maxZ) / 2;
+  assert(hallBlend(0, midZ, built.interior) === 1, `${label} hall is in the music`);
+  assert(hallBlend(LIFT.cx, LIFT.cz, built.interior) === 1, `${label} cab keeps the music`);
+  assert(hallBlend(0, built.interior.maxZ + 3, built.interior) === 0, `${label} deck is quiet`);
+  const lip = hallBlend(0, built.interior.maxZ + 0.15, built.interior);
+  assert(lip > 0.05 && lip < 0.45, `${label} doorway eases the music in, got ${lip}`);
+  assert(hallBlend(built.interior.minX - 4, midZ, built.interior) === 0, `${label} west yard is quiet`);
   let doorInner = null;
   for (let i = 0; i < built.stone.length; i++) {
     const wall = built.stone[i];
@@ -604,12 +637,16 @@ function checkBuild(sites, label) {
   const liftInner = LIFT.xRear + WALL_T;
   const cheeks = built.white.filter((wall) => wall.minX < liftInner + 0.001 && wall.minX > liftInner - 0.04 && Math.abs(wall.maxX - liftFace) < 1e-6 && wall.maxX - wall.minX > 2);
   assert(cheeks.length === 2, `${label} lift cheeks ${cheeks.length}`);
+  const jambLeaf = liftLeaves(0, 0)[0];
+  const jambSkinX = jambLeaf.maxX + 0.004;
+  const jambSkins = built.white.filter((wall) => Math.abs(wall.minX - jambSkinX) < 1e-4 && Math.abs(wall.maxX - liftFace) < 1e-4 && wall.maxZ - wall.minZ > 0.5 && !(wall.base > 0));
+  assert(jambSkins.length === 2, `${label} lift front wall ${jambSkins.length}`);
   assert(kinds[0].size === 3, `${label} lobby plants repeat a kind`);
   if (built.floors > 1) {
     const sig = (floor) => built.plants.filter((plant) => plant.floor === floor).map((plant) => plant.kind).join(",");
     assert(sig(0) !== sig(1), `${label} second lobby copies the first plants`);
   }
-  assert(LIFT.capacity === 10 && LIFT.carW >= 3.4 && LIFT.carD >= 2.4 && Math.abs(LIFT.doorW - 1.8) < 0.02 && LIFT.winW > LIFT.doorW + 0.3 && LIFT.cabH >= 3.4, `${label} lift is not the widened 10-person car`);
+  assert(LIFT.capacity === 10 && LIFT.carW >= 3.4 && LIFT.carD >= 2.4 && Math.abs(LIFT.doorW - 1.8) < 0.02 && LIFT.winW > LIFT.doorW + 0.3 && LIFT.cabH >= 3.9 && LIFT.cabH < WALL_H - 0.6, `${label} lift is not the widened 10-person car`);
   assert(LIFT.cz < -1 && LIFT.cz > -6, `${label} lift is not mid-lobby ${LIFT.cz}`);
   assert(blocked(LIFT.xDoor, LIFT.z0 - 0.08, 0.05, built.walls, 0), `${label} lift side is open`);
   assert(blocked(LIFT.xDoor, LIFT.z0 - 0.08, 0.05, built.walls, STORY), `${label} lift side stops at the ground`);
@@ -714,8 +751,48 @@ function checkBuild(sites, label) {
     assert(upperMiss === 0, `${label} unreachable upper frames ${upperMiss}`);
   }
   checkMotion(built);
-  if (label === "fixture") checkDay(built);
+  if (label === "fixture") {
+    checkDay(built);
+    checkDress(built);
+  }
   return built;
+}
+
+function checkDress(built) {
+  const beams = built.dress.filter((item) => item.kind === "beam");
+  assert(beams.length > 0, "ceiling beams");
+  for (let i = 0; i < beams.length; i++) {
+    const beam = beams[i];
+    const floor = Math.round((beam.maxY - WALL_H) / STORY);
+    const soffit = floor * STORY + WALL_H - 0.06;
+    assert(beam.maxY > soffit && beam.maxY < soffit + 0.04, "beam stays against the ceiling");
+  }
+  const lamp = spotFixtureTop(0);
+  assert(lamp > WALL_H - 0.06 && lamp < WALL_H - 0.02, "spotlight sits against the ceiling");
+  assert(Math.abs(spotFixtureTop(STORY) - (STORY + lamp)) < 1e-6, "upper spotlight follows its ceiling");
+  const paint = new THREE.MeshBasicMaterial();
+  const dressed = horizonMeshes({
+    grass: paint, water: paint, path: paint, disc: paint, plaster: paint,
+    roof: paint, glass: paint, glow: paint, hill: paint, cloud: paint,
+  });
+  const approach = dressed.root.getObjectByName("plaza-approach");
+  assert(approach != null, "plaza approach");
+  const approachNorth = approach.position.z - approach.geometry.parameters.height / 2;
+  assert(approachNorth <= PLAZA.minZ && approachNorth > PLAZA.minZ - 0.05, "plaza cross reaches the front door");
+  let apronSouth = -Infinity;
+  const apron = built.floorPlates[0].outer;
+  for (let i = 0; i < apron.length; i++) if (apron[i][1] > apronSouth) apronSouth = apron[i][1];
+  assert(apronSouth >= PLAZA_PATH.z0 - 0.001, "door apron meets the plaza cross");
+  const rails = built.dress.filter((item) => item.kind === "glass" && item.maxY - item.minY > 0.7 && item.maxY - item.minY < 1.2);
+  assert(rails.length > 0, "stair-corner glass");
+  for (let i = 0; i < rails.length; i++) {
+    const rail = rails[i];
+    const floor = Math.round(rail.minY / STORY);
+    const foot = floor * STORY + 0.04;
+    assert(rail.minY < foot, "stair glass meets the floor");
+  }
+  const cans = built.extinguishers.filter((item) => item.y < 0.01);
+  assert(cans.some((item) => item.x > 7.98 && item.x < 8.16), "extinguisher nearer the column");
 }
 
 function checkFacing() {
@@ -935,6 +1012,50 @@ function checkLift() {
     guard += 1;
   }
   assert(aimed && passed && ride.dest === 6, "moving lift keeps the destination floor");
+  const stay = createLift(6, STORY);
+  stay.call(4);
+  assert(stay.has(4) && !stay.has(1), "call marks only the chosen floor");
+  stay.cancel(4);
+  assert(!stay.has(4), "cancel removes the floor");
+  for (let i = 0; i < 180; i++) stay.tick(1 / 60, false);
+  assert(stay.current === 0 && stay.y < 0.05 && stay.phase !== "moving", "cancel before leaving stays put");
+  const back = createLift(6, STORY);
+  back.call(4);
+  for (let i = 0; i < 8; i++) back.tick(1 / 60, false);
+  back.cancel(4);
+  for (let i = 0; i < 400; i++) back.tick(1 / 60, false);
+  assert(back.current === 0 && back.y < STORY * 0.2 && back.phase !== "moving", "a short start returns home");
+  const drop = createLift(8, STORY);
+  drop.call(6);
+  guard = 0;
+  while ((drop.phase !== "moving" || drop.y < STORY * 1.4) && guard < 2000) {
+    drop.tick(1 / 60, false);
+    guard += 1;
+  }
+  assert(drop.phase === "moving" && drop.y > STORY && drop.has(6), "left the ground before cancel");
+  drop.cancel(6);
+  assert(!drop.has(6), "cancel clears the floor in motion");
+  guard = 0;
+  let settled = false;
+  while (guard < 2000) {
+    drop.tick(1 / 60, false);
+    guard += 1;
+    if (drop.phase === "open" || drop.phase === "idle") {
+      settled = Math.abs(drop.y / STORY - Math.round(drop.y / STORY)) < 0.02;
+      break;
+    }
+  }
+  assert(settled && !drop.has(6) && drop.phase !== "moving", "cancelled ride finishes on a floor");
+  const both = createLift(8, STORY);
+  both.call(3);
+  both.call(6);
+  both.cancel(3);
+  guard = 0;
+  while ((both.current !== 6 || both.phase !== "open") && guard < 5000) {
+    both.tick(1 / 60, false);
+    guard += 1;
+  }
+  assert(guard < 5000 && both.current === 6 && both.phase === "open" && !both.has(3) && !both.has(6), "the other floor still gets the car");
 }
 
 function checkPull() {
@@ -972,6 +1093,50 @@ function checkMask() {
   assert(area(shapes[0].pts) > 0 && area(shapes[0].holes[0]) < 0, "outer winds CCW and the hole winds CW");
 }
 
+function roomEnergy(ir, t0, t1) {
+  const i0 = Math.floor(t0 * ir.rate);
+  const i1 = Math.floor(t1 * ir.rate);
+  let sum = 0;
+  for (let i = i0; i < i1; i++) sum += ir.left[i] * ir.left[i] + ir.right[i] * ir.right[i];
+  return sum / Math.max(1, i1 - i0);
+}
+
+function checkRoom() {
+  const ir = museumImpulse(44100);
+  assert(ir.left.length === ir.right.length && ir.left.length > 44100 * 2, "room impulse lasts through the tail");
+  const early = roomEnergy(ir, 0, 0.015);
+  const taps = roomEnergy(ir, 0.02, 0.09);
+  const body = roomEnergy(ir, 0.15, 0.4);
+  const tail = roomEnergy(ir, 1.7, 2.05);
+  assert(early < taps * 0.02, "room stays quiet before the first reflection");
+  assert(taps > 0 && body > 0, "room has early sound and a tail");
+  assert(tail < body * 0.2, "room tail dies away");
+  let peak = 0;
+  let bad = false;
+  for (let i = 0; i < ir.left.length; i++) {
+    if (!Number.isFinite(ir.left[i]) || !Number.isFinite(ir.right[i])) bad = true;
+    const a = Math.abs(ir.left[i]);
+    const b = Math.abs(ir.right[i]);
+    if (a > peak) peak = a;
+    if (b > peak) peak = b;
+  }
+  assert(!bad && peak > 0.2 && peak <= 0.63, `room impulse stays in range, peak ${peak}`);
+  const n = 1000;
+  const ramp = new Float32Array(n);
+  const flat = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    ramp[i] = i;
+    flat[i] = 1;
+  }
+  const fade = 100;
+  const out = bakeLoop([ramp, flat], fade);
+  assert(out[0].length === n - fade, "loop trims the overlap");
+  assert(Math.abs(out[0][0] - ramp[n - fade]) < 1e-4, "loop starts on the outgoing tail");
+  assert(Math.abs(out[0][fade] - ramp[fade]) < 1e-4, "loop joins the unfaded body");
+  assert(Math.abs(out[1][0] - 1) < 1e-4 && Math.abs(out[1][fade] - 1) < 1e-4, "constant channel stays put");
+}
+
+checkRoom();
 checkFacing();
 checkPull();
 checkMask();

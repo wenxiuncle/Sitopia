@@ -9,6 +9,7 @@ const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
 const ONLINE_KEY = "quzhan-museum-online";
+const SOLO_KEY = "quzhan-museum-solo";
 const BUBBLE_LIFE = 6000;
 const HOLD_MS = 30000;
 
@@ -47,6 +48,7 @@ export function mountPresence(options) {
   const mapCanvas = document.getElementById("map");
   const mapToggle = document.getElementById("map-visible");
   const onlineToggle = document.getElementById("online-visible");
+  const soloToggle = document.getElementById("solo-mode");
   const online = document.getElementById("online");
   const rosterEl = document.getElementById("roster");
   const toggle = document.getElementById("drawer-toggle");
@@ -84,6 +86,7 @@ export function mountPresence(options) {
   let composing = false;
   let showMap = true;
   let showOnline = true;
+  let solo = false;
   let planAt = 0;
   let peopleAt = 0;
   let holdUntil = 0;
@@ -153,10 +156,26 @@ export function mountPresence(options) {
     }
   }
 
+  function formatWhen(at) {
+    const date = new Date(typeof at === "number" && Number.isFinite(at) ? at : Date.now());
+    const hh = String(date.getHours()).padStart(2, "0");
+    const mm = String(date.getMinutes()).padStart(2, "0");
+    const clock = hh + ":" + mm;
+    const now = new Date();
+    if (
+      date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate()
+    ) {
+      return clock;
+    }
+    return (date.getMonth() + 1) + "月" + date.getDate() + "日 " + clock;
+  }
+
   function appendLine(node) {
-    logEl.append(node);
-    while (logEl.children.length > 80) logEl.firstChild.remove();
-    logEl.scrollTop = logEl.scrollHeight;
+    logEl.prepend(node);
+    while (logEl.children.length > 80) logEl.lastChild.remove();
+    logEl.scrollTop = 0;
   }
 
   function pushChatter(msg) {
@@ -169,9 +188,20 @@ export function mountPresence(options) {
 
   function appendSay(msg) {
     const li = document.createElement("li");
+    const meta = document.createElement("div");
+    meta.className = "chat-meta";
     const who = document.createElement("b");
-    who.textContent = msg.name;
-    li.append(who, document.createTextNode(" " + msg.text));
+    who.textContent = msg.name || "";
+    const when = document.createElement("time");
+    when.className = "chat-time";
+    const stamp = typeof msg.at === "number" && Number.isFinite(msg.at) ? msg.at : Date.now();
+    when.dateTime = new Date(stamp).toISOString();
+    when.textContent = formatWhen(stamp);
+    meta.append(who, when);
+    const body = document.createElement("div");
+    body.className = "chat-text";
+    body.textContent = msg.text || "";
+    li.append(meta, body);
     appendLine(li);
     pushChatter(msg);
   }
@@ -339,9 +369,9 @@ export function mountPresence(options) {
     stopHttp(session);
     linked = false;
     if (id) beaconLeave(address, id);
-    online.textContent = confirmed ? "未连接" : "先起个名字";
+    online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
     window.clearTimeout(retry);
-    if (dead || document.hidden || !confirmed) return;
+    if (dead || document.hidden || !confirmed || solo) return;
     retry = window.setTimeout(arm, 1500);
   }
 
@@ -401,13 +431,14 @@ export function mountPresence(options) {
   }
 
   function arm() {
-    if (dead || document.hidden || !confirmed || !myName || socketLive()) return;
+    if (solo || dead || document.hidden || !confirmed || !myName || socketLive()) return;
     const address = lobbyAddress();
     if (!address) {
       online.textContent = "未连接";
       return;
     }
     window.clearTimeout(retry);
+    online.textContent = "连接中";
     if (address.startsWith("http://") || address.startsWith("https://")) {
       startHttp(address);
       return;
@@ -433,9 +464,9 @@ export function mountPresence(options) {
       if (socket !== ws) return;
       socket = null;
       linked = false;
-      online.textContent = confirmed ? "未连接" : "先起个名字";
+      online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
       window.clearTimeout(retry);
-      if (dead || document.hidden || !confirmed) return;
+      if (dead || document.hidden || !confirmed || solo) return;
       retry = window.setTimeout(arm, 1500);
     });
   }
@@ -458,6 +489,10 @@ export function mountPresence(options) {
     rememberName(name);
     syncNameInputs(name);
     nameGate.hidden = true;
+    if (solo) {
+      online.textContent = "单人";
+      return;
+    }
     if (!linked) {
       if (document.hidden) online.textContent = "未连接";
       else arm();
@@ -553,6 +588,55 @@ export function mountPresence(options) {
     }
   }
 
+  function dropLink() {
+    window.clearTimeout(retry);
+    linked = false;
+    const ws = socket;
+    socket = null;
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        /* 已经在关。 */
+      }
+    }
+    if (http) {
+      const leaving = http;
+      const id = leaving.id;
+      const address = leaving.address;
+      stopHttp(leaving);
+      beaconLeave(address, id);
+    }
+    me = null;
+    roster.clear();
+    crowd.clear();
+    renderPeople();
+  }
+
+  function applySolo(on) {
+    solo = on;
+    if (soloToggle) soloToggle.checked = on;
+    try {
+      localStorage.setItem(SOLO_KEY, on ? "1" : "0");
+    } catch {
+      /* 记不住就这次先按勾选来。 */
+    }
+    if (on) {
+      dropLink();
+      online.textContent = confirmed ? "单人" : "先起个名字";
+      return;
+    }
+    if (!confirmed || !myName) {
+      online.textContent = "先起个名字";
+      return;
+    }
+    if (document.hidden) {
+      online.textContent = "未连接";
+      return;
+    }
+    arm();
+  }
+
   try {
     showMap = localStorage.getItem(MAP_KEY) !== "0";
   } catch {
@@ -565,6 +649,12 @@ export function mountPresence(options) {
     showOnline = true;
   }
   applyOnline(showOnline);
+  try {
+    solo = localStorage.getItem(SOLO_KEY) === "1";
+  } catch {
+    solo = false;
+  }
+  if (soloToggle) soloToggle.checked = solo;
 
   toggle.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -587,6 +677,11 @@ export function mountPresence(options) {
   if (onlineToggle) {
     onlineToggle.addEventListener("change", () => {
       applyOnline(onlineToggle.checked);
+    });
+  }
+  if (soloToggle) {
+    soloToggle.addEventListener("change", () => {
+      applySolo(soloToggle.checked);
     });
   }
 
@@ -622,6 +717,11 @@ export function mountPresence(options) {
     if (composing) return;
     const text = chatInput.value.trim();
     if (!text) {
+      closeChat();
+      return;
+    }
+    if (solo) {
+      toast("单人模式，没有连上");
       closeChat();
       return;
     }
@@ -690,7 +790,8 @@ export function mountPresence(options) {
   syncNameInputs(myName);
   if (confirmed && myName) {
     nameGate.hidden = true;
-    if (document.hidden) online.textContent = "未连接";
+    if (solo) online.textContent = "单人";
+    else if (document.hidden) online.textContent = "未连接";
     else arm();
   } else if (new URLSearchParams(location.search).has("noname")) {
     nameGate.hidden = true;

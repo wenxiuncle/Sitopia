@@ -306,6 +306,11 @@ export function openingQuads(openings, sun, limits, gain) {
   const out = new Array(openings.length);
   for (let i = 0; i < openings.length; i++) {
     const opening = openings[i];
+    // 大门下沿贴着地面。投进来会在门槛里侧压出一条亮边，看起来像地缝漏光。
+    if (opening.minY < 0.05 && opening.nz > 0 && opening.maxX < 3 && opening.minX > -3) {
+      out[i] = null;
+      continue;
+    }
     const face = opening.nx * sun.x + opening.nz * sun.z;
     if (face < 0.06) {
       out[i] = null;
