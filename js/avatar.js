@@ -14,6 +14,43 @@ const MOUTH = "#2b2420";
 
 const BUBBLE_LIFE = 6000;
 
+let bodySun = { x: 0, y: 1, z: 0.4 };
+let bodyRoom = null;
+
+export function setBodyLight(sun, room) {
+  bodySun = sun;
+  bodyRoom = room;
+}
+
+export function bodyShadowLocal(ox, oz, yaw) {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  return [ox * c - oz * s, ox * s + oz * c];
+}
+
+function inRoom(x, y, z) {
+  if (!bodyRoom) return false;
+  return x > bodyRoom.minX && x < bodyRoom.maxX && z > bodyRoom.minZ && z < bodyRoom.maxZ && y < bodyRoom.maxY;
+}
+
+export function placeBodyShadow(visitor, x, y, z, yaw) {
+  const shadow = visitor && visitor.shadow;
+  if (!shadow) return;
+  let ox = 0;
+  let oz = 0;
+  let spread = 1.2;
+  if (!inRoom(x, y, z)) {
+    const lift = Math.max(bodySun.y, 0.18);
+    const shift = Math.min(1.25, 0.62 / lift);
+    ox = -bodySun.x * shift;
+    oz = -bodySun.z * shift;
+    spread = 1.15 + Math.min(0.9, 0.28 / lift);
+  }
+  const local = bodyShadowLocal(ox, oz, yaw);
+  shadow.position.set(local[0], 0.035, local[1]);
+  shadow.scale.set(spread, spread, 1);
+}
+
 function sink() {
   return { pos: [], nor: [], col: [], idx: [], count: 0 };
 }
@@ -149,13 +186,14 @@ export function createVisitor(material, shadowMaterial) {
   nose.name = "nose";
   nose.position.set(0, 1.54, -0.36);
   group.add(body, armL, armR, legL, legR, nose);
+  let shadow = null;
   if (shadowMaterial) {
-    const shadow = new THREE.Mesh(SHADOW_GEO, shadowMaterial);
+    shadow = new THREE.Mesh(SHADOW_GEO, shadowMaterial);
     shadow.rotation.x = FLOOR_TILT;
     shadow.position.y = 0.035;
     group.add(shadow);
   }
-  return { group, parts: { armL, armR, legL, legR } };
+  return { group, parts: { armL, armR, legL, legR }, shadow };
 }
 
 // amount 为 0 时站直。phase 在 π/2 且 amount 为 1 时，左脚迈向局部 -Z。
@@ -210,6 +248,9 @@ export function createCrowd(scene, material, shadowMaterial) {
     row.tz = person.z;
     row.tFeet = person.y || 0;
     row.ty = person.yaw || 0;
+    const gap = Math.hypot((person.x || 0) - row.x, (person.z || 0) - row.z);
+    const rise = Math.abs((person.y || 0) - (row.feet || 0));
+    if (gap > 6 || rise > 2) snap = true;
     if (snap) {
       row.x = person.x;
       row.z = person.z;
@@ -273,6 +314,7 @@ export function createCrowd(scene, material, shadowMaterial) {
         const idle = Math.sin(now * 0.002 + row.phase) * 0.01;
         row.visitor.group.position.set(row.x, (row.feet || 0) + idle, row.z);
         row.visitor.group.rotation.y = row.yaw;
+        placeBodyShadow(row.visitor, row.x, row.feet || 0, row.z, row.yaw);
         if (row.bubble && now > row.bubbleUntil) dropBubble(row);
       }
     },

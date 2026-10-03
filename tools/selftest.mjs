@@ -4,13 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as THREE from "../vendor/three.module.js";
 import { forwardFromYaw, planarBasis, yawFacing } from "../js/basis.js";
-import { createVisitor, poseVisitor } from "../js/avatar.js";
+import { bodyShadowLocal, createVisitor, poseVisitor } from "../js/avatar.js";
 import { attachLobby } from "./lobby.mjs";
 import {
   CEIL_TILT,
   EYE,
   FLOOR_TILT,
   FRAME,
+  FRAME_WALL_GAP,
   HALLS,
   LIFT,
   PLAZA,
@@ -28,9 +29,9 @@ import {
   movePlayer,
   pullCamera,
 } from "../js/layout.js";
-import { DAYS, findDay, groundShadow, openingQuads, sunVector } from "../js/day.js";
+import { DAYS, dropShadowPose, findDay, floorLamps, groundShadow, lampAt, openingQuads, sunVector } from "../js/day.js";
 import { createLift } from "../js/lift.js";
-import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, maskPaths, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
 import { bakeLoop, museumImpulse } from "../js/ambience.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
@@ -444,18 +445,22 @@ function checkDay(built) {
   assert(noon.z > 0.25 && noon.y > 0.75, "noon lights the south front from above");
   assert(dawn.x > 0.75 && dawn.y < 0.45 && dawn.y > 0.05, "dawn is a low eastern sun");
   assert(dusk.x < -0.75 && dusk.y < 0.4 && dusk.y > 0.05, "dusk is a low western sun");
-  assert(groundShadow(built.spawn.x, built.spawn.z, noon, roof, roofY) < 0.15, "noon spawn stays in the sun");
-  assert(groundShadow(built.spawn.x, built.spawn.z, dawn, roof, roofY) < 0.15, "dawn spawn stays in the sun");
+  const frontZ = PLAZA.minZ;
+  assert(groundShadow(built.spawn.x, built.spawn.z, noon, roof, roofY, frontZ) < 0.15, "noon spawn stays in the sun");
+  assert(groundShadow(built.spawn.x, built.spawn.z, dawn, roof, roofY, frontZ) < 0.15, "dawn spawn stays in the sun");
+  assert(groundShadow(0, 8, dusk, roof, roofY, frontZ) === 0, "dusk does not shade the ground in front of the hall");
+  assert(groundShadow(0, frontZ + 0.3, noon, roof, roofY, frontZ) === 0, "the facade apron stays unshaded");
+  assert(groundShadow(1.4, frontZ + 1.1, sunVector(findDay("afternoon")), roof, roofY, frontZ) === 0, "the viewing deck near the hall stays unshaded");
   let west = 0;
   for (let z = -20; z <= 16; z += 2) {
-    if (groundShadow(-30, z, dawn, roof, roofY) > 0.5) west++;
+    if (groundShadow(-30, z, dawn, roof, roofY, frontZ) > 0.5) west++;
   }
   assert(west > 2, "dawn shadow falls west of the hall");
   let east = 0;
-  for (let x = 8; x <= 30; x += 2) {
-    if (groundShadow(x, 10, dusk, roof, roofY) > 0.5) east++;
+  for (let z = -16; z <= 2; z += 2) {
+    if (groundShadow(28, z, dusk, roof, roofY, frontZ) > 0.5) east++;
   }
-  assert(east > 2, "dusk shadow reaches the east plaza");
+  assert(east > 2, "dusk shadow reaches the east side");
   assert(built.openings.length === 6, `sun openings ${built.openings.length}`);
   assert(!built.openings.some((opening) => opening.nx < 0 && opening.maxZ > -2), "light slit between the lift and the door");
   const limits = {
@@ -474,6 +479,46 @@ function checkDay(built) {
       assert(point[1] <= limits.maxZ + 1e-6 && point[1] >= limits.minZ - 1e-6, "streak stays inside z");
     }
   }
+  const lamps = floorLamps(built.cones.concat(built.leds, built.sconces), STORY, WALL_H - 0.032);
+  assert(lamps[0] && lamps[0].length >= 4, "ground floor has its own ceiling lamps");
+  for (let i = 0; i < lamps.length; i++) {
+    if (!lamps[i]) continue;
+    assert(lamps[i].length <= 13, "lamp row fits one texture line");
+  }
+  const oneSpot = lampAt([[{ x: 0, y: 5.02, z: 0, kind: 1 }]], 0, 0.08, 0, 0, 1, 0, STORY);
+  assert(oneSpot > 0.8 && oneSpot < 0.9, `spotlight is a step brighter but not blown out ${oneSpot.toFixed(3)}`);
+  const oneLed = [[{ x: 0, y: 3, z: 0, kind: 0.8 }]];
+  const ledFloor = lampAt(oneLed, 0, 0.2, 0, 0, 1, 0, STORY);
+  const ledWall = lampAt(oneLed, 1.4, 2.2, 0, -1, 0, 0, STORY);
+  assert(ledFloor > 0.62 && ledFloor < 0.86, `ceiling light is softer ${ledFloor.toFixed(3)}`);
+  assert(ledWall > 0.58 && ledWall < ledFloor + 0.12, `ceiling light still reaches a nearby wall ${ledWall.toFixed(3)}`);
+  const oneSconce = [[{ x: 0, y: 2.15, z: 0, kind: 0.6 }]];
+  const sconceWall = lampAt(oneSconce, 0.25, 2.15, 0.08, 0, 0, -1, STORY);
+  const sconceFar = lampAt(oneSconce, 3.2, 2.15, 0.08, 0, 0, -1, STORY);
+  const sconceFloor = lampAt(oneSconce, 0, 0.1, -1.05, 0, 1, 0, STORY);
+  assert(sconceWall > sconceFar + 0.12, "wall lamp washes the wall beside it");
+  assert(sconceFloor > sconceFar, "wall lamp lights the floor in front");
+  let bright = 0;
+  let dim = 10;
+  for (let x = -14; x <= 14; x += 2) {
+    for (let z = -20; z <= 2; z += 2) {
+      const shade = lampAt(lamps, x, 0.08, z, 0, 1, 0, STORY);
+      if (shade > bright) bright = shade;
+      if (shade < dim) dim = shade;
+    }
+  }
+  assert(bright > dim + 0.08, "ceiling lamps brighten the floor under them");
+  const lamp = lamps[0][0];
+  const litFace = lampAt(lamps, lamp.x, lamp.y - 2.4, lamp.z, 0, 1, 0, STORY);
+  const darkFace = lampAt(lamps, lamp.x, lamp.y - 2.4, lamp.z, 0, -1, 0, STORY);
+  assert(litFace > darkFace + 0.05, "ceiling lamps light upward faces more than downward ones");
+  const tree = { x: 12, z: 14, y: 0.04, rx: 1.2, rz: 1.2, h: 3.4 };
+  assert(dropShadowPose(tree, dawn).x < tree.x, "dawn shadow falls west");
+  assert(dropShadowPose(tree, dusk).x > tree.x, "dusk shadow falls east");
+  const parked = dropShadowPose({ x: 3, z: -2, y: 5.4, rx: 0.4, rz: 0.4, h: 0.8 }, null);
+  assert(parked.x === 3 && parked.z === -2 && parked.yaw === 0, "indoor shadow sits under the object");
+  const local = bodyShadowLocal(0, -1.2, 0);
+  assert(Math.abs(local[0]) < 1e-6 && local[1] < -1, "a south sun puts the body shadow to the north");
   for (const name of ["清晨", "正午", "黄昏"]) {
     const quadsAt = openingQuads(built.openings, sunVector(findDay(name)), limits, 1);
     for (let i = 0; i < quadsAt.length; i++) {
@@ -663,6 +708,19 @@ function checkBuild(sites, label) {
     const approachFree = !blocked(frame.x, approachZ, PLAYER_RADIUS, built.walls, foot);
     assert(into, `${label} frame ${index} is not mounted on a wall`);
     assert(approachFree, `${label} frame ${index} approach is blocked`);
+    const skins = built.white.concat(built.stone, built.liners);
+    const back = frame.z - frame.nz * (FRAME.d / 2);
+    let faceGap = Infinity;
+    for (let w = 0; w < skins.length; w++) {
+      const wall = skins[w];
+      if (frame.x < wall.minX + 0.02 || frame.x > wall.maxX - 0.02) continue;
+      if (wall.maxZ - wall.minZ > 0.85) continue;
+      const face = frame.nz > 0 ? wall.maxZ : wall.minZ;
+      const gap = frame.nz > 0 ? back - face : face - back;
+      if (gap < -0.002) continue;
+      if (gap < faceGap) faceGap = gap;
+    }
+    assert(faceGap <= FRAME_WALL_GAP + 0.004 && faceGap > 0.004, `${label} frame ${index} stands off the wall by ${faceGap}`);
   }
 
   let minGap = Infinity;
@@ -841,6 +899,82 @@ function checkDress(built) {
   const lamp = spotFixtureTop(0);
   assert(lamp > WALL_H - 0.06 && lamp < WALL_H - 0.02, "spotlight sits against the ceiling");
   assert(Math.abs(spotFixtureTop(STORY) - (STORY + lamp)) < 1e-6, "upper spotlight follows its ceiling");
+  const north = built.cones.filter((item) => Math.round((item.y || 0) / STORY) === 0 && item.z < -25);
+  assert(north.length === 2, `north wall spotlights ${north.length}`);
+  north.sort((a, b) => a.x - b.x);
+  const northSpan = north[1].x - north[0].x;
+  assert(Math.abs(northSpan - 12) < 0.15, `north spotlights are a third of the wall apart ${northSpan.toFixed(2)}`);
+  assert(Math.abs((north[0].x + north[1].x) / 2) < 0.5, "north spotlights stay centered");
+  assert(Math.abs(north[0].z - north[1].z) < 0.01, "north spotlights share a line");
+  assert(north[0].x > -18 * 0.5 && north[1].x < 18 * 0.5, "north spotlights moved inward");
+  assert(built.leds.length === 0, "ceiling discs are not hung");
+  const tableLamps = built.sconces.filter((item) => item.place === "table");
+  const stairLamps = built.sconces.filter((item) => item.place === "stair");
+  assert(tableLamps.length === built.floors, "each floor has a wall lamp by the table");
+  assert(stairLamps.length === built.floors, "each floor has a wall lamp at the stair corner");
+  const table = built.tables[0];
+  const sconce = tableLamps[0];
+  assert(Math.abs(sconce.x - table.x) < 0.3, "wall lamp lines up with the table");
+  assert(sconce.z > table.z && sconce.z < table.z + 1.4, "wall lamp is on the wall beside the table");
+  assert(Math.abs(sconce.lift - 2.96) < 0.02, "table lamp moved up half a meter");
+  const stairLamp = stairLamps[0];
+  const turnX = (built.stair.landX0 + built.stair.landX1) / 2 - 1.2;
+  assert(Math.abs(stairLamp.x - turnX) < 0.05, "stair lamp sits 1.2 m west of the landing center");
+  assert(stairLamp.z > built.stair.landZ1 - 0.35 && stairLamp.z < built.stair.landZ1, "stair lamp is on the south wall");
+  assert(Math.abs(stairLamp.lift - 6.28) < 0.02, "stair lamp light sits with the fixture");
+  const topStairLamp = stairLamps[stairLamps.length - 1];
+  assert(Math.abs(topStairLamp.x - turnX) < 0.05, "top floor stair lamp keeps the west shift");
+  assert(Math.abs(topStairLamp.lift - 4.76) < 0.02 && topStairLamp.lift < WALL_H - 0.2, "top floor stair lamp stays under the closed ceiling");
+  const poolX = built.stair.landX0 - 0.7;
+  const poolZ = built.stair.landZ0 - 0.7;
+  assert(Math.abs(stairLamp.poolX - poolX) < 0.05 && Math.abs(stairLamp.poolZ - poolZ) < 0.05, "stair lamp pool sits beside the opening");
+  assert(Math.abs(stairLamp.poolY - (STORY + 0.058)) < 0.01, "stair lamp pool follows the lamp upstairs");
+  assert(Math.abs(topStairLamp.poolY - ((built.floors - 1) * STORY + 0.058)) < 0.01, "top stair lamp pool stays on its own floor");
+  const lampRows = floorLamps(built.cones.concat(built.leds, built.sconces), STORY, WALL_H - 0.032);
+  const sconcesOnly = lampRows.map((row) => (row || []).filter((item) => item.kind < 0.9));
+  const wallShade = lampAt(lampRows, stairLamp.x, 2.4, stairLamp.mountZ, 0, 0, -1, STORY);
+  const wallSconce = lampAt(sconcesOnly, stairLamp.x, 2.4, stairLamp.mountZ, 0, 0, -1, STORY);
+  assert(wallShade > wallSconce + 0.02, `stair south wall takes ceiling spotlights ${wallShade.toFixed(3)} ${wallSconce.toFixed(3)}`);
+  const eastZ = (built.stair.f2z0 + built.stair.f2z1) / 2;
+  const eastShade = lampAt(lampRows, built.stair.f2x1, 2.4, eastZ, -1, 0, 0, STORY);
+  const eastSconce = lampAt(sconcesOnly, built.stair.f2x1, 2.4, eastZ, -1, 0, 0, STORY);
+  assert(eastShade > eastSconce + 0.02, `stair east wall takes ceiling spotlights ${eastShade.toFixed(3)} ${eastSconce.toFixed(3)}`);
+  const upstairs = floorLamps(built.cones.concat(built.leds, built.sconces), STORY, WALL_H - 0.032)[1];
+  assert(upstairs && upstairs.length <= 13, "upstairs lamps stay inside the floor budget");
+  assert(upstairs.some((item) => item.kind === 0.6 && Math.abs(item.x - turnX) < 0.2 && Math.abs(item.y - 6.28) < 0.05), "stair wall lamp is filed on the floor it hangs over");
+  const deckTop = new THREE.MeshBasicMaterial({ color: 0x86898d });
+  const deckShell = new THREE.MeshBasicMaterial({ color: 0xe5e0d6 });
+  const deck = lobeMeshes([{ x: 0, z: 4.4, y: STORY, r: 2, theta: Math.PI, sweep: Math.PI }], deckTop, deckShell);
+  const deckMesh = deck.children[0];
+  assert(deckMesh.material[0] === deckTop && deckMesh.material[1] === deckShell, "deck top and shell are separate colors");
+  const deckPos = deckMesh.geometry.attributes.position;
+  const deckNormal = deckMesh.geometry.attributes.normal;
+  const deckGroups = deckMesh.geometry.groups;
+  const deckN = new THREE.Vector3();
+  deckMesh.updateMatrix();
+  function deckFaceY(group) {
+    let y = 0;
+    const end = group.start + group.count;
+    for (let i = group.start; i < end; i += 3) {
+      deckN.fromBufferAttribute(deckNormal, i).transformDirection(deckMesh.matrix);
+      y += deckN.y;
+    }
+    return y / (group.count / 3);
+  }
+  assert(deckGroups.length === 3 && deckGroups[0].materialIndex === 0 && deckGroups[1].materialIndex === 1 && deckGroups[2].materialIndex === 1, "deck top, bottom and sides keep their groups");
+  assert(deckFaceY(deckGroups[0]) > 0.9, "deck top color faces up");
+  assert(deckFaceY(deckGroups[1]) < -0.9, "deck bottom color faces down");
+  assert(deckPos.count > deckGroups[2].start, "deck sides are the rim");
+  const shadePlants = [
+    { x: 1.2, z: -4, y: 0, s: 1.1 },
+    { x: 2, z: -6, y: STORY, s: 1 },
+  ];
+  const shadeMesh = plantShadowMesh(shadePlants, new THREE.MeshBasicMaterial());
+  placePlantShadows(shadeMesh, shadePlants, 1.7);
+  const shadeY = shadeMesh.instanceMatrix.array[13];
+  const shadeY2 = shadeMesh.instanceMatrix.array[16 + 13];
+  assert(shadeY > 0.05 && shadeY < 0.08, "plant shadow sits on the floor");
+  assert(Math.abs(shadeY2 - (STORY + shadeY)) < 1e-4, "upper plant shadow follows its floor");
   const paint = new THREE.MeshBasicMaterial();
   const dressed = horizonMeshes({
     grass: paint, water: paint, path: paint, disc: paint, plaster: paint,
@@ -947,6 +1081,7 @@ function openClient(url) {
 async function checkPublicLobby() {
   const source = await readFile(path.join(root, "js", "presence.js"), "utf8");
   assert(source.includes('const PUBLIC_LOBBY = "wss://lobby.youquhome.com/lobby"'), "public lobby goes through the youquhome proxy");
+  assert(source.includes("quzhan-museum-seat"), "a tab keeps one seat across reconnects");
   const proxy = await readFile(path.join(root, "worker", "youqu-proxy.js"), "utf8");
   assert(proxy.includes("sitopia-lobby.adhesive-quarter.workers.dev"), "proxy still forwards to the cloudflare room");
   const worker = await readFile(path.join(root, "worker", "lobby.js"), "utf8");
@@ -1018,6 +1153,60 @@ async function checkLobby() {
   b.close();
   const bye = await a.wait("bye");
   assert(bye.n === 1 && bye.id === welcomeB.id, "leave notice");
+  a.close();
+  lobby.close();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+async function checkSeat() {
+  const server = http.createServer((req, res) => {
+    res.writeHead(404);
+    res.end();
+  });
+  const lobby = attachLobby(server);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const url = "ws://127.0.0.1:" + port + "/lobby";
+  const seat = "0123456789abcdef";
+  const a = await openClient(url);
+  const b = await openClient(url);
+  a.send({ t: "hi", name: "甲", seat: "fedcba9876543210" });
+  await a.wait("welcome");
+  b.send({ t: "hi", name: "乙", seat });
+  const welcomeB = await b.wait("welcome");
+  const joinB = await a.wait("join");
+  assert(joinB.id === welcomeB.id && joinB.seat === seat, "seat is announced once");
+  b.send({ t: "move", x: 2, y: 1, z: -4, yaw: 0.3 });
+  const moved = await a.wait("move");
+  assert(moved.id === welcomeB.id && Math.abs(moved.y - 1) < 1e-6, "seat pose");
+  const b2 = await openClient(url);
+  b2.send({ t: "hi", name: "乙", seat });
+  const welcomeB2 = await b2.wait("welcome");
+  assert(welcomeB2.resume === true && welcomeB2.id === welcomeB.id, "same seat keeps one id");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert(!a.has("join") && !a.has("bye"), "reconnect stays one person");
+  const b3 = await openClient(url);
+  b3.send({ t: "hi", name: "乙", seat });
+  const welcomeB3 = await b3.wait("welcome");
+  assert(welcomeB3.id === welcomeB.id && welcomeB3.resume === true, "third socket still one id");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  b3.send({ t: "move", x: 4, y: 5.4, z: -6, yaw: -0.4 });
+  const movedAgain = await a.wait("move");
+  assert(movedAgain.id === welcomeB.id && Math.abs(movedAgain.x - 4) < 1e-6 && Math.abs(movedAgain.y - 5.4) < 1e-6, "later socket moves the same person");
+  b.close();
+  b2.close();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert(!a.has("bye"), "replaced sockets stay quiet");
+  const c = await openClient(url);
+  c.send({ t: "hi", name: "丙", seat: "abcdeffedcba9876" });
+  const welcomeC = await c.wait("welcome");
+  assert(welcomeC.people.length === 2, "watcher and resumed person");
+  assert(welcomeC.people.filter((person) => person.id === welcomeB.id).length === 1, "snapshot lists the seat once");
+  assert(welcomeC.people.some((person) => person.seat === seat), "snapshot keeps the seat");
+  b3.close();
+  const bye = await a.wait("bye");
+  assert(bye.id === welcomeB.id && bye.name === "乙", "the live socket is the one that leaves");
+  c.close();
   a.close();
   lobby.close();
   await new Promise((resolve) => server.close(resolve));
@@ -1230,6 +1419,7 @@ if (!process.argv.includes("--fixture")) {
 try {
   await checkPublicLobby();
   await checkLobby();
+  await checkSeat();
 } catch (err) {
   failures.push("lobby: " + err.message);
 }

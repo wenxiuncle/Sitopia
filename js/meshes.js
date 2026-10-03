@@ -1,6 +1,37 @@
 import * as THREE from "../vendor/three.module.js";
-import { SHADOW_IN, SHADOW_OUT } from "./day.js";
-import { CEIL_TILT, FLOOR_TILT, FRAME, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
+import {
+  LAMP_AMBI,
+  LAMP_AMBI_FAR,
+  LAMP_AMBI_NEAR,
+  LAMP_ATTEN,
+  LAMP_BIAS,
+  LAMP_CLAMP,
+  LAMP_CONE_IN,
+  LAMP_CONE_OUT,
+  LAMP_DIRECT,
+  LAMP_FILL,
+  LAMP_GAIN,
+  LAMP_LED_CONE,
+  LAMP_LED_DIRECT,
+  LAMP_LED_WASH,
+  LAMP_SCONCE_DIRECT,
+  LAMP_SCONCE_WASH,
+  LAMP_WASH_IN,
+  LAMP_WASH_OUT,
+  LAMP_WRAP,
+  LAMP_STORY_BLEND,
+  LAMP_CORNER_REACH,
+  LAMP_PACK_XZ,
+  LAMP_PACK_Y,
+  LAMPS_PER_FLOOR,
+  FRONT_SHADOW_SLACK,
+  SHADOW_IN,
+  SHADOW_OUT,
+  dropShadowPose,
+  floorLamps,
+  packLamp,
+} from "./day.js";
+import { CEIL_TILT, FLOOR_TILT, FRAME, FRAME_WALL_GAP, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, STAIR_LAMP_H, STAIR_LAMP_R, STAIR_LIGHT, STORY, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
 
 const dummy = new THREE.Object3D();
 
@@ -244,6 +275,167 @@ export function lightConeMesh(cones, material) {
   return done;
 }
 
+const LED_R = STAIR_LAMP_R;
+const LED_H = STAIR_LAMP_H;
+
+// 圆盘贴在上方平台的天花底面，整圆在楼梯孔北缘之外。光池落在正下方的地面。
+export function ledRig(leds, rimMat, glowMat, poolMat) {
+  if (!leds || !leds.length) return null;
+  const root = new THREE.Group();
+  const rim = new THREE.InstancedMesh(new THREE.CylinderGeometry(LED_R, LED_R, LED_H, 28), rimMat, leds.length);
+  const glow = new THREE.InstancedMesh(new THREE.CylinderGeometry(LED_R * 0.84, LED_R * 0.84, 0.01, 28), glowMat, leds.length);
+  const pool = new THREE.InstancedMesh(new THREE.CircleGeometry(1.45, 28), poolMat, leds.length);
+  if (!poolMat.map) {
+    poolMat.map = spotPoolTexture();
+    poolMat.needsUpdate = true;
+  }
+  for (let i = 0; i < leds.length; i++) {
+    const led = leds[i];
+    const cy = (led.y || 0) + led.lift;
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.position.set(led.x, cy, led.z);
+    dummy.updateMatrix();
+    rim.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(led.x, cy - LED_H * 0.5 - 0.002, led.z);
+    dummy.updateMatrix();
+    glow.setMatrixAt(i, dummy.matrix);
+    dummy.rotation.set(FLOOR_TILT, 0, 0);
+    dummy.position.set(led.x, led.poolY, led.z);
+    dummy.updateMatrix();
+    pool.setMatrixAt(i, dummy.matrix);
+  }
+  pool.renderOrder = 1;
+  root.add(commit(rim), commit(glow), commit(pool));
+  return root;
+}
+
+const rodUp = new THREE.Vector3(0, 1, 0);
+const rodDir = new THREE.Vector3();
+
+function placeRod(mesh, index, ax, ay, az, bx, by, bz, thick) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  const len = Math.hypot(dx, dy, dz) || 1e-4;
+  const girth = thick || 1;
+  rodDir.set(dx / len, dy / len, dz / len);
+  dummy.position.set((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+  dummy.scale.set(girth, len, girth);
+  dummy.quaternion.setFromUnitVectors(rodUp, rodDir);
+  dummy.updateMatrix();
+  mesh.setMatrixAt(index, dummy.matrix);
+  dummy.quaternion.identity();
+  dummy.rotation.set(0, 0, 0);
+  dummy.scale.set(1, 1, 1);
+}
+
+// 南墙欧式双头壁灯：圆背板、曲臂、蜡烛和敞口灯罩朝厅内。整体按灯罩中心放大一倍。
+export function sconceRig(lamps, brassMat, shadeMat, washMat, poolMat) {
+  if (!lamps || !lamps.length) return null;
+  const root = new THREE.Group();
+  const n = lamps.length;
+  const candleMat = new THREE.MeshBasicMaterial({ color: 0xf4eee4 });
+  const glowMat = new THREE.MeshBasicMaterial({ color: 0xf0d7a4, side: THREE.DoubleSide });
+  const crystalMat = new THREE.MeshBasicMaterial({ color: 0xd5e7ee });
+  const plate = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.055, 0.055, 0.016, 20), brassMat, n);
+  const urn = new THREE.InstancedMesh(new THREE.SphereGeometry(0.026, 14, 10), brassMat, n);
+  const bird = new THREE.InstancedMesh(new THREE.SphereGeometry(0.018, 10, 8), brassMat, n);
+  const head = new THREE.InstancedMesh(new THREE.SphereGeometry(0.01, 8, 6), brassMat, n);
+  const stem = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.0035, 0.0035, 0.12, 5), brassMat, n);
+  const drop = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.009, 0.02, 0.15, 10), crystalMat, n);
+  const finial = new THREE.InstancedMesh(new THREE.SphereGeometry(0.013, 8, 6), brassMat, n);
+  const shadeH = 0.11;
+  const shades = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.038, 0.074, shadeH, 16, 1, true), shadeMat, n * 2);
+  const mouths = new THREE.InstancedMesh(new THREE.CircleGeometry(0.062, 16), glowMat, n * 2);
+  const trimTop = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.042, 0.042, 0.008, 14), brassMat, n * 2);
+  const trimBot = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.078, 0.078, 0.008, 14), brassMat, n * 2);
+  const candles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.011, 0.011, 0.05, 8), candleMat, n * 2);
+  const cups = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.02, 0.014, 0.018, 8), brassMat, n * 2);
+  const arms = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.007, 0.007, 1, 6), brassMat, n * 4);
+  const gems = new THREE.InstancedMesh(new THREE.SphereGeometry(0.011, 6, 5), crystalMat, n * 5);
+  const wash = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.92, 0.72), washMat, n);
+  const pool = new THREE.InstancedMesh(new THREE.CircleGeometry(1.25, 24), poolMat, n);
+  if (!washMat.map) {
+    washMat.map = spotPoolTexture();
+    washMat.needsUpdate = true;
+  }
+  if (!poolMat.map) {
+    poolMat.map = spotPoolTexture();
+    poolMat.needsUpdate = true;
+  }
+  const sides = [-1, 1];
+  const S = 2;
+  function put(mesh, index, ox, oy, oz, lx, ly, lz, rx, ry, rz, sx, sy, sz) {
+    dummy.rotation.set(rx || 0, ry || 0, rz || 0);
+    dummy.scale.set((sx == null ? 1 : sx) * S, (sy == null ? 1 : sy) * S, (sz == null ? 1 : sz) * S);
+    dummy.position.set(ox + lx * S, oy + ly * S, oz + lz * S);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(index, dummy.matrix);
+    dummy.quaternion.identity();
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+  }
+  for (let i = 0; i < n; i++) {
+    const lamp = lamps[i];
+    const y = (lamp.y || 0) + lamp.lift;
+    const face = lamp.mountZ;
+    const x = lamp.x;
+    put(plate, i, x, y, face, 0, -0.1, -0.012, Math.PI / 2, 0, 0);
+    put(urn, i, x, y, face, 0, -0.055, -0.042);
+    put(bird, i, x, y, face, 0, 0.01, -0.055, 0, 0, 0, 0.85, 0.62, 1.25);
+    put(head, i, x, y, face, 0, 0.048, -0.078);
+    put(stem, i, x, y, face, 0.012, 0.09, -0.05);
+    put(drop, i, x, y, face, 0, -0.22, -0.034);
+    put(finial, i, x, y, face, 0, -0.308, -0.034);
+    put(wash, i, x, y, face, 0, 0, -0.006, 0, Math.PI, 0);
+    dummy.rotation.set(FLOOR_TILT, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.position.set(lamp.poolX, lamp.poolY, lamp.poolZ);
+    dummy.updateMatrix();
+    pool.setMatrixAt(i, dummy.matrix);
+    dummy.rotation.set(0, 0, 0);
+    const blossoms = [
+      [0.0, 0.06, -0.045],
+      [0.02, 0.11, -0.04],
+      [-0.012, 0.145, -0.048],
+    ];
+    for (let b = 0; b < blossoms.length; b++) {
+      const p = blossoms[b];
+      put(gems, i * 5 + b, x, y, face, p[0], p[1], p[2]);
+    }
+    for (let s = 0; s < sides.length; s++) {
+      const side = sides[s];
+      const idx = i * 2 + s;
+      const lx = side * 0.16;
+      const lz = -0.145;
+      put(shades, idx, x, y, face, lx, 0, lz);
+      put(mouths, idx, x, y, face, lx, -shadeH * 0.5 + 0.008, lz, CEIL_TILT, 0, 0);
+      put(trimTop, idx, x, y, face, lx, shadeH * 0.5, lz);
+      put(trimBot, idx, x, y, face, lx, -shadeH * 0.5, lz);
+      put(candles, idx, x, y, face, lx, -0.082, lz);
+      put(cups, idx, x, y, face, lx, -0.116, lz);
+      const rootX = x + side * 0.028 * S;
+      const elbowX = x + side * 0.1 * S;
+      const cupX = x + lx * S;
+      const armZ = face + lz * S;
+      placeRod(arms, i * 4 + s * 2, rootX, y - 0.05 * S, face - 0.04 * S, elbowX, y - 0.1 * S, face - 0.09 * S, S);
+      placeRod(arms, i * 4 + s * 2 + 1, elbowX, y - 0.1 * S, face - 0.09 * S, cupX, y - 0.116 * S, armZ, S);
+      put(gems, i * 5 + 3 + s, x, y, face, side * 0.1, -0.128, -0.09);
+    }
+  }
+  wash.renderOrder = 2;
+  pool.renderOrder = 1;
+  mouths.renderOrder = 2;
+  root.add(
+    commit(plate), commit(urn), commit(bird), commit(head), commit(stem),
+    commit(drop), commit(finial), commit(arms), commit(cups), commit(candles),
+    commit(shades), commit(mouths), commit(trimTop), commit(trimBot),
+    commit(gems), commit(wash), commit(pool),
+  );
+  return root;
+}
+
 export function floorDiscMesh(cones, material) {
   if (!cones.length) return null;
   if (!material.map) {
@@ -291,20 +483,65 @@ export function floorAndCeiling(bounds, floorMat, ceilMat, interior, roomMat) {
   return { floor, ceil, roomFloor };
 }
 
+function glslNum(n) {
+  const text = String(n);
+  return text.includes(".") || text.includes("e") ? text : text + ".0";
+}
+
+// 循环里取样会让部分显卡编不过。每盏灯展开成一段。
+function lampSamples(acc) {
+  const parts = [];
+  const packX = glslNum(LAMP_PACK_XZ * 2);
+  const packZ = glslNum(LAMP_PACK_XZ);
+  const packY = glslNum(LAMP_PACK_Y);
+  for (let i = 0; i < LAMPS_PER_FLOOR; i++) {
+    parts.push(`{
+      vec4 L = texture2D(uLamps, vec2((${i}.0 + 0.5) * uLampInv.x, rowV));
+      if (L.a > 0.5) {
+        vec3 lampPos = vec3(L.r * ${packX} - ${packZ}, L.g * ${packY}, L.b * ${packX} - ${packZ});
+        vec3 toL = lampPos - vSunW;
+        float dist2 = dot(toL, toL);
+        float dist = sqrt(max(dist2, 1e-6));
+        vec3 ldir = toL / dist;
+        float wrap = clamp(dot(nrm, ldir) * ${glslNum(LAMP_WRAP)} + ${glslNum(LAMP_BIAS)}, 0.0, 1.0);
+        float aim = max(ldir.y, 0.0);
+        float down = smoothstep(${glslNum(LAMP_CONE_IN)}, ${glslNum(LAMP_CONE_OUT)}, aim);
+        float atten = 1.0 / (1.0 + dist2 * ${glslNum(LAMP_ATTEN)});
+        float ambi = smoothstep(${glslNum(LAMP_AMBI_FAR)}, ${glslNum(LAMP_AMBI_NEAR)}, dist) * ${glslNum(LAMP_AMBI)};
+        float add = wrap * down * atten * ${glslNum(LAMP_DIRECT)};
+        if (L.a < 0.9) {
+          float face = smoothstep(${glslNum(LAMP_WASH_IN)}, ${glslNum(LAMP_WASH_OUT)}, wrap);
+          if (L.a > 0.7) {
+            float wide = smoothstep(${glslNum(LAMP_CONE_IN)}, ${glslNum(LAMP_LED_CONE)}, aim);
+            add = wrap * wide * atten * ${glslNum(LAMP_LED_DIRECT)} + face * atten * ${glslNum(LAMP_LED_WASH)};
+          } else {
+            add = wrap * down * atten * ${glslNum(LAMP_SCONCE_DIRECT)} + face * atten * ${glslNum(LAMP_SCONCE_WASH)};
+          }
+        }
+        ${acc} += add + ambi;
+      }
+    }`);
+  }
+  return parts.join("\n");
+}
+
 // 顶点前缀里已经声明了 normal，这里不再声明。
 function patchSunShader(shader, shared, role) {
   shader.uniforms.uSunDir = role.dir || shared.dir;
   shader.uniforms.uSunTint = role.tint || shared.tint;
   shader.uniforms.uBlock = shared.block;
+  shader.uniforms.uFront = shared.front;
   shader.uniforms.uRoof = shared.roof;
   shader.uniforms.uShade = shared.shade;
   shader.uniforms.uFill = role.fill;
   shader.uniforms.uGain = role.gain;
   shader.uniforms.uCast = role.cast;
-  shader.uniforms.uIndoor = shared.indoor;
-  shader.uniforms.uIndoorFill = shared.indoorFill;
-  shader.uniforms.uIndoorTint = shared.indoorTint;
   shader.uniforms.uRoom = shared.roomBox;
+  shader.uniforms.uLamps = shared.lamps;
+  shader.uniforms.uLampInv = shared.lampInv;
+  shader.uniforms.uStory = shared.story;
+  shader.uniforms.uLampTint = shared.lampTint;
+  shader.uniforms.uLampMode = role.lamps;
   const vertex = shader.vertexShader.replace(
     "#include <begin_vertex>",
     `#include <begin_vertex>
@@ -325,47 +562,98 @@ function patchSunShader(shader, shared, role) {
   const fragment = shader.fragmentShader.replace(
     "vec3 outgoingLight = reflectedLight.indirectDiffuse;",
     `vec3 outgoingLight = reflectedLight.indirectDiffuse;
-    float ndl = max(dot(normalize(vSunN), normalize(uSunDir)), 0.0);
-    float shade = uFill + uGain * ndl;
-    vec3 sunTint = uSunTint;
-    if (uCast > 0.5) {
-      vec2 p = vSunW.xz;
-      vec2 dir = uSunDir.xz;
-      vec2 lo = vec2(uBlock.x, uBlock.z);
-      vec2 hi = vec2(uBlock.y, uBlock.w);
-      float t0 = 0.0;
-      float t1 = 1e6;
-      bool miss = false;
-      if (abs(dir.x) < 1e-5) {
-        if (p.x < lo.x || p.x > hi.x) miss = true;
-      } else {
-        float a = (lo.x - p.x) / dir.x;
-        float b = (hi.x - p.x) / dir.x;
-        if (a > b) { float s = a; a = b; b = s; }
-        t0 = max(t0, a);
-        t1 = min(t1, b);
-      }
-      if (abs(dir.y) < 1e-5) {
-        if (p.y < lo.y || p.y > hi.y) miss = true;
-      } else {
-        float a = (lo.y - p.y) / dir.y;
-        float b = (hi.y - p.y) / dir.y;
-        if (a > b) { float s = a; a = b; b = s; }
-        t0 = max(t0, a);
-        t1 = min(t1, b);
-      }
-      float mask = 0.0;
-      if (!miss && t1 >= max(t0, 0.0)) {
-        float enter = max(t0, 0.0);
-        float yHit = uSunDir.y * enter;
-        float slack = ((yHit - uRoof) / max(uSunDir.y, 0.05)) * length(dir);
-        mask = 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
-      }
-      shade *= mix(1.0, uShade, mask);
+    vec3 nrm = normalize(vSunN);
+    bool useLamp = uLampMode > 0.5;
+    if (uLampMode > 1.5) {
+      useLamp = vSunW.y > -0.2 && vSunW.y < uRoof - 1.0 && vSunW.x > uRoom.x && vSunW.x < uRoom.y && vSunW.z > uRoom.z && vSunW.z < uRoom.w;
     }
-    if (uIndoor > 0.5 && vSunW.y > -0.2 && vSunW.y < uRoof - 0.55 && vSunW.x > uRoom.x && vSunW.x < uRoom.y && vSunW.z > uRoom.z && vSunW.z < uRoom.w) {
-      shade = uIndoorFill;
-      sunTint = uIndoorTint;
+    float shade;
+    vec3 sunTint = uSunTint;
+    if (useLamp) {
+      float rows = uLampInv.y > 0.0 ? (1.0 / uLampInv.y) : 1.0;
+      float u = (vSunW.y + 0.05) / uStory;
+      float fy = clamp(floor(u), 0.0, rows - 1.0);
+      bool onSouth = abs(vSunW.z - ${glslNum(STAIR_LIGHT.cornerZ)}) < 0.2 && vSunW.x > ${glslNum(STAIR_LIGHT.minX)} && vSunW.x < ${glslNum(STAIR_LIGHT.maxX)};
+      bool onEast = abs(vSunW.x - ${glslNum(STAIR_LIGHT.cornerX)}) < 0.2 && vSunW.z > ${glslNum(STAIR_LIGHT.minZ)} && vSunW.z < ${glslNum(STAIR_LIGHT.cornerZ)} + 0.08;
+      bool upright = abs(nrm.y) < 0.55;
+      vec3 cornerN = vec3(-0.70710678, 0.0, -0.70710678);
+      if (onSouth && nrm.z < -0.45) {
+        float along = max(${glslNum(STAIR_LIGHT.cornerX)} - vSunW.x, 0.0);
+        float feather = 1.0 - smoothstep(0.0, ${glslNum(LAMP_CORNER_REACH)}, along);
+        nrm = normalize(mix(nrm, cornerN, feather));
+      } else if (onEast && nrm.x < -0.45) {
+        float along = max(${glslNum(STAIR_LIGHT.cornerZ)} - vSunW.z, 0.0);
+        float feather = 1.0 - smoothstep(0.0, ${glslNum(LAMP_CORNER_REACH)}, along);
+        nrm = normalize(mix(nrm, cornerN, feather));
+      }
+      float rowV = (fy + 0.5) * uLampInv.y;
+      float lamp = 0.0;
+      ${lampSamples("lamp")}
+      if (upright && (onSouth || onEast)) {
+        float frac = u - floor(u);
+        float band = ${glslNum(LAMP_STORY_BLEND)} / uStory;
+        float wNext = 0.5 * smoothstep(1.0 - band, 1.0, frac);
+        float wPrev = 0.5 * (1.0 - smoothstep(0.0, band, frac));
+        float neighbor = fy;
+        float wMix = 0.0;
+        if (wNext > 0.001 && fy + 1.0 < rows) {
+          neighbor = fy + 1.0;
+          wMix = wNext;
+        } else if (wPrev > 0.001 && fy > 0.0) {
+          neighbor = fy - 1.0;
+          wMix = wPrev;
+        }
+        if (wMix > 0.0) {
+          rowV = (neighbor + 0.5) * uLampInv.y;
+          float other = 0.0;
+          ${lampSamples("other")}
+          lamp = mix(lamp, other, wMix);
+        }
+      }
+      shade = min(${glslNum(LAMP_FILL)} + ${glslNum(LAMP_GAIN)} * lamp, ${glslNum(LAMP_CLAMP)});
+      float storyY = mod(max(vSunW.y, 0.0), uStory);
+      float ceilLift = smoothstep(${glslNum(WALL_H - 1.15)}, ${glslNum(WALL_H - 0.28)}, storyY);
+      shade = mix(shade, max(shade, 0.94), max(-nrm.y, 0.0) * ceilLift);
+      sunTint = uLampTint;
+    } else {
+      float ndl = max(dot(nrm, normalize(uSunDir)), 0.0);
+      shade = uFill + uGain * ndl;
+      if (uCast > 0.5) {
+        vec2 p = vSunW.xz;
+        vec2 dir = uSunDir.xz;
+        vec2 lo = vec2(uBlock.x, uBlock.z);
+        vec2 hi = vec2(uBlock.y, uBlock.w);
+        float t0 = 0.0;
+        float t1 = 1e6;
+        bool miss = false;
+        if (abs(dir.x) < 1e-5) {
+          if (p.x < lo.x || p.x > hi.x) miss = true;
+        } else {
+          float a = (lo.x - p.x) / dir.x;
+          float b = (hi.x - p.x) / dir.x;
+          if (a > b) { float s = a; a = b; b = s; }
+          t0 = max(t0, a);
+          t1 = min(t1, b);
+        }
+        if (abs(dir.y) < 1e-5) {
+          if (p.y < lo.y || p.y > hi.y) miss = true;
+        } else {
+          float a = (lo.y - p.y) / dir.y;
+          float b = (hi.y - p.y) / dir.y;
+          if (a > b) { float s = a; a = b; b = s; }
+          t0 = max(t0, a);
+          t1 = min(t1, b);
+        }
+        float mask = 0.0;
+        bool inFront = p.y > uFront - ${glslNum(FRONT_SHADOW_SLACK)} && p.x > lo.x && p.x < hi.x;
+        if (!inFront && !miss && t1 >= max(t0, 0.0)) {
+          float enter = max(t0, 0.0);
+          float yHit = uSunDir.y * enter;
+          float slack = ((yHit - uRoof) / max(uSunDir.y, 0.05)) * length(dir);
+          mask = 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
+        }
+        shade *= mix(1.0, uShade, mask);
+      }
     }
     outgoingLight *= sunTint * shade;`,
   );
@@ -373,15 +661,18 @@ function patchSunShader(shader, shared, role) {
   shader.fragmentShader = `uniform vec3 uSunDir;
 uniform vec3 uSunTint;
 uniform vec4 uBlock;
+uniform float uFront;
 uniform float uRoof;
 uniform float uShade;
 uniform float uFill;
 uniform float uGain;
 uniform float uCast;
-uniform float uIndoor;
-uniform float uIndoorFill;
-uniform vec3 uIndoorTint;
 uniform vec4 uRoom;
+uniform sampler2D uLamps;
+uniform vec2 uLampInv;
+uniform float uStory;
+uniform vec3 uLampTint;
+uniform float uLampMode;
 varying vec3 vSunN;
 varying vec3 vSunW;
 ` + fragment;
@@ -389,7 +680,7 @@ varying vec3 vSunW;
 
 export function attachSun(material, shared, role) {
   material.onBeforeCompile = (shader) => patchSunShader(shader, shared, role);
-  material.customProgramCacheKey = () => "museum-sun-2";
+  material.customProgramCacheKey = () => "museum-sun-9";
 }
 
 // 画芯共用一张图集。frameUv 是格子偏移和缩放。
@@ -405,7 +696,7 @@ export function attachFramePicture(material, shared, role) {
     if (next === shader.vertexShader) throw new Error("画框贴图坐标没有对上");
     shader.vertexShader = "attribute vec4 frameUv;\n" + next;
   };
-  material.customProgramCacheKey = () => "museum-sun-frame-2";
+  material.customProgramCacheKey = () => "museum-sun-frame-9";
 }
 
 export function sunPatchMesh(count) {
@@ -447,31 +738,115 @@ export function dropShadowMesh(count, material) {
 }
 
 export function placeDropShadows(mesh, items, sun) {
-  const lift = Math.max(sun.y, 0.18);
   for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const shift = Math.min(item.h * 0.45, (item.h * 0.22) / lift);
-    const stretch = Math.min(0.7, 0.14 / lift);
+    const pose = dropShadowPose(items[i], sun);
+    dummy.rotation.order = "YXZ";
+    dummy.rotation.set(FLOOR_TILT, pose.yaw, 0);
+    dummy.scale.set(pose.across, pose.along, 1);
+    dummy.position.set(pose.x, pose.y, pose.z);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  dummy.rotation.order = "XYZ";
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
+export function placePlantShadows(mesh, plants, spread) {
+  const k = spread || 1;
+  for (let i = 0; i < plants.length; i++) {
+    const plant = plants[i];
+    dummy.rotation.order = "XYZ";
     dummy.rotation.set(FLOOR_TILT, 0, 0);
-    dummy.scale.set(item.rx * (1 + stretch * Math.abs(sun.x) * 3), item.rz * (1 + stretch * Math.abs(sun.z) * 3), 1);
-    dummy.position.set(item.x - sun.x * shift, item.y, item.z - sun.z * shift);
+    dummy.scale.set(plant.s * k, plant.s * k, 1);
+    dummy.position.set(plant.x, (plant.y || 0) + 0.058, plant.z);
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
   }
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-export function placePlantShadows(mesh, plants, sunShift) {
-  for (let i = 0; i < plants.length; i++) {
-    const plant = plants[i];
-    const shift = sunShift(plant);
-    dummy.rotation.set(FLOOR_TILT, 0, 0);
-    dummy.scale.set(plant.s, plant.s, plant.s);
-    dummy.position.set(plant.x + shift[0], (plant.y || 0) + 0.036, plant.z + shift[1]);
+export function frameShadowMesh(frames, material) {
+  if (!frames.length) return null;
+  const geo = new THREE.PlaneGeometry(FRAME.w + 0.18, FRAME.h + 0.24);
+  const mesh = new THREE.InstancedMesh(geo, material, frames.length);
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    dummy.rotation.order = "XYZ";
+    dummy.rotation.set(0, f.nz < 0 ? Math.PI : 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.position.set(f.x, f.y - 0.11, f.z - f.nz * (FRAME.d / 2 + FRAME_WALL_GAP * 0.35));
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
   }
-  mesh.instanceMatrix.needsUpdate = true;
+  const done = commit(mesh);
+  done.renderOrder = 1;
+  return done;
+}
+
+let shadowBlob = null;
+
+export function softShadowMap() {
+  if (shadowBlob) return shadowBlob;
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  const glow = ctx.createRadialGradient(64, 64, 6, 64, 64, 64);
+  glow.addColorStop(0, "rgba(0,0,0,1)");
+  glow.addColorStop(0.38, "rgba(0,0,0,0.72)");
+  glow.addColorStop(0.72, "rgba(0,0,0,0.28)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 128, 128);
+  shadowBlob = new THREE.CanvasTexture(canvas);
+  shadowBlob.colorSpace = THREE.SRGBColorSpace;
+  // 远了走 mip 会把软边平均成透明，影子还没出雾就没了。
+  shadowBlob.generateMipmaps = false;
+  shadowBlob.minFilter = THREE.LinearFilter;
+  shadowBlob.magFilter = THREE.LinearFilter;
+  shadowBlob.needsUpdate = true;
+  return shadowBlob;
+}
+
+export function softShadowMaterial(opacity, contact) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x1a1614,
+    map: softShadowMap(),
+    transparent: true,
+    depthWrite: false,
+    opacity,
+  });
+  if (contact) {
+    material.fog = false;
+    material.polygonOffset = true;
+    material.polygonOffsetFactor = -2;
+    material.polygonOffsetUnits = -8;
+  }
+  return material;
+}
+
+export function lampTexture(cones) {
+  const rows = floorLamps(cones, STORY, WALL_H - 0.032);
+  const floors = Math.max(1, rows.length);
+  const cols = LAMPS_PER_FLOOR;
+  const data = new Float32Array(cols * floors * 4);
+  for (let f = 0; f < floors; f++) {
+    const list = rows[f] || [];
+    for (let i = 0; i < list.length && i < cols; i++) {
+      const packed = packLamp(list[i].x, list[i].y, list[i].z);
+      const o = (f * cols + i) * 4;
+      data[o] = packed[0];
+      data[o + 1] = packed[1];
+      data[o + 2] = packed[2];
+      data[o + 3] = list[i].kind || 1;
+    }
+  }
+  const tex = new THREE.DataTexture(data, cols, floors, THREE.RGBAFormat, THREE.FloatType);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return { tex, cols, floors };
 }
 
 function solidBox(box, material) {
@@ -607,14 +982,21 @@ export function liftRig(glassMat, frameMat, cabMat, ceilMat, floors, floorMat) {
       leaves.push(leaf);
     }
   }
-  // 轿厢从加厚后墙的内侧起算，前缘停在门洞里面，不和厅内地板交上。
+  // 轿厢从加厚后墙的内侧起算。前缘停在门垛内侧面以里，不蹭到正面墙。
+  // 楼板材质会往镜头偏，轿厢地面若沿用，升降时会被拉进正面墙。
   const cabRear = LIFT.xInner + 0.08;
-  const cabFront = LIFT.xDoor - 0.09;
+  const cabFront = LIFT.xDoor - 0.16;
   const wide = Math.max(0.4, cabFront - cabRear);
   const cabX = (cabRear + cabFront) / 2;
   const deep = LIFT.carW - 0.08;
   const sideH = LIFT.cabH - 0.06;
-  const cabFloor = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.07, deep), floorMat || cabMat);
+  const cabFloorMat = (floorMat || cabMat).clone();
+  cabFloorMat.onBeforeCompile = (floorMat || cabMat).onBeforeCompile;
+  cabFloorMat.customProgramCacheKey = (floorMat || cabMat).customProgramCacheKey;
+  cabFloorMat.polygonOffset = false;
+  cabFloorMat.polygonOffsetFactor = 0;
+  cabFloorMat.polygonOffsetUnits = 0;
+  const cabFloor = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.07, deep), cabFloorMat);
   const cabCeil = new THREE.Mesh(new THREE.BoxGeometry(wide, 0.05, deep), ceilMat);
   const cabSideL = new THREE.Mesh(new THREE.BoxGeometry(wide, sideH, 0.06), cabMat);
   const cabSideR = new THREE.Mesh(new THREE.BoxGeometry(wide, sideH, 0.06), cabMat);
@@ -684,13 +1066,27 @@ export function plateMesh(plates, material) {
   return root;
 }
 
-export function lobeMeshes(lobes, material) {
+// 挤出盖板先写下底再写上盖，两半一样厚，侧面另成一组。
+// 上盖用馆内地面，下底和侧面用外墙。绕 X 转 -90° 后，本地 +Z 朝上。
+function paintDeckFaces(geo) {
+  const lid = geo.groups[0];
+  const side = geo.groups[1];
+  const half = lid.count / 2;
+  geo.clearGroups();
+  geo.addGroup(lid.start + half, half, 0);
+  geo.addGroup(lid.start, half, 1);
+  geo.addGroup(side.start, side.count, 1);
+}
+
+export function lobeMeshes(lobes, topMat, shellMat) {
   if (!lobes.length) return null;
   const root = new THREE.Group();
+  const shell = shellMat || topMat;
   for (let i = 0; i < lobes.length; i++) {
     const lobe = lobes[i];
     const geo = new THREE.ExtrudeGeometry(deckShape(lobe.r), { depth: DECK_THICK, bevelEnabled: false });
-    const mesh = new THREE.Mesh(geo, material);
+    paintDeckFaces(geo);
+    const mesh = new THREE.Mesh(geo, [topMat, shell]);
     mesh.rotation.x = FLOOR_TILT;
     mesh.position.set(lobe.x, lobe.y + 0.04 - DECK_THICK, lobe.z);
     mesh.frustumCulled = false;
@@ -980,8 +1376,8 @@ function centerPaths(shapes) {
 const letterMat = new THREE.MeshBasicMaterial({ color: 0x2c2926, fog: false });
 const facadeMat = new THREE.MeshBasicMaterial({ color: 0x2c2926, fog: false });
 
-export function setFacadeSignNight(night) {
-  facadeMat.color.set(night ? 0xf7f4ee : 0x2c2926);
+export function setFacadeSignNight(glow) {
+  facadeMat.color.set(glow ? 0xb0aba2 : 0x2c2926);
 }
 
 function solidSign(sign) {

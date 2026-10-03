@@ -54,6 +54,12 @@ export function attachLobby(server) {
   }
 
   function deliver(person, result) {
+    const drop = result.drop || [];
+    for (let i = 0; i < drop.length; i++) {
+      const prev = drop[i];
+      if (!prev || !prev.socket || prev.socket.destroyed) continue;
+      prev.socket.destroy();
+    }
     for (let i = 0; i < result.out.length; i++) {
       const ev = result.out[i];
       if (ev.who === "self") send(person.socket, ev.obj);
@@ -65,6 +71,11 @@ export function attachLobby(server) {
 
   function drop(person) {
     if (!person || person.gone) return;
+    // 身份已经交给新连接时，旧套接字关掉不能再广播离开。
+    if (people.get(person.id) !== person) {
+      person.gone = true;
+      return;
+    }
     const out = onLeave(people, person);
     for (let i = 0; i < out.length; i++) broadcast(out[i].obj);
     if (!person.socket.destroyed) person.socket.destroy();

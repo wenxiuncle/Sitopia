@@ -1,14 +1,15 @@
 import * as THREE from "../vendor/three.module.js";
 import { createAmbience } from "./ambience.js";
-import { createVisitor, poseVisitor } from "./avatar.js";
+import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
-import { DAYS, dayIndex, nightSpillQuads, openingQuads, plantShadowShift, sunVector } from "./day.js";
+import { DAYS, dayIndex, nightSpillQuads, openingQuads, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
 import {
   EYE,
   FRAME,
   HALLS,
   LIFT,
+  PLAZA,
   PLAYER_RADIUS,
   STORY,
   WALL_H,
@@ -39,8 +40,11 @@ import {
   deckRailMesh,
   floorDiscMesh,
   frameMeshes,
+  frameShadowMesh,
   handrailMesh,
   labelMeshes,
+  lampTexture,
+  ledRig,
   lightConeMesh,
   liftRig,
   lobbyPropMeshes,
@@ -53,6 +57,8 @@ import {
   placePlantShadows,
   plantMeshes,
   plantShadowMesh,
+  sconceRig,
+  softShadowMaterial,
   spotHeadMesh,
   sunPatchMesh,
   wallMesh,
@@ -117,6 +123,7 @@ let shadowMesh = null;
 let coneMat = null;
 let discMat = null;
 let shadowMat = null;
+let bodyRoom = null;
 let nightCeilMat = null;
 let nightCeilPlateMat = null;
 let nightBeamMat = null;
@@ -563,6 +570,7 @@ function paintLiftChoices() {
 
 function onFloorKey() {
   if (!lift || !built || !insideLift()) return;
+  if (presence) presence.closeRoster();
   if (!liftPadOpen) {
     openLiftPad();
     return;
@@ -622,6 +630,7 @@ function poseSelf(pulled) {
   selfVisitor.group.position.set(px, py, pz);
   planarBasis(lookSource(), fwd, right);
   selfVisitor.group.rotation.y = yawFacing(fwd);
+  placeBodyShadow(selfVisitor, px, py, pz, yawFacing(fwd));
   const speed = Math.hypot(vx, vz);
   if (speed > 0.2) walkPhase += speed * 0.026;
   poseVisitor(selfVisitor.parts, walkPhase, speed > 0.2 ? 1 : 0);
@@ -1076,24 +1085,18 @@ function applyDay(day) {
   const sun = sunVector(day);
   sunShared.dir.value.set(sun.x, sun.y, sun.z);
   sunShared.tint.value.set(day.tint);
-  // 馆内的灯、玻璃和天棚一律按正午，不随时辰变。外面的天色照旧。
-  const noonLight = DAYS[2];
-  const nightRoom = day.id === "night";
-  const roomDay = noonLight;
-  const roomSun = sunVector(noonLight);
-  sunRoles.room.tint.value.set(roomDay.tint);
-  sunRoles.glass.tint.value.set(roomDay.tint);
-  if (sunRoles.room.dir) sunRoles.room.dir.value.set(roomSun.x, roomSun.y, roomSun.z);
-  if (sunRoles.glass.dir) sunRoles.glass.dir.value.set(roomSun.x, roomSun.y, roomSun.z);
+  // 馆内只吃天花灯。室外的墙和地面仍跟这一时辰的太阳。
+  sunRoles.room.tint.value.set(day.tint);
+  sunRoles.glass.tint.value.set(day.tint);
   sunShared.shade.value = day.shade;
   sunRoles.ground.fill.value = day.fillGround;
   sunRoles.ground.gain.value = day.gainGround;
   sunRoles.open.fill.value = day.fillOpen;
   sunRoles.open.gain.value = day.gainOpen;
-  sunRoles.room.fill.value = roomDay.fillRoom;
-  sunRoles.room.gain.value = roomDay.gainRoom;
-  sunRoles.glass.fill.value = roomDay.fillGlass;
-  sunRoles.glass.gain.value = roomDay.gainGlass;
+  sunRoles.room.fill.value = day.fillRoom;
+  sunRoles.room.gain.value = day.gainRoom;
+  sunRoles.glass.fill.value = day.fillGlass;
+  sunRoles.glass.gain.value = day.gainGlass;
   const skyline = new THREE.Color(day.horizon);
   scene.background.copy(skyline);
   scene.fog.color.copy(skyline);
@@ -1106,22 +1109,16 @@ function applyDay(day) {
   sunMesh.material.color.set(day.sun);
   sunMesh.position.set(sun.x, sun.y, sun.z).multiplyScalar(SUN_FAR);
   sunMesh.scale.setScalar(day.disc);
-  coneMat.color.set(roomDay.cone);
-  coneMat.opacity = roomDay.coneOpacity;
-  discMat.color.set(roomDay.pool);
-  discMat.opacity = roomDay.poolOpacity;
-  setFacadeSignNight(nightRoom);
-  sunShared.indoor.value = 0;
+  setFacadeSignNight(day.id === "night" || day.id === "dusk");
   if (nightCeilMat) nightCeilMat.color.setHex(0x2c2c31);
   if (nightCeilPlateMat) nightCeilPlateMat.color.setHex(0x2c2c31);
   if (nightBeamMat) nightBeamMat.color.setHex(0x1c1c20);
   if (shadowMat) shadowMat.opacity = day.blob;
   if (horizon && horizon.glow) horizon.glow.color.set(WINDOW_GLOW[day.id] || WINDOW_GLOW.noon);
-  writePatches(roomDay, roomSun);
-  if (shadowMesh) {
-    placePlantShadows(shadowMesh, built.plants, (plant) => plantShadowShift(roomSun, 0.9 * plant.s));
-  }
+  // 门口光斑是室外太阳投进来的。馆内改由天花灯照，地面不再铺这条亮带。
+  writePatches({ streak: 0x000000, streakGain: 0 }, sun);
   if (dropMesh && dropItems) placeDropShadows(dropMesh, dropItems, sun);
+  if (bodyRoom) setBodyLight(sun, bodyRoom);
 }
 
 // 布置阶段先把馆内、门口和轿厢各画一次到离屏目标，着色器和网格在进门前就编译好。
@@ -1159,33 +1156,41 @@ function warmPrograms() {
 function buildScene(data) {
   sites = data.sites;
   built = buildMuseum(sites);
+  const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
+  bodyRoom = {
+    minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
+    maxX: built.interior.maxX + 0.25,
+    minZ: built.interior.minZ - 0.2,
+    maxZ: built.interior.maxZ + 0.7,
+    maxY: 1e9,
+  };
   sunShared = {
     dir: { value: new THREE.Vector3(0, 1, 0) },
     tint: { value: new THREE.Color(0xffffff) },
     block: { value: new THREE.Vector4() },
+    front: { value: PLAZA.minZ },
     roof: { value: 6.5 },
-    shade: { value: 0.66 },
-    indoor: { value: 0 },
-    indoorFill: { value: 1 },
-    indoorTint: { value: new THREE.Color(0xfff4e4) },
-    roomBox: { value: new THREE.Vector4(
-      built.interior.minX - 0.12,
-      built.interior.maxX + 0.12,
-      built.interior.minZ - 0.12,
-      built.interior.maxZ + 0.12,
-    ) },
+    shade: { value: 0.42 },
+    lamps: { value: lamps.tex },
+    lampInv: { value: new THREE.Vector2(1 / lamps.cols, 1 / lamps.floors) },
+    story: { value: STORY },
+    lampTint: { value: new THREE.Color(0xfff4e4) },
+    roomBox: { value: new THREE.Vector4(bodyRoom.minX, bodyRoom.maxX, bodyRoom.minZ, bodyRoom.maxZ) },
   };
-  const role = () => ({ fill: { value: 1 }, gain: { value: 0 }, cast: { value: 0 } });
-  sunRoles = { ground: role(), open: role(), room: role(), glass: role() };
-  const noonDir = sunVector(DAYS[2]);
-  sunRoles.room.dir = { value: new THREE.Vector3(noonDir.x, noonDir.y, noonDir.z) };
-  sunRoles.glass.dir = { value: new THREE.Vector3(noonDir.x, noonDir.y, noonDir.z) };
-  sunRoles.room.tint = { value: new THREE.Color(0xffffff) };
+  const role = () => ({ fill: { value: 1 }, gain: { value: 0 }, cast: { value: 0 }, lamps: { value: 0 } });
+  sunRoles = { ground: role(), open: role(), room: role(), glass: role(), body: role() };
+  sunRoles.room.tint = { value: new THREE.Color(0xfff4e4) };
   sunRoles.glass.tint = { value: new THREE.Color(0xffffff) };
+  sunRoles.body.fill = sunRoles.open.fill;
+  sunRoles.body.gain = sunRoles.open.gain;
+  sunRoles.room.lamps.value = 1;
+  sunRoles.glass.lamps.value = 2;
+  sunRoles.body.lamps.value = 2;
   sunRoles.ground.cast.value = 1;
   const roof = built.dress.find((item) => item.kind === "roof");
   sunShared.block.value.set(roof.minX, roof.maxX, roof.minZ, roof.maxZ);
   sunShared.roof.value = (roof.minY + roof.maxY) / 2;
+  bodyRoom.maxY = sunShared.roof.value - 1;
 
   const skyGeo = new THREE.SphereGeometry(SKY_R, 20, 12);
   skyGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(skyGeo.attributes.position.count * 3), 3));
@@ -1244,14 +1249,14 @@ function buildScene(data) {
   coneMat = new THREE.MeshBasicMaterial({
     color: 0xfff1dc,
     transparent: true,
-    opacity: 0.1,
+    opacity: 0.075,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
   discMat = new THREE.MeshBasicMaterial({
     color: 0xfff3e4,
     transparent: true,
-    opacity: 0.42,
+    opacity: 0.3,
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -1,
@@ -1364,8 +1369,12 @@ function buildScene(data) {
     flowers: [lit(0xd24b4b, "room"), lit(0xe7c14a, "room"), lit(0xf4f1ea, "room"), lit(0xd46a8c, "room")],
   });
   if (props) scene.add(props);
-  const deckMat = lit(storyFloor, "ground", { side: THREE.DoubleSide });
-  const lobes = lobeMeshes(built.lobes, deckMat);
+  const deckShellMat = lit(stoneColor, "open", {
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const lobes = lobeMeshes(built.lobes, plateMat, deckShellMat);
   if (lobes) scene.add(lobes);
   const hands = handrailMesh(built.handrails, woodMat);
   if (hands) scene.add(hands);
@@ -1393,34 +1402,46 @@ function buildScene(data) {
     baseColors[i] = new THREE.Color(built.frames[i].color);
     hoverColors[i] = baseColors[i].clone().lerp(white, 0.55);
   }
+  const indoorShadow = softShadowMaterial(0.55);
   if (built.plants.length) {
     const plants = plantMeshes(built.plants, potMat, leafMat);
     if (plants.pots) scene.add(plants.pots);
     for (let i = 0; i < plants.leaves.length; i++) if (plants.leaves[i]) scene.add(plants.leaves[i]);
-    shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x3e3832,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    });
-    shadowMesh = plantShadowMesh(built.plants, shadowMat);
-    if (shadowMesh) scene.add(shadowMesh);
+    const plantShade = softShadowMaterial(0.6, true);
+    shadowMesh = plantShadowMesh(built.plants, plantShade);
+    if (shadowMesh) {
+      placePlantShadows(shadowMesh, built.plants, 1.7);
+      scene.add(shadowMesh);
+    }
+  }
+  const frameShade = frameShadowMesh(built.frames, indoorShadow);
+  if (frameShade) scene.add(frameShade);
+  const contactShadow = softShadowMaterial(0.55, true);
+  const indoorDrops = [];
+  for (let i = 0; i < built.extinguishers.length; i++) {
+    const item = built.extinguishers[i];
+    indoorDrops.push({ x: item.x, z: item.z, rx: 0.32, rz: 0.26, h: 0.7, y: item.y + 0.055 });
+  }
+  for (let i = 0; i < built.tables.length; i++) {
+    const table = built.tables[i];
+    indoorDrops.push({ x: table.x, z: table.z, rx: 0.98, rz: 0.98, h: 0.9, y: table.y + 0.055 });
+    indoorDrops.push({ x: table.x - 1.32, z: table.z, rx: 0.46, rz: 0.4, h: 0.85, y: table.y + 0.055 });
+    indoorDrops.push({ x: table.x + 1.32, z: table.z, rx: 0.46, rz: 0.4, h: 0.85, y: table.y + 0.055 });
+  }
+  const indoorDropMesh = dropShadowMesh(indoorDrops.length, contactShadow);
+  if (indoorDropMesh) {
+    placeDropShadows(indoorDropMesh, indoorDrops, null);
+    scene.add(indoorDropMesh);
   }
   dropItems = horizon && horizon.shadows ? horizon.shadows.slice() : [];
   for (let i = 0; i < built.yard.length; i++) {
     const item = built.yard[i];
-    if (item.kind !== "tree") continue;
-    dropItems.push({ x: item.x, z: item.z, rx: 1.65, rz: 1.2, h: 3.5, y: 0.04 });
+    if (item.kind === "tree") dropItems.push({ x: item.x, z: item.z, rx: 1.7, rz: 1.25, h: 3.6, y: 0.04 });
+    else if (item.kind === "hedge") dropItems.push({ x: item.x, z: item.z, rx: item.w * 0.5, rz: item.d * 0.5, h: 0.62, y: 0.035 });
+    else if (item.kind === "bench") dropItems.push({ x: item.x, z: item.z, rx: 1.2, rz: 0.46, h: 0.55, y: 0.03 });
   }
   if (dropItems.length) {
-    if (!shadowMat) {
-      shadowMat = new THREE.MeshBasicMaterial({
-        color: 0x3e3832,
-        transparent: true,
-        opacity: 0.22,
-        depthWrite: false,
-      });
-    }
+    shadowMat = softShadowMaterial(0.36);
     dropMesh = dropShadowMesh(dropItems.length, shadowMat);
     if (dropMesh) scene.add(dropMesh);
   }
@@ -1440,6 +1461,40 @@ function buildScene(data) {
   if (cones) scene.add(cones);
   if (discs) scene.add(discs);
   if (heads) scene.add(heads);
+  const ledGlow = new THREE.MeshBasicMaterial({ color: 0xe8c98a });
+  const ledPool = new THREE.MeshBasicMaterial({
+    color: 0xf0ddb8,
+    transparent: true,
+    opacity: 0.14,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const sconceShade = new THREE.MeshBasicMaterial({ color: 0xf0d7a4, side: THREE.DoubleSide });
+  const sconceWash = new THREE.MeshBasicMaterial({
+    color: 0xf0d2a4,
+    transparent: true,
+    opacity: 0.15,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const sconcePool = new THREE.MeshBasicMaterial({
+    color: 0xf3ddb4,
+    transparent: true,
+    opacity: 0.12,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const leds = ledRig(built.leds, lit(0xc8bba6, "room"), ledGlow, ledPool);
+  const sconces = sconceRig(built.sconces, lit(0xa67c3d, "room"), sconceShade, sconceWash, sconcePool);
+  if (leds) scene.add(leds);
+  if (sconces) scene.add(sconces);
   if (params.has("debug")) scene.add(colliderLines(built.walls));
 
   legendEl.replaceChildren();
@@ -1477,13 +1532,8 @@ function buildScene(data) {
     camera.rotation.x = Number(params.get("pitch") || 0) * Math.PI / 180;
   }
   const visitorMat = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0xffffff });
-  attachSun(visitorMat, sunShared, sunRoles.open);
-  const visitorShadow = new THREE.MeshBasicMaterial({
-    color: 0x3e3832,
-    transparent: true,
-    opacity: 0.2,
-    depthWrite: false,
-  });
+  attachSun(visitorMat, sunShared, sunRoles.body);
+  const visitorShadow = softShadowMaterial(0.5);
   selfVisitor = createVisitor(visitorMat, visitorShadow);
   selfVisitor.group.visible = false;
   scene.add(selfVisitor.group);
@@ -1505,6 +1555,9 @@ function buildScene(data) {
     onGate: (open) => {
       if (open) showEscCard();
       else hideEscCard();
+    },
+    onExclusive: (which) => {
+      if (which === "roster") closeLiftPad();
     },
     onNav: (open) => {
       parkFocus();

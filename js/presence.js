@@ -12,6 +12,27 @@ const ONLINE_KEY = "quzhan-museum-online";
 const SOLO_KEY = "quzhan-museum-solo";
 const BUBBLE_LIFE = 6000;
 const HOLD_MS = 30000;
+const SEAT_KEY = "quzhan-museum-seat";
+
+function readSeat() {
+  let saved = "";
+  try {
+    saved = sessionStorage.getItem(SEAT_KEY) || "";
+  } catch {
+    saved = "";
+  }
+  if (/^[0-9a-f]{16}$/.test(saved)) return saved;
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let seat = "";
+  for (let i = 0; i < bytes.length; i++) seat += bytes[i].toString(16).padStart(2, "0");
+  try {
+    sessionStorage.setItem(SEAT_KEY, seat);
+  } catch {
+    /* 这一页里照样沿用。 */
+  }
+  return seat;
+}
 
 function readStoredName() {
   try {
@@ -68,6 +89,7 @@ export function mountPresence(options) {
 
   const crowd = createCrowd(scene, material, shadowMaterial);
   const roster = new Map();
+  const seat = readSeat();
   const planFwd = { set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }, x: 0, y: 0, z: -1 };
   const ctx = mapCanvas.getContext("2d");
   let me = null;
@@ -115,6 +137,24 @@ export function mountPresence(options) {
   function send(obj) {
     if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
     else if (http && !http.stopped) httpEnqueue(obj);
+  }
+
+  function hello() {
+    return { t: "hi", name: myName, away: document.hidden, seat };
+  }
+
+  function rememberOther(person, snap) {
+    if (!person || !person.id || (me && person.id === me.id)) return;
+    if (person.seat) {
+      for (const row of Array.from(roster.values())) {
+        if (row.id !== person.id && row.seat === person.seat) {
+          roster.delete(row.id);
+          crowd.remove(row.id);
+        }
+      }
+    }
+    roster.set(person.id, person);
+    crowd.upsert(person, snap);
   }
 
   function toast(text) {
@@ -221,7 +261,12 @@ export function mountPresence(options) {
   }
 
   function onMessage(msg) {
+    if (msg.t === "ping") {
+      send({ t: "pong" });
+      return;
+    }
     if (msg.t === "welcome") {
+      const quiet = msg.resume === true && !!me;
       me = { id: msg.id, name: msg.name };
       rememberName(msg.name);
       syncNameInputs(msg.name);
@@ -230,18 +275,17 @@ export function mountPresence(options) {
       crowd.clear();
       roster.set(msg.id, { id: msg.id, name: msg.name, x: 0, y: 0, z: 0 });
       const others = msg.people || [];
-      for (let i = 0; i < others.length; i++) {
-        roster.set(others[i].id, others[i]);
-        crowd.upsert(others[i], true);
-      }
+      for (let i = 0; i < others.length; i++) rememberOther(others[i], true);
       setCount(roster.size);
       renderPeople();
-      logEl.replaceChildren();
-      const history = msg.log || [];
-      for (let i = 0; i < history.length; i++) appendSay(history[i]);
-      if (!document.hidden) {
-        if (others.length) toast("你进入了展厅，馆里已有 " + others.length + " 人");
-        else toast("你进入了展厅");
+      if (!quiet) {
+        logEl.replaceChildren();
+        const history = msg.log || [];
+        for (let i = 0; i < history.length; i++) appendSay(history[i]);
+        if (!document.hidden) {
+          if (others.length) toast("你进入了展厅，馆里已有 " + others.length + " 人");
+          else toast("你进入了展厅");
+        }
       }
       if (document.hidden) send({ t: "away" });
       else if (msg.away) send({ t: "back" });
@@ -251,15 +295,19 @@ export function mountPresence(options) {
       return;
     }
     if (msg.t === "join") {
-      roster.set(msg.id, msg);
-      crowd.upsert(msg, true);
+      if (me && msg.id === me.id) return;
+      const known = roster.has(msg.id);
+      rememberOther(msg, true);
       setCount(roster.size);
       renderPeople();
-      toast(msg.name + " 进入了展厅");
-      appendSys(msg.name + " 进入了展厅");
+      if (!known) {
+        toast(msg.name + " 进入了展厅");
+        appendSys(msg.name + " 进入了展厅");
+      }
       return;
     }
     if (msg.t === "bye") {
+      if (!roster.has(msg.id) || (me && msg.id === me.id)) return;
       roster.delete(msg.id);
       crowd.remove(msg.id);
       setCount(roster.size);
@@ -284,14 +332,13 @@ export function mountPresence(options) {
     }
     if (msg.t === "move") {
       const row = roster.get(msg.id);
-      if (row) {
-        row.x = msg.x;
-        row.y = msg.y || 0;
-        row.z = msg.z;
-      }
+      if (!row || (me && msg.id === me.id)) return;
+      row.x = msg.x;
+      row.y = msg.y || 0;
+      row.z = msg.z;
       crowd.upsert({
         id: msg.id,
-        name: row ? row.name : "",
+        name: row.name || "",
         x: msg.x,
         y: msg.y || 0,
         z: msg.z,
@@ -387,7 +434,7 @@ export function mountPresence(options) {
       credentials: "omit",
       cache: "no-store",
       headers: { "content-type": "text/plain;charset=UTF-8" },
-      body: JSON.stringify({ id: session.id, msgs }),
+      body: JSON.stringify({ id: session.id, seat, msgs }),
     }).then(async (res) => {
       if (session.stopped || http !== session) return null;
       if (res.status === 429) {
@@ -427,7 +474,7 @@ export function mountPresence(options) {
     };
     http = session;
     online.textContent = "连接中";
-    session.queue.push({ t: "hi", name: myName, away: document.hidden });
+    session.queue.push(hello());
     pumpHttp(session);
   }
 
@@ -449,7 +496,7 @@ export function mountPresence(options) {
     ws.addEventListener("open", () => {
       if (socket !== ws) return;
       online.textContent = "连接中";
-      send({ t: "hi", name: myName, away: document.hidden });
+      send(hello());
     });
     ws.addEventListener("message", (event) => {
       if (socket !== ws) return;

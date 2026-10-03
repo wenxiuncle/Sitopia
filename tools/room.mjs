@@ -27,6 +27,11 @@ export function cleanPose(msg) {
   };
 }
 
+export function cleanSeat(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^[0-9a-f]{8,32}$/.test(text) ? text : "";
+}
+
 export function blankPerson(id, now) {
   return {
     id,
@@ -37,6 +42,7 @@ export function blankPerson(id, now) {
     z: 15.5,
     yaw: 0,
     away: false,
+    seat: "",
     seen: now,
     lastMove: 0,
     lastSay: 0,
@@ -51,13 +57,73 @@ function namedCount(people) {
   return n;
 }
 
+function withSeat(item, person) {
+  if (person.seat) item.seat = person.seat;
+  return item;
+}
+
 function snapshot(people, exceptId) {
   const list = [];
   for (const person of people.values()) {
     if (person.id === exceptId || !person.named || person.away || person.gone) continue;
-    list.push({ id: person.id, name: person.name, x: person.x, y: person.y || 0, z: person.z, yaw: person.yaw });
+    list.push(withSeat({ id: person.id, name: person.name, x: person.x, y: person.y || 0, z: person.z, yaw: person.yaw }, person));
   }
   return list;
+}
+
+function present(person, people) {
+  return withSeat({
+    t: "join",
+    id: person.id,
+    name: person.name,
+    x: person.x,
+    y: person.y || 0,
+    z: person.z,
+    yaw: person.yaw,
+    n: namedCount(people),
+  }, person);
+}
+
+// 同一个标签页重连时沿用旧身份。返回被替换的连接，调用方负责关掉，不要再广播离开。
+export function adoptSeat(people, person, seat) {
+  const clean = cleanSeat(seat);
+  if (!clean) return [];
+  person.seat = clean;
+  const prevs = [];
+  for (const other of people.values()) {
+    if (other.gone || other.id === person.id) continue;
+    if (other.seat !== clean) continue;
+    prevs.push(other);
+  }
+  if (!prevs.length) return [];
+  let prev = prevs[0];
+  for (let i = 1; i < prevs.length; i++) {
+    const other = prevs[i];
+    const namedWins = !!other.named !== !!prev.named && other.named;
+    const newer = !!other.named === !!prev.named && (other.seen || 0) >= (prev.seen || 0);
+    if (namedWins || newer) prev = other;
+  }
+  people.delete(person.id);
+  for (let i = 0; i < prevs.length; i++) {
+    prevs[i].gone = true;
+    people.delete(prevs[i].id);
+  }
+  person.id = prev.id;
+  person.name = prev.name;
+  person.named = !!prev.named;
+  person.x = prev.x;
+  person.y = prev.y || 0;
+  person.z = prev.z;
+  person.yaw = prev.yaw || 0;
+  person.away = !!prev.away;
+  person.lastMove = prev.lastMove || 0;
+  person.lastSay = prev.lastSay || 0;
+  person.lastName = prev.lastName || 0;
+  person.seen = Math.max(person.seen || 0, prev.seen || 0);
+  person.seat = clean;
+  person.gone = false;
+  people.set(person.id, person);
+  return prevs;
 }
 
 function uniqueName(people, name, exceptId) {
@@ -84,45 +150,56 @@ export function onLeave(people, person) {
   return [];
 }
 
+function welcome(person, people, log, resume) {
+  const obj = {
+    t: "welcome",
+    id: person.id,
+    name: person.name,
+    away: person.away,
+    n: namedCount(people),
+    people: snapshot(people, person.id),
+    log: log.slice(),
+  };
+  if (resume) obj.resume = true;
+  return { who: "self", obj };
+}
+
 export function onClientMessage(people, log, person, msg, now) {
   const out = [];
+  if (msg.t === "pong") {
+    if (person.named) {
+      person.seen = now;
+      person.pings = true;
+    }
+    return { close: false, out };
+  }
   person.seen = now;
-  if (msg.t === "hi" && !person.named) {
+  if (msg.t === "hi") {
+    const dropped = adoptSeat(people, person, msg.seat);
+    for (let i = 0; i < dropped.length; i++) {
+      const prev = dropped[i];
+      if (prev.id === person.id || !prev.named || prev.away) continue;
+      out.push({ who: "all", obj: { t: "bye", id: prev.id, name: prev.name, n: namedCount(people) } });
+    }
+    if (person.named) {
+      const wasAway = person.away;
+      person.away = msg.away === true;
+      out.push(welcome(person, people, log, true));
+      if (wasAway && !person.away) out.push({ who: "others", obj: present(person, people) });
+      else if (!wasAway && person.away) {
+        out.push({ who: "others", obj: { t: "bye", id: person.id, name: person.name, n: namedCount(people) } });
+      }
+      return { close: false, out, drop: dropped };
+    }
     if (namedCount(people) >= MAX_PEOPLE) {
-      return { close: true, out: [{ who: "self", obj: { t: "full" } }] };
+      return { close: true, out: [{ who: "self", obj: { t: "full" } }], drop: dropped };
     }
     person.name = uniqueName(people, cleanName(msg.name), person.id);
     person.named = true;
     person.away = msg.away === true;
-    const n = namedCount(people);
-    out.push({
-      who: "self",
-      obj: {
-        t: "welcome",
-        id: person.id,
-        name: person.name,
-        away: person.away,
-        n,
-        people: snapshot(people, person.id),
-        log: log.slice(),
-      },
-    });
-    if (!person.away) {
-      out.push({
-        who: "others",
-        obj: {
-          t: "join",
-          id: person.id,
-          name: person.name,
-          x: person.x,
-          y: person.y || 0,
-          z: person.z,
-          yaw: person.yaw,
-          n,
-        },
-      });
-    }
-    return { close: false, out };
+    out.push(welcome(person, people, log, false));
+    if (!person.away) out.push({ who: "others", obj: present(person, people) });
+    return { close: false, out, drop: dropped };
   }
   if (!person.named) return { close: false, out };
   if (msg.t === "away") {
@@ -134,19 +211,7 @@ export function onClientMessage(people, log, person, msg, now) {
   if (msg.t === "back") {
     if (!person.away) return { close: false, out };
     person.away = false;
-    out.push({
-      who: "others",
-      obj: {
-        t: "join",
-        id: person.id,
-        name: person.name,
-        x: person.x,
-        y: person.y || 0,
-        z: person.z,
-        yaw: person.yaw,
-        n: namedCount(people),
-      },
-    });
+    out.push({ who: "others", obj: present(person, people) });
     return { close: false, out };
   }
   if (msg.t === "name") {

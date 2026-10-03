@@ -87,12 +87,46 @@ if (!rateOk($data, $ip, $now)) {
 
 sweep($data, $now);
 
+$seat = "";
+if (isset($body["seat"]) && is_string($body["seat"])) $seat = cleanSeat($body["seat"]);
+if ($seat === "") {
+    foreach ($msgs as $msg) {
+        if (!is_array($msg) || ($msg["t"] ?? "") !== "hi") continue;
+        $seat = cleanSeat($msg["seat"] ?? "");
+        if ($seat !== "") break;
+    }
+}
+if ($seat !== "") {
+    $match = findSeat($data["people"], $seat);
+    if ($match !== "") $wantId = $match;
+}
+
 $created = false;
 if ($wantId === "" || !isset($data["people"][$wantId])) {
     $wantId = newId($data["people"]);
     $data["people"][$wantId] = blankPerson($wantId, $now);
     $data["queues"][$wantId] = [];
     $created = true;
+}
+
+if ($seat !== "" && isset($data["people"][$wantId])) {
+    $data["people"][$wantId]["seat"] = $seat;
+    foreach (array_keys($data["people"]) as $pid) {
+        if ((string) $pid === (string) $wantId) continue;
+        if (($data["people"][$pid]["seat"] ?? "") !== $seat) continue;
+        $other = $data["people"][$pid];
+        unset($data["people"][$pid], $data["queues"][$pid]);
+        if (empty($other["named"]) || !empty($other["away"]) || !empty($other["gone"])) continue;
+        deliver($data, (string) $wantId, [[
+            "who" => "all",
+            "obj" => [
+                "t" => "bye",
+                "id" => $other["id"],
+                "name" => $other["name"],
+                "n" => namedCount($data["people"]),
+            ],
+        ]]);
+    }
 }
 
 $id = $wantId;
@@ -218,6 +252,7 @@ function blankPerson(string $id, int $now): array {
         "z" => 15.5,
         "yaw" => 0,
         "away" => false,
+        "seat" => "",
         "seen" => $now,
         "lastMove" => 0,
         "lastSay" => 0,
@@ -229,6 +264,50 @@ function blankPerson(string $id, int $now): array {
 function uSlice(string $text, int $n): string {
     if (function_exists("mb_substr")) return mb_substr($text, 0, $n, "UTF-8");
     return substr($text, 0, $n);
+}
+
+function cleanSeat($value): string {
+    $text = strtolower(trim((string) $value));
+    return preg_match("/^[0-9a-f]{8,32}$/", $text) ? $text : "";
+}
+
+function findSeat(array $people, string $seat): string {
+    if ($seat === "") return "";
+    $found = "";
+    $foundNamed = false;
+    $foundSeen = -1;
+    foreach ($people as $pid => $person) {
+        if (!is_array($person) || !empty($person["gone"])) continue;
+        if (($person["seat"] ?? "") !== $seat) continue;
+        $named = !empty($person["named"]);
+        $seen = (int) ($person["seen"] ?? 0);
+        $better = $found === ""
+            || ($named && !$foundNamed)
+            || ($named === $foundNamed && $seen >= $foundSeen);
+        if (!$better) continue;
+        $found = (string) $pid;
+        $foundNamed = $named;
+        $foundSeen = $seen;
+    }
+    return $found;
+}
+
+function withSeat(array $item, array $person): array {
+    if (!empty($person["seat"])) $item["seat"] = $person["seat"];
+    return $item;
+}
+
+function presentJoin(array $person, array $people): array {
+    return withSeat([
+        "t" => "join",
+        "id" => $person["id"],
+        "name" => $person["name"],
+        "x" => $person["x"],
+        "y" => $person["y"] ?? 0,
+        "z" => $person["z"],
+        "yaw" => $person["yaw"],
+        "n" => namedCount($people),
+    ], $person);
 }
 
 function cleanName($value): string {
@@ -275,14 +354,14 @@ function snapshot(array $people, string $exceptId): array {
     $list = [];
     foreach ($people as $person) {
         if (($person["id"] ?? "") === $exceptId || empty($person["named"]) || !empty($person["away"]) || !empty($person["gone"])) continue;
-        $list[] = [
+        $list[] = withSeat([
             "id" => $person["id"],
             "name" => $person["name"],
             "x" => $person["x"],
             "y" => $person["y"] ?? 0,
             "z" => $person["z"],
             "yaw" => $person["yaw"],
-        ];
+        ], $person);
     }
     return $list;
 }
@@ -340,15 +419,43 @@ function sweep(array &$data, int $now): void {
 
 function onClientMessage(array &$people, array &$log, array &$person, array $msg, int $now): array {
     $out = [];
+    if (($msg["t"] ?? "") === "pong") {
+        if (!empty($person["named"])) {
+            $person["seen"] = $now;
+            $person["pings"] = true;
+        }
+        return ["close" => false, "out" => $out];
+    }
     $person["seen"] = $now;
-    if ($msg["t"] === "hi" && empty($person["named"])) {
+    if ($msg["t"] === "hi") {
+        $got = cleanSeat($msg["seat"] ?? "");
+        if ($got !== "") $person["seat"] = $got;
+        if (!empty($person["named"])) {
+            $wasAway = !empty($person["away"]);
+            $person["away"] = ($msg["away"] ?? false) === true;
+            $welcome = [
+                "t" => "welcome",
+                "id" => $person["id"],
+                "name" => $person["name"],
+                "away" => $person["away"],
+                "resume" => true,
+                "n" => namedCount($people),
+                "people" => snapshot($people, (string) $person["id"]),
+                "log" => array_values($log),
+            ];
+            $out[] = ["who" => "self", "obj" => $welcome];
+            if ($wasAway && empty($person["away"])) $out[] = ["who" => "others", "obj" => presentJoin($person, $people)];
+            elseif (!$wasAway && !empty($person["away"])) {
+                $out[] = ["who" => "others", "obj" => ["t" => "bye", "id" => $person["id"], "name" => $person["name"], "n" => namedCount($people)]];
+            }
+            return ["close" => false, "out" => $out];
+        }
         if (namedCount($people) >= MAX_PEOPLE) {
             return ["close" => true, "out" => [["who" => "self", "obj" => ["t" => "full"]]]];
         }
         $person["name"] = uniqueName($people, cleanName($msg["name"] ?? ""), (string) $person["id"]);
         $person["named"] = true;
         $person["away"] = ($msg["away"] ?? false) === true;
-        $n = namedCount($people);
         $out[] = [
             "who" => "self",
             "obj" => [
@@ -356,26 +463,12 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
                 "id" => $person["id"],
                 "name" => $person["name"],
                 "away" => $person["away"],
-                "n" => $n,
+                "n" => namedCount($people),
                 "people" => snapshot($people, (string) $person["id"]),
                 "log" => array_values($log),
             ],
         ];
-        if (empty($person["away"])) {
-            $out[] = [
-                "who" => "others",
-                "obj" => [
-                    "t" => "join",
-                    "id" => $person["id"],
-                    "name" => $person["name"],
-                    "x" => $person["x"],
-                    "y" => $person["y"] ?? 0,
-                    "z" => $person["z"],
-                    "yaw" => $person["yaw"],
-                    "n" => $n,
-                ],
-            ];
-        }
+        if (empty($person["away"])) $out[] = ["who" => "others", "obj" => presentJoin($person, $people)];
         return ["close" => false, "out" => $out];
     }
     if (empty($person["named"])) return ["close" => false, "out" => $out];
@@ -388,19 +481,7 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
     if ($msg["t"] === "back") {
         if (empty($person["away"])) return ["close" => false, "out" => $out];
         $person["away"] = false;
-        $out[] = [
-            "who" => "others",
-            "obj" => [
-                "t" => "join",
-                "id" => $person["id"],
-                "name" => $person["name"],
-                "x" => $person["x"],
-                "y" => $person["y"] ?? 0,
-                "z" => $person["z"],
-                "yaw" => $person["yaw"],
-                "n" => namedCount($people),
-            ],
-        ];
+        $out[] = ["who" => "others", "obj" => presentJoin($person, $people)];
         return ["close" => false, "out" => $out];
     }
     if ($msg["t"] === "name") {

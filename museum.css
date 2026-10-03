@@ -554,11 +554,14 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 #name-gate button:focus-visible { outline: 1px solid #2c2926; outline-offset: 2px; }
 
 #drawer {
+  display: flex;
+  flex-direction: column;
   width: 0;
   min-width: 0;
   max-height: none;
   flex: none;
   align-self: stretch;
+  min-height: 0;
   overflow: hidden;
   pointer-events: none;
   background: transparent;
@@ -571,19 +574,15 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   width: var(--nav-w);
   margin-left: 8px;
   pointer-events: auto;
-  display: flex;
-  flex-direction: column;
-  align-self: stretch;
   box-sizing: border-box;
-  max-height: none;
-  min-height: 0;
   padding: 0;
-  overflow: hidden;
   scrollbar-width: thin;
 }
 
 .drawer-body {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   width: var(--nav-w);
   min-width: var(--nav-w);
   max-width: var(--nav-w);
@@ -595,6 +594,11 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   overflow: auto;
   scrollbar-width: thin;
 }
+
+.drawer-main,
+.drawer-foot { flex: none; }
+
+.drawer-foot { margin-top: auto; }
 
 #name-form {
   display: flex;
@@ -705,7 +709,8 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 }
 
 #roster > .menu-head:first-child,
-.drawer-body > .menu-head:first-child { margin-top: 0; }
+.drawer-body > .menu-head:first-child,
+.drawer-main > .menu-head:first-child { margin-top: 0; }
 
 #people,
 #chat-log {

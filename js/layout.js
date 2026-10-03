@@ -10,6 +10,8 @@ export const STORY = 5.4;
 export const FLOOR_TILT = -Math.PI / 2;
 export const CEIL_TILT = Math.PI / 2;
 export const FRAME = { w: (0.9 * 3.7) / 1.8, h: 0.9, d: 0.06 };
+// 画框背面离结构墙面的空隙。北墙内衬还要再凸出 8 毫米，留 2 厘米才不和衬皮贴在同一张面上。
+export const FRAME_WALL_GAP = 0.02;
 export const PLAZA = { minX: -42, maxX: 42, minZ: 4.4, maxZ: 46 };
 const PLAZA_PATH_Z0 = 5.2;
 const PLAZA_PATH_Z1 = PLAZA.maxZ - 2.4;
@@ -37,6 +39,10 @@ const HALL_B = HALL_A - BAY;
 const NORTH = HALL_B - BAY;
 
 const HALF = STORY / 2;
+// 天花上的楼梯孔用这个外扩，孔边不留一圈楼板。
+const CEIL_STAIR_PAD = 0.05;
+export const STAIR_LAMP_R = 0.48;
+export const STAIR_LAMP_H = 0.036;
 const STAIR_STEPS = 16;
 const TREAD = 0.32;
 const RISER = HALF / STAIR_STEPS;
@@ -56,6 +62,15 @@ const F2_X0 = LAND_X0;
 const F2_X1 = LAND_X1;
 const F2_Z1 = LAND_Z0;
 const F2_Z0 = F2_Z1 - RUN;
+// 东南内角：东墙内衬内侧和南墙内衬内侧。井的范围包住这两面整高墙，楼层交界的光只在这里滤开。
+export const STAIR_LIGHT = {
+  minX: F1_X0 - 0.3,
+  maxX: INNER + 0.5,
+  minZ: F2_Z0 - 0.3,
+  maxZ: SOUTH + 0.2,
+  cornerX: INNER - 0.05,
+  cornerZ: SOUTH - 0.052,
+};
 
 // 半圆直径贴在南墙外侧，圆心在大门中线上，弧朝广场（+Z）。
 const DECK_R = 5.2;
@@ -225,7 +240,7 @@ function placeFace(frames, sites, cursor, minX, maxX, cz, nz, cones, sideCols, b
   if (colsFit < 1 || cursor.i >= sites.length) return;
   const count = Math.min(colsFit * ROWS, sites.length - cursor.i);
   const cols = Math.ceil(count / ROWS);
-  const faceZ = cz + nz * (WALL_T / 2 + 0.08 + FRAME.d / 2);
+  const faceZ = cz + nz * (WALL_T / 2 + FRAME_WALL_GAP + FRAME.d / 2);
   const used = (cols - 1) * pitch;
   const xStart = (minX + maxX) / 2 - used / 2;
   let placed = 0;
@@ -255,7 +270,15 @@ function placeFace(frames, sites, cursor, minX, maxX, cz, nz, cones, sideCols, b
     }
   }
   if (!placed) return;
-  cones.push({ x: sumX / placed, z: faceZ + nz * 2.5, y: baseY });
+  const ahead = faceZ + nz * 2.5;
+  // 北墙留了两侧空档。两盏间距是墙宽的三分之一，从四分点向中间收。
+  if (sideCols > 0) {
+    const span = maxX - minX;
+    cones.push({ x: minX + span / 3, z: ahead, y: baseY });
+    cones.push({ x: minX + span * 2 / 3, z: ahead, y: baseY });
+    return;
+  }
+  cones.push({ x: sumX / placed, z: ahead, y: baseY });
 }
 
 function pushOut(dress, kind, axis, at, dir, min, max, minY, maxY, depth) {
@@ -908,6 +931,49 @@ function addLobbyDress(blocks, floors) {
   return { extinguishers, tables };
 }
 
+// 圆桌靠南墙。壁灯在厅内侧，灯罩中心在原高度上再抬半米。
+// 楼梯拐在东南角。同款壁灯挂在这块南墙内衬上，灯在拐角中心以西 1.2 米。
+// 朝南墙看时左手朝东（+X）。灯具和照亮用的灯心在同一高度：下层升进楼梯井，顶层天花封死就停在天花下面。
+// 光池跟到灯心所在的那一层。灯正下方的楼板是洞，亮斑落在楼梯内角外侧的实心地面上。
+function addRoomLights(floors) {
+  const leds = [];
+  const sconces = [];
+  const tableX = (-INNER - DOOR) / 2;
+  const wallZ = SOUTH - 0.052;
+  const turnX = (LAND_X0 + LAND_X1) / 2 - 1.2;
+  const poolX = LAND_X0 - 0.7;
+  const poolZ = LAND_Z0 - 0.7;
+  for (let f = 0; f < floors; f++) {
+    const y = f * STORY;
+    const capped = f === floors - 1;
+    sconces.push({
+      role: "sconce",
+      place: "table",
+      x: tableX,
+      z: wallZ - 0.14,
+      y,
+      lift: 2.96,
+      mountZ: wallZ,
+      poolX: tableX,
+      poolZ: wallZ - 1.15,
+      poolY: y + 0.058,
+    });
+    sconces.push({
+      role: "sconce",
+      place: "stair",
+      x: turnX,
+      z: wallZ - 0.14,
+      y,
+      lift: capped ? 4.76 : 6.28,
+      mountZ: wallZ,
+      poolX,
+      poolZ,
+      poolY: y + (capped ? 0 : STORY) + 0.058,
+    });
+  }
+  return { leds, sconces };
+}
+
 function addPlants(plants, floors) {
   const spots = [
     { x: -10.2, z: -8.2 },
@@ -1190,7 +1256,7 @@ export function buildMuseum(sites) {
     holes: [],
   });
   const stairCut = stairHolePoly(0.03);
-  const stairWide = stairHolePoly(0.05);
+  const stairWide = stairHolePoly(CEIL_STAIR_PAD);
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
     if (f < floorCount - 1) {
@@ -1224,6 +1290,7 @@ export function buildMuseum(sites) {
   addPlants(plants, floorCount);
   for (let f = 1; f < floorCount; f++) addTurnPlant(plants, f);
   const props = addLobbyDress(blocks, floorCount);
+  const roomLights = addRoomLights(floorCount);
   const yard = [];
   addPlazaDress(blocks, yard);
 
@@ -1350,6 +1417,8 @@ export function buildMuseum(sites) {
     plants,
     yard,
     cones,
+    leds: roomLights.leds,
+    sconces: roomLights.sconces,
     dress,
     openings,
     slabs,
