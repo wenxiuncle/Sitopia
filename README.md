@@ -76,3 +76,9 @@ node tools/selftest.mjs
 | `vendor/three.module.js` | Three.js r170，许可在文件头 |
 
 Three.js 已经放在仓库里，不需要 `npm install`。
+
+## 许可
+
+版权所有 © 2026 Wenxi闻西。本馆代码以 GNU 通用公共许可证第 3 版（GPL-3.0）发布，全文在仓库根目录的 `LICENSE`。
+
+`vendor/three.module.js` 是 Three.js，许可仍是文件头里的 MIT。馆内琴声是公有领域录音，说明在 `audio/来源.txt`。
