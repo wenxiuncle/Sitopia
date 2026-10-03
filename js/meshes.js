@@ -536,58 +536,30 @@ function placeLeaf(leaf, box) {
   leaf.position.set((box.minX + box.maxX) / 2, (box.base || 0) + box.h / 2, (box.minZ + box.maxZ) / 2);
 }
 
-// 只留下还在门洞里的那一截。伸进墙里的部分不画，大厅里才不会和墙贴在一起闪。
-function clipAxis(box, lo, hi, axis) {
-  const a = axis === "x" ? box.minX : box.minZ;
-  const b = axis === "x" ? box.maxX : box.maxZ;
-  const c0 = Math.max(a, lo);
-  const c1 = Math.min(b, hi);
-  if (c1 - c0 < 0.02) return null;
-  const next = {
-    minX: box.minX,
-    maxX: box.maxX,
-    minZ: box.minZ,
-    maxZ: box.maxZ,
-    h: box.h,
-    base: box.base,
+// 门扇整段留在墙槽里。材质若往镜头偏，会穿出盖住槽的那层墙。
+function slotDoorMaterials(glassMat, frameMat) {
+  const next = (material) => {
+    const copy = material.clone();
+    copy.onBeforeCompile = material.onBeforeCompile;
+    copy.customProgramCacheKey = material.customProgramCacheKey;
+    copy.polygonOffset = false;
+    copy.polygonOffsetFactor = 0;
+    copy.polygonOffsetUnits = 0;
+    return copy;
   };
-  if (axis === "x") {
-    next.minX = c0;
-    next.maxX = c1;
-  } else {
-    next.minZ = c0;
-    next.maxZ = c1;
-  }
-  return next;
-}
-
-function fitSlidingLeaf(leaf, full, clipped, axis) {
-  if (!clipped) {
-    leaf.visible = false;
-    leaf.scale.set(1, 1, 1);
-    placeLeaf(leaf, full);
-    return;
-  }
-  leaf.visible = true;
-  const span = axis === "x" ? clipped.maxX - clipped.minX : clipped.maxZ - clipped.minZ;
-  const base = leaf.userData.span || span;
-  const s = span / base;
-  if (axis === "x") leaf.scale.set(s, 1, 1);
-  else leaf.scale.set(1, 1, s);
-  placeLeaf(leaf, clipped);
+  return { glass: next(glassMat), frame: next(frameMat) };
 }
 
 export function doorRig(glassMat, frameMat, floors) {
   const count = floors || 1;
   const root = new THREE.Group();
   const leaves = [];
+  const doorMats = slotDoorMaterials(glassMat, frameMat);
   for (let f = 0; f < count; f++) {
     const boxes = doorBoxes(0, f);
-    const pair = [doorLeaf(boxes[0], glassMat, frameMat), doorLeaf(boxes[1], glassMat, frameMat)];
+    const pair = [doorLeaf(boxes[0], doorMats.glass, doorMats.frame), doorLeaf(boxes[1], doorMats.glass, doorMats.frame)];
     pair[0].userData.span = boxes[0].maxX - boxes[0].minX;
     pair[1].userData.span = boxes[1].maxX - boxes[1].minX;
-    pair[0].userData.lo = boxes[0].minX;
-    pair[0].userData.hi = boxes[1].maxX;
     placeLeaf(pair[0], boxes[0]);
     placeLeaf(pair[1], boxes[1]);
     root.add(pair[0], pair[1]);
@@ -601,11 +573,11 @@ export function doorRig(glassMat, frameMat, floors) {
       for (let f = 0; f < count; f++) {
         const value = list ? list[f] || 0 : f === 0 ? open : 0;
         const boxes = doorBoxes(value, f);
-        const lo = leaves[f * 2].userData.lo;
-        const hi = leaves[f * 2].userData.hi;
         for (let i = 0; i < 2; i++) {
           const leaf = leaves[f * 2 + i];
-          fitSlidingLeaf(leaf, boxes[i], clipAxis(boxes[i], lo, hi, "x"), "x");
+          leaf.visible = true;
+          leaf.scale.set(1, 1, 1);
+          placeLeaf(leaf, boxes[i]);
         }
       }
     },
@@ -620,25 +592,11 @@ function shaftLeaf(box, glassMat, frameMat) {
   return group;
 }
 
-// 大门的材质往镜头偏。电梯门整扇留在槽里，偏了会穿出正面墙。
-function liftDoorMaterials(glassMat, frameMat) {
-  const next = (material) => {
-    const copy = material.clone();
-    copy.onBeforeCompile = material.onBeforeCompile;
-    copy.customProgramCacheKey = material.customProgramCacheKey;
-    copy.polygonOffset = false;
-    copy.polygonOffsetFactor = 0;
-    copy.polygonOffsetUnits = 0;
-    return copy;
-  };
-  return { glass: next(glassMat), frame: next(frameMat) };
-}
-
 export function liftRig(glassMat, frameMat, cabMat, ceilMat, floors, floorMat) {
   const count = floors || 1;
   const root = new THREE.Group();
   const leaves = [];
-  const doorMats = liftDoorMaterials(glassMat, frameMat);
+  const doorMats = slotDoorMaterials(glassMat, frameMat);
   for (let f = 0; f < count; f++) {
     const boxes = liftLeaves(0, f);
     for (let i = 0; i < boxes.length; i++) {
@@ -1401,7 +1359,7 @@ export function horizonMeshes(mats) {
   ], 0.018));
   const z1 = PLAZA_PATH.z1;
   const crossZ = PLAZA_CROSS_Z;
-  // 北端收到正门外墙，压进门前楼板 2 厘米，中间不留一条广场原色。圆心仍用原来的交点。
+  // 北端压进楼体外皮 2 厘米，盖住门口楼板的下沿，中间不留一条广场原色。圆心仍用原来的交点。
   const north = PLAZA.minZ - 0.02;
   const approach = flat(mats.path, 3.6, z1 - north, 0, 0.012, (north + z1) / 2);
   approach.name = "plaza-approach";

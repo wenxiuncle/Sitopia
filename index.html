@@ -19,7 +19,9 @@
   <p id="lift-hint" hidden></p>
   <div id="lower">
   <div id="boot" hidden>
-    <p>千奇百怪、轻松好玩、在线应用、公益宣传按这个顺序挂满，一层不够就再加一层，分类换了也接着挂。<br>进门后往右走一段再上楼梯，沿南墙向东，到墙角左转上二楼。踏步宽、镂空，扶手是木头的。大厅左侧墙正中是十人电梯，朝大厅的一面是门，对面是玻璃墙。门口按 E 叫电梯，轿厢里按 E 开门、按 F 选层。按 F 后右侧楼层一直留着，点好一层就继续走，鼠标收回，再点一次取消，出电梯才收起。按 V 在第一人称和第三人称之间切换。第三人称按住 Alt，鼠标绕着人看，松开回到身后。二楼起，大门正中伸出一座半圆观景台。走近画框，单击，看介绍和链接。点卡片外面，鼠标回到走动。建议使用电脑键鼠。</p>
+    <h1>欢迎来到趣站博物馆</h1>
+    <p class="boot-sub">有趣网址之家荣誉出品</p>
+    <p>这里是有趣网址之家3D虚拟展厅，你可以在这个三维空间里走动，像参观博物馆一样浏览各种有趣的网站；走近画框单击左键即可看到趣站的介绍和链接；馆内左侧有电梯，可以快速到达指定层，虽然可能走楼栏更快。。。如果有多人在线，还可以和小伙伴一起浏览、聊天。</p>
     <ol id="legend"></ol>
   </div>
   <ol id="chatter"></ol>
@@ -31,6 +33,7 @@
   </form>
   <div id="corner" hidden>
     <div id="corner-bar">
+      <span id="lag" title="网站延迟">延迟 –</span>
       <span id="fps">– 帧</span>
       <button id="drawer-toggle" type="button" aria-controls="drawer" aria-expanded="false" aria-label="导航"><span></span></button>
     </div>
@@ -46,15 +49,16 @@
         <div id="lift-pad" hidden></div>
         <div id="online-slot">
           <aside id="roster" hidden>
-            <p class="drawer-label">在线</p>
+            <p class="menu-head">在线</p>
             <ul id="people"></ul>
-            <p class="drawer-label">聊天</p>
+            <p class="menu-head">聊天</p>
             <ol id="chat-log"></ol>
           </aside>
         </div>
       </div>
       <aside id="drawer" aria-hidden="true" inert>
         <div class="drawer-body">
+          <p class="menu-head">设置</p>
           <p class="drawer-label">聊天昵称</p>
           <form id="name-form">
             <input id="nav-name" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="聊天昵称">
@@ -78,10 +82,10 @@
               单人模式
             </label>
           </div>
-          <p class="drawer-label">操作说明</p>
+          <p class="menu-head">操作说明</p>
           <ul id="help-keys">
             <li>W A S D 走动，按住 Shift 加快</li>
-            <li>鼠标 转向</li>
+            <li>回车 聊天</li>
             <li>E 叫电梯、开门</li>
             <li>F 在电梯里选层，点好就继续走</li>
             <li>V 切换第一人称和第三人称</li>
@@ -92,7 +96,7 @@
             <li>M 开关馆内的琴声</li>
             <li>[ ] 切换时辰</li>
           </ul>
-          <p class="drawer-label">项目</p>
+          <p class="menu-head">项目</p>
           <p id="project-line"><a id="project-link" href="https://github.com/wenxiuncle/Sitopia" target="_blank" rel="noopener noreferrer">github.com/wenxiuncle/Sitopia</a></p>
           <p id="credit">Wenxi闻西 用❤️制作</p>
           <p id="music-credit">琴声：Erik Satie《Gymnopédie》第一首，Robin Alciatore 演奏，公有领域</p>

@@ -42,6 +42,7 @@ export function mountPresence(options) {
     onNav,
     onExclusive,
     onReleaseLook,
+    onGate,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
@@ -475,6 +476,7 @@ export function mountPresence(options) {
     syncNameInputs(myName);
     nameGate.hidden = false;
     nameInput.focus();
+    if (onGate) onGate(true);
   }
 
   function commitName(raw) {
@@ -486,9 +488,11 @@ export function mountPresence(options) {
       return;
     }
     const changed = !me || me.name !== name;
+    const wasGate = !nameGate.hidden;
     rememberName(name);
     syncNameInputs(name);
     nameGate.hidden = true;
+    if (wasGate && onGate) onGate(false);
     if (solo) {
       online.textContent = "单人";
       return;

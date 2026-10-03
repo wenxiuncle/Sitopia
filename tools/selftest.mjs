@@ -14,7 +14,6 @@ import {
   HALLS,
   LIFT,
   PLAZA,
-  PLAZA_PATH,
   PLAYER_RADIUS,
   STORY,
   WALL_H,
@@ -298,10 +297,16 @@ function checkDoors() {
   assert(doorWantsOpen(0, 10, false) === true, "approach opens the door");
   assert(doorWantsOpen(0, 12.5, true) === true, "door stays open a little past the sensor");
   assert(doorWantsOpen(0, 14.5, true) === false, "door shuts once the player is clear");
-  const rig = doorRig(new THREE.MeshBasicMaterial(), new THREE.MeshBasicMaterial());
+  const biased = new THREE.MeshBasicMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const rig = doorRig(biased, biased);
   rig.update(0);
   const shutX = (closed[0].minX + closed[0].maxX) / 2;
+  const shutZ = (closed[0].minZ + closed[0].maxZ) / 2;
   assert(Math.abs(rig.leaves[0].position.x - shutX) < 1e-6, "left mesh matches the closed collider");
+  assert(rig.leaves.every((leaf) => leaf.visible), "closed front door is drawn");
+  rig.update(0.5);
+  assert(rig.leaves.every((leaf) => leaf.visible && Math.abs(leaf.scale.x - 1) < 1e-6 && Math.abs(leaf.scale.z - 1) < 1e-6), "half-open front door stays whole");
+  assert(rig.leaves.every((leaf) => Math.abs(leaf.position.z - shutZ) < 1e-6), "half-open front door stays in the slot");
   rig.update(1);
   const openX = (open[0].minX + open[0].maxX) / 2;
   const openRight = (open[1].minX + open[1].maxX) / 2;
@@ -309,6 +314,19 @@ function checkDoors() {
   assert(Math.abs(rig.leaves[1].position.x - openRight) < 1e-6, "right mesh matches the open collider");
   assert(rig.leaves[0].position.x < shutX, "left mesh moves toward -X");
   assert(rig.leaves[1].position.x > 0, "right mesh moves toward +X");
+  assert(rig.leaves.every((leaf) => leaf.visible && Math.abs(leaf.scale.x - 1) < 1e-6), "open front door stays visible");
+  assert(Math.abs(open[0].maxX - closed[0].minX) < 1e-6, "open left leaf meets the left jamb");
+  assert(Math.abs(open[1].minX - closed[1].maxX) < 1e-6, "open right leaf meets the right jamb");
+  assert(Math.abs(open[0].maxX - open[0].minX - (closed[0].maxX - closed[0].minX)) < 1e-9, "open front door keeps its width");
+  let frontMat = null;
+  let frontClipped = false;
+  rig.leaves[0].traverse((obj) => {
+    if (!obj.material) return;
+    if (!frontMat) frontMat = obj.material;
+    if (obj.material.clippingPlanes && obj.material.clippingPlanes.length) frontClipped = true;
+  });
+  assert(frontMat && frontMat.polygonOffset === false, "open front door is not pulled through the wall");
+  assert(!frontClipped, "open front door is not clipped away");
   const seam = closed[1].minX - closed[0].maxX;
   assert(seam > 0 && seam < 0.012, `closed door seam ${seam}`);
 
@@ -473,6 +491,58 @@ function checkDay(built) {
   assert(DAYS.map((day) => day.name).join(",") === "清晨,上午,正午,午后,黄昏,夜晚", "day names");
 }
 
+function boxesOverlap(a, b) {
+  const aBase = a.base || 0;
+  const bBase = b.base || 0;
+  const aTop = aBase + (a.h == null ? WALL_H : a.h);
+  const bTop = bBase + (b.h == null ? WALL_H : b.h);
+  if (aTop <= bBase + 1e-4 || bTop <= aBase + 1e-4) return false;
+  return a.minX < b.maxX - 1e-4 && a.maxX > b.minX + 1e-4 && a.minZ < b.maxZ - 1e-4 && a.maxZ > b.minZ + 1e-4;
+}
+
+function checkFrontPocket(built, label) {
+  const walls = built.stone.concat(built.white, built.liners, built.corners, built.blocks);
+  const floors = [0];
+  if (built.floors > 1) floors.push(1);
+  for (let n = 0; n < floors.length; n++) {
+    const floor = floors[n];
+    for (let t = 0; t <= 10; t++) {
+      const leaves = doorBoxes(t / 10, floor);
+      for (let i = 0; i < leaves.length; i++) {
+        let hit = false;
+        for (let w = 0; w < walls.length; w++) {
+          if (boxesOverlap(walls[w], leaves[i])) hit = true;
+        }
+        assert(!hit, `${label} front door floor ${floor} t=${t / 10} leaf ${i} clips a wall`);
+      }
+    }
+  }
+  const parked = doorBoxes(1, 0);
+  for (let i = 0; i < parked.length; i++) {
+    const leaf = parked[i];
+    const covers = (wall, side) => {
+      if ((wall.base || 0) > 0.02) return false;
+      if (wall.minX > leaf.minX + 0.02 || wall.maxX < leaf.maxX - 0.02) return false;
+      const depth = wall.maxZ - wall.minZ;
+      if (depth <= 0.04) return false;
+      if (side === "in") return wall.maxZ <= leaf.minZ + 1e-4 && leaf.minZ - wall.maxZ < 0.03;
+      return wall.minZ >= leaf.maxZ - 1e-4 && wall.minZ - leaf.maxZ < 0.03;
+    };
+    const back = built.stone.filter((wall) => covers(wall, "in"));
+    const front = built.stone.filter((wall) => covers(wall, "out"));
+    assert(back.length === 1 && front.length === 1, `${label} front door side ${i} is not a double wall (${back.length}/${front.length})`);
+    const plug = built.stone.some((wall) => {
+      const base = wall.base || 0;
+      const depth = wall.maxZ - wall.minZ;
+      return base > leaf.h && base < leaf.h + 0.02
+        && wall.minX <= leaf.minX + 0.001 && wall.maxX >= leaf.maxX - 0.001
+        && wall.minZ < leaf.maxZ && wall.maxZ > leaf.minZ
+        && depth > 0.04 && depth < (leaf.maxZ - leaf.minZ) + 0.05;
+    });
+    assert(plug, `${label} front door pocket stays open above the leaf`);
+  }
+}
+
 function checkBuild(sites, label) {
   const built = buildMuseum(sites);
   const cats = new Set(HALLS.map((hall) => hall.cat));
@@ -569,6 +639,7 @@ function checkBuild(sites, label) {
   const foyerGap = doorInner - firstNear;
   assert(Math.abs(foyerGap - 13.8) < 0.05, `${label} foyer gap ${foyerGap}`);
   if (label === "fixture") checkDoors();
+  checkFrontPocket(built, label);
 
   const scene = new THREE.Scene();
   const borderMat = new THREE.MeshLambertMaterial();
@@ -778,11 +849,11 @@ function checkDress(built) {
   const approach = dressed.root.getObjectByName("plaza-approach");
   assert(approach != null, "plaza approach");
   const approachNorth = approach.position.z - approach.geometry.parameters.height / 2;
-  assert(approachNorth <= PLAZA.minZ && approachNorth > PLAZA.minZ - 0.05, "plaza cross reaches the front door");
   let apronSouth = -Infinity;
   const apron = built.floorPlates[0].outer;
   for (let i = 0; i < apron.length; i++) if (apron[i][1] > apronSouth) apronSouth = apron[i][1];
-  assert(apronSouth >= PLAZA_PATH.z0 - 0.001, "door apron meets the plaza cross");
+  assert(Math.abs(apronSouth - PLAZA.minZ) < 0.001, "door apron stops at the facade");
+  assert(approachNorth < apronSouth && approachNorth > apronSouth - 0.05, "plaza cross tucks under the door apron");
   const rails = built.dress.filter((item) => item.kind === "glass" && item.maxY - item.minY > 0.7 && item.maxY - item.minY < 1.2);
   assert(rails.length > 0, "stair-corner glass");
   for (let i = 0; i < rails.length; i++) {

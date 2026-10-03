@@ -28,7 +28,7 @@ const DOOR_D = 0.06;
 const DOOR_GAP = 0.002;
 const DOOR_SENSE = 8.2;
 const SOUTH = 4;
-// 自动门在南墙厚度正中。靠室内另做门框会和内墙贴在同一张面上。
+// 自动门在南墙厚度正中，只沿 X 滑进两侧墙槽。靠室内另做门框会和内墙贴在同一张面上。
 const DOOR_Z = SOUTH + WALL_T / 2;
 const FOYER = 14;
 const HALL_A = SOUTH - FOYER;
@@ -955,8 +955,26 @@ export function buildMuseum(sites) {
   const totalH = top + 6.9;
   const shellH = totalH;
 
-  pushBox(stone, -INNER, -DOOR, SOUTH, SOUTH + T, shellH);
-  pushBox(stone, DOOR, INNER, SOUTH, SOUTH + T, shellH);
+  // 两侧墙是双层：靠厅、靠广场各一层，中间留槽。门扇整段待在槽里，不和墙皮交上。
+  const parkedLeaf = doorBoxes(1, 0)[0];
+  const slotGap = 0.012;
+  const pocketClear = 0.07;
+  const skinIn = parkedLeaf.minZ - slotGap;
+  const skinOut = parkedLeaf.maxZ + slotGap;
+  const pocketFar = -parkedLeaf.minX + pocketClear;
+  pushBox(stone, -INNER, -pocketFar, SOUTH, SOUTH + T, shellH);
+  pushBox(stone, pocketFar, INNER, SOUTH, SOUTH + T, shellH);
+  pushBox(stone, -pocketFar, -DOOR, SOUTH, skinIn, shellH);
+  pushBox(stone, -pocketFar, -DOOR, skinOut, SOUTH + T, shellH);
+  pushBox(stone, DOOR, pocketFar, SOUTH, skinIn, shellH);
+  pushBox(stone, DOOR, pocketFar, skinOut, SOUTH + T, shellH);
+  for (let f = 0; f < floorCount; f++) {
+    const base = f * STORY;
+    const next = f === floorCount - 1 ? shellH : (f + 1) * STORY;
+    const y0 = base + DOOR_H + 0.004;
+    pushBox(stone, -pocketFar, -DOOR, skinIn, skinOut, next - y0, "stone", y0);
+    pushBox(stone, DOOR, pocketFar, skinIn, skinOut, next - y0, "stone", y0);
+  }
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
     const headTop = f === floorCount - 1 ? WALL_H : STORY;
@@ -1162,12 +1180,13 @@ export function buildMuseum(sites) {
 
   // 楼板画成一整块，楼梯孔只有一条边。井道从外轮廓上挖掉，窗洞里没有隔板。
   // 楼梯孔靠墙的角收到墙厚里面，角上不再露楼板。
+  // 一层门口收到楼体外皮，不再把室内地面伸到广场上。
   const floorPlates = [];
   const ceilPlates = [];
   floorPlates.push({
     minY: 0.012,
     maxY: 0.04,
-    outer: floorOuterPoly(PLAZA_PATH.z0),
+    outer: floorOuterPoly(PLAZA.minZ),
     holes: [],
   });
   const stairCut = stairHolePoly(0.03);

@@ -1,6 +1,17 @@
 // 馆内背景：Erik Satie《Gymnopédie》第一首。曲子已过版权期。
 // 录音是 Robin Alciatore 的公有领域演奏（Musopen，经 Wikimedia Commons）。
 
+const irCache = new Map();
+
+function cachedImpulse(rate) {
+  let ir = irCache.get(rate);
+  if (!ir) {
+    ir = museumImpulse(rate);
+    irCache.set(rate, ir);
+  }
+  return ir;
+}
+
 const MUSIC_URL = new URL("../audio/gymnopedie-1.mp3", import.meta.url);
 const MUSIC_KEY = "quzhan-museum-music";
 const LEVEL = 0.31;
@@ -101,15 +112,16 @@ export function museumImpulse(rate) {
   return { rate, left, right };
 }
 
-// 把曲子尾巴叠进开头，循环时不再猛地跳回去。
-export function bakeLoop(channels, fade) {
+// 每帧只铺这么多样本，避免进门那一帧把整首曲子铺完。
+const BAKE_CHUNK = 200000;
+
+function writeLoop(channels, fade, out, from, to) {
   const n = channels[0].length;
-  const outN = n - fade;
-  const out = [];
+  const end = Math.min(to, out[0].length);
   for (let c = 0; c < channels.length; c++) {
     const src = channels[c];
-    const dst = new Float32Array(outN);
-    for (let i = 0; i < outN; i++) {
+    const dst = out[c];
+    for (let i = from; i < end; i++) {
       if (i < fade) {
         const x = i / fade;
         const fin = Math.sin(x * Math.PI * 0.5);
@@ -119,8 +131,16 @@ export function bakeLoop(channels, fade) {
         dst[i] = src[i];
       }
     }
-    out.push(dst);
   }
+}
+
+// 把曲子尾巴叠进开头，循环时不再猛地跳回去。
+export function bakeLoop(channels, fade) {
+  const n = channels[0].length;
+  const outN = n - fade;
+  const out = [];
+  for (let c = 0; c < channels.length; c++) out.push(new Float32Array(outN));
+  writeLoop(channels, fade, out, 0, outN);
   return out;
 }
 
@@ -143,6 +163,12 @@ export function createAmbience() {
   let started = false;
   let blend = 0;
   let applied = -1;
+  let baked = null;
+  let playBuffer = null;
+  let baking = false;
+  let copying = false;
+  cachedImpulse(48000);
+  cachedImpulse(44100);
 
   function remember(on) {
     try {
@@ -193,7 +219,7 @@ export function createAmbience() {
 
     const room = ctx.createConvolver();
     room.normalize = false;
-    const ir = museumImpulse(ctx.sampleRate);
+    const ir = cachedImpulse(ctx.sampleRate);
     const buffer = ctx.createBuffer(2, ir.left.length, ir.rate);
     buffer.getChannelData(0).set(ir.left);
     buffer.getChannelData(1).set(ir.right);
@@ -208,19 +234,86 @@ export function createAmbience() {
   let input = null;
 
   function beginVoice() {
-    if (voice || !decoded || !ctx || ctx.state !== "running") return;
-    if (blend <= 0.001) return;
-    const channels = [];
-    for (let c = 0; c < decoded.numberOfChannels; c++) channels.push(decoded.getChannelData(c));
-    const fade = Math.min((decoded.sampleRate * FADE_SEC) | 0, (decoded.length / 3) | 0);
-    const looped = fade > 32 ? bakeLoop(channels, fade) : channels;
-    const audio = ctx.createBuffer(looped.length, looped[0].length, decoded.sampleRate);
-    for (let c = 0; c < looped.length; c++) audio.getChannelData(c).set(looped[c]);
+    if (voice || !playBuffer || !ctx || ctx.state !== "running") return;
     voice = ctx.createBufferSource();
-    voice.buffer = audio;
+    voice.buffer = playBuffer;
     voice.loop = true;
     voice.connect(input);
     voice.start();
+  }
+
+  function later(fn) {
+    window.requestAnimationFrame(fn);
+  }
+
+  function kickCopy() {
+    if (copying || playBuffer || !baked || !ctx || !decoded) return;
+    copying = true;
+    const channels = baked;
+    const rate = decoded.sampleRate;
+    let audio = null;
+    try {
+      audio = ctx.createBuffer(channels.length, channels[0].length, rate);
+    } catch {
+      copying = false;
+      return;
+    }
+    let channel = 0;
+    let offset = 0;
+    const step = () => {
+      const src = channels[channel];
+      const dst = audio.getChannelData(channel);
+      const end = Math.min(src.length, offset + BAKE_CHUNK);
+      dst.set(src.subarray(offset, end), offset);
+      offset = end;
+      if (offset < src.length) {
+        later(step);
+        return;
+      }
+      channel += 1;
+      offset = 0;
+      if (channel < channels.length) {
+        later(step);
+        return;
+      }
+      playBuffer = audio;
+      baked = null;
+      decoded = null;
+      copying = false;
+      if (started) beginVoice();
+    };
+    later(step);
+  }
+
+  // 解码一完就分帧铺循环。走到门口时缓冲区已经在，进门只改音量。
+  function kickBake() {
+    if (baking || baked || playBuffer || !decoded) return;
+    const channels = [];
+    for (let c = 0; c < decoded.numberOfChannels; c++) channels.push(decoded.getChannelData(c));
+    const fade = Math.min((decoded.sampleRate * FADE_SEC) | 0, (decoded.length / 3) | 0);
+    const outN = channels[0].length - fade;
+    if (fade <= 32 || outN < 1) {
+      baked = channels;
+      kickCopy();
+      return;
+    }
+    baking = true;
+    const out = [];
+    for (let c = 0; c < channels.length; c++) out.push(new Float32Array(outN));
+    let cursor = 0;
+    const step = () => {
+      const end = Math.min(outN, cursor + BAKE_CHUNK);
+      writeLoop(channels, fade, out, cursor, end);
+      cursor = end;
+      if (cursor < outN) {
+        later(step);
+        return;
+      }
+      baked = out;
+      baking = false;
+      kickCopy();
+    };
+    later(step);
   }
 
   function decode() {
@@ -228,7 +321,8 @@ export function createAmbience() {
     decoding = true;
     ctx.decodeAudioData(bytes.slice(0)).then((audio) => {
       decoded = audio;
-      beginVoice();
+      bytes = null;
+      kickBake();
     }).catch(() => {
       decoding = false;
     });

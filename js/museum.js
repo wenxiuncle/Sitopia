@@ -221,6 +221,11 @@ function setHover(index) {
   mats.instanceColor.needsUpdate = true;
 }
 
+function gateOpen() {
+  const gate = document.getElementById("name-gate");
+  return !!(gate && !gate.hidden);
+}
+
 function showEscCard() {
   escWantsCard = false;
   boot.hidden = false;
@@ -228,6 +233,11 @@ function showEscCard() {
 }
 
 function hideEscCard() {
+  if (gateOpen()) {
+    boot.hidden = false;
+    document.body.classList.add("esc-card");
+    return;
+  }
   document.body.classList.remove("esc-card");
   boot.hidden = true;
 }
@@ -710,8 +720,11 @@ function noteGesture() {
 }
 
 const fpsReadout = document.getElementById("fps");
+const lagReadout = document.getElementById("lag");
 let fpsCount = 0;
 let fpsStamp = 0;
+let lagBusy = false;
+let lagNext = 0;
 
 function noteFps(now) {
   if (!fpsReadout) return;
@@ -722,6 +735,35 @@ function noteFps(now) {
   fpsReadout.textContent = Math.round((fpsCount * 1000) / span) + " 帧";
   fpsCount = 0;
   fpsStamp = now;
+}
+
+function noteLag(now) {
+  if (!lagReadout || lagBusy || document.hidden || now < lagNext) return;
+  lagNext = now + 2000;
+  lagBusy = true;
+  const url = new URL(location.href);
+  url.hash = "";
+  url.searchParams.set("_lag", String(Math.floor(now)));
+  const start = performance.now();
+  fetch(url, { method: "HEAD", cache: "no-store" })
+    .then((res) => {
+      if (res.ok) return null;
+      if (res.status !== 405 && res.status !== 501) throw new Error(String(res.status));
+      return fetch(url, { cache: "no-store" }).then((got) => {
+        if (!got.ok) throw new Error(String(got.status));
+        return got.arrayBuffer();
+      });
+    })
+    .then(() => {
+      const ms = Math.max(0, Math.round(performance.now() - start));
+      lagReadout.textContent = "延迟 " + ms + " ms";
+    })
+    .catch(() => {
+      lagReadout.textContent = "延迟 –";
+    })
+    .finally(() => {
+      lagBusy = false;
+    });
 }
 
 function makeBeacons(roof) {
@@ -755,6 +797,7 @@ function makeBeacons(roof) {
 
 function animate(now) {
   noteFps(now);
+  noteLag(now);
   if (beacons) {
     const phase = now % 1300;
     const blink = dayIsNight && (phase < 120 || (phase > 240 && phase < 360));
@@ -1081,6 +1124,38 @@ function applyDay(day) {
   if (dropMesh && dropItems) placeDropShadows(dropMesh, dropItems, sun);
 }
 
+// 布置阶段先把馆内、门口和轿厢各画一次到离屏目标，着色器和网格在进门前就编译好。
+function warmPrograms() {
+  const target = new THREE.WebGLRenderTarget(8, 8);
+  const prevTarget = renderer.getRenderTarget();
+  const pose = camera.position.clone();
+  const rx = camera.rotation.x;
+  const ry = camera.rotation.y;
+  const rz = camera.rotation.z;
+  const shots = [
+    [0, EYE, 1.1, 0, EYE, -12],
+    [0, EYE, 1.1, 0, EYE, 6],
+    [LIFT.xDoor + 1.1, EYE, LIFT.cz, LIFT.xInner + 0.4, EYE, LIFT.cz],
+  ];
+  try {
+    renderer.setRenderTarget(target);
+    for (let i = 0; i < shots.length; i++) {
+      const s = shots[i];
+      camera.position.set(s[0], s[1], s[2]);
+      camera.rotation.set(0, 0, 0);
+      camera.lookAt(s[3], s[4], s[5]);
+      camera.updateMatrixWorld();
+      renderer.render(scene, camera);
+    }
+  } finally {
+    camera.position.copy(pose);
+    camera.rotation.set(rx, ry, rz);
+    camera.updateMatrixWorld();
+    renderer.setRenderTarget(prevTarget);
+    target.dispose();
+  }
+}
+
 function buildScene(data) {
   sites = data.sites;
   built = buildMuseum(sites);
@@ -1157,20 +1232,14 @@ function buildScene(data) {
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
+  // 正门和电梯门都整扇留在墙槽里，材质不往镜头偏，否则会穿出盖住槽的墙皮。
   const doorGlass = lit(0xc5dde8, "glass", {
     transparent: true,
     opacity: 0.28,
     depthWrite: false,
     side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
   });
-  const doorFrame = lit(0x4c5550, "room", {
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-  });
+  const doorFrame = lit(0x4c5550, "room");
   // 光锥在人走进光池时仍要看得见，所以双面、不写深度。不参与阳光，避免锥面被切成明暗条。
   coneMat = new THREE.MeshBasicMaterial({
     color: 0xfff1dc,
@@ -1433,6 +1502,10 @@ function buildScene(data) {
     onTyping: (active) => {
       if (active) down.clear();
     },
+    onGate: (open) => {
+      if (open) showEscCard();
+      else hideEscCard();
+    },
     onNav: (open) => {
       parkFocus();
       if (open) {
@@ -1450,10 +1523,6 @@ function buildScene(data) {
     },
   });
   prepareAtlases();
-  loading.hidden = true;
-  hideEscCard();
-  where.hidden = false;
-  crosshair.hidden = false;
   resize();
   shownFloor = playerFloor();
   if (params.get("person") === "3") thirdPerson = true;
@@ -1464,7 +1533,30 @@ function buildScene(data) {
   trackPictures();
   ambience = createAmbience();
   if (heardGesture) ambience.unlock();
-  requestAnimationFrame(animate);
+  try {
+    warmPrograms();
+  } catch {
+    /* 预热失败也要能进馆。 */
+  }
+  let warmed = Promise.resolve();
+  try {
+    if (typeof renderer.compileAsync === "function") warmed = renderer.compileAsync(scene, camera);
+  } catch {
+    warmed = Promise.resolve();
+  }
+  const cap = new Promise((resolve) => window.setTimeout(resolve, 5000));
+  const reveal = () => {
+    if (reveal.done) return;
+    reveal.done = true;
+    renderer.setRenderTarget(null);
+    resize();
+    loading.hidden = true;
+    hideEscCard();
+    where.hidden = false;
+    crosshair.hidden = false;
+    requestAnimationFrame(animate);
+  };
+  Promise.race([Promise.resolve(warmed), cap]).then(reveal, reveal);
 }
 
 function yieldTurn(fn) {
