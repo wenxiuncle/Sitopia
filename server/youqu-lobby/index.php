@@ -1,6 +1,7 @@
 <?php
 // 有趣网址之家上已经挂着的房间。GitHub 预览页不连这里。
 // 规则和 tools/room.mjs 对齐。改房间行为时两处一起改。这次不传到主机。
+// 后台名单在 Cloudflare 房间。这里只认 state 里已经写上的 maxPeople 和 kicks。
 declare(strict_types=1);
 
 const MAX_PEOPLE = 24;
@@ -141,7 +142,7 @@ foreach ($msgs as $msg) {
         $closing = true;
         break;
     }
-    $result = onClientMessage($data["people"], $data["log"], $data["people"][$id], $msg, $now);
+    $result = onClientMessage($data["people"], $data["log"], $data["people"][$id], $msg, $now, $data);
     deliver($data, $id, $result["out"]);
     if ($result["close"]) {
         if (isset($data["people"][$id])) deliver($data, $id, onLeave($data, $id));
@@ -342,6 +343,18 @@ function cleanPose(array $msg): ?array {
     ];
 }
 
+function peopleLimit(array $data): int {
+    $n = (int) ($data["maxPeople"] ?? MAX_PEOPLE);
+    if ($n < 1 || $n > MAX_PEOPLE) return MAX_PEOPLE;
+    return $n;
+}
+
+function kickUntil(array $data, string $seat, int $now): int {
+    if ($seat === "" || !isset($data["kicks"]) || !is_array($data["kicks"])) return 0;
+    $until = (int) ($data["kicks"][$seat] ?? 0);
+    return $until > $now ? $until : 0;
+}
+
 function namedCount(array $people): int {
     $n = 0;
     foreach ($people as $person) {
@@ -417,7 +430,7 @@ function sweep(array &$data, int $now): void {
     }
 }
 
-function onClientMessage(array &$people, array &$log, array &$person, array $msg, int $now): array {
+function onClientMessage(array &$people, array &$log, array &$person, array $msg, int $now, ?array $room = null): array {
     $out = [];
     if (($msg["t"] ?? "") === "pong") {
         if (!empty($person["named"])) {
@@ -430,7 +443,12 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
     if ($msg["t"] === "hi") {
         $got = cleanSeat($msg["seat"] ?? "");
         if ($got !== "") $person["seat"] = $got;
+        $until = $room ? kickUntil($room, (string) ($person["seat"] ?? ""), $now) : 0;
+        if ($until > 0) {
+            return ["close" => true, "out" => [["who" => "self", "obj" => ["t" => "kick", "until" => $until]]]];
+        }
         if (!empty($person["named"])) {
+            if (empty($person["entered"])) $person["entered"] = $now;
             $wasAway = !empty($person["away"]);
             $person["away"] = ($msg["away"] ?? false) === true;
             $welcome = [
@@ -450,11 +468,13 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
             }
             return ["close" => false, "out" => $out];
         }
-        if (namedCount($people) >= MAX_PEOPLE) {
+        $limit = $room ? peopleLimit($room) : MAX_PEOPLE;
+        if (namedCount($people) >= $limit) {
             return ["close" => true, "out" => [["who" => "self", "obj" => ["t" => "full"]]]];
         }
         $person["name"] = uniqueName($people, cleanName($msg["name"] ?? ""), (string) $person["id"]);
         $person["named"] = true;
+        if (empty($person["entered"])) $person["entered"] = $now;
         $person["away"] = ($msg["away"] ?? false) === true;
         $out[] = [
             "who" => "self",

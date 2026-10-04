@@ -10,6 +10,8 @@ const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
 const ONLINE_KEY = "quzhan-museum-online";
 const SOLO_KEY = "quzhan-museum-solo";
+const KICK_KEY = "quzhan-museum-kicked";
+const BEAT_MS = 30000;
 const BUBBLE_LIFE = 6000;
 const HOLD_MS = 30000;
 const SEAT_KEY = "quzhan-museum-seat";
@@ -64,6 +66,7 @@ export function mountPresence(options) {
     onExclusive,
     onReleaseLook,
     onGate,
+    onKick,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
@@ -83,6 +86,9 @@ export function mountPresence(options) {
   const chatInput = document.getElementById("chat-input");
   const selfBubble = document.getElementById("self-bubble");
   const nameGate = document.getElementById("name-gate");
+  const kickGate = document.getElementById("kick-gate");
+  const kickUntilEl = document.getElementById("kick-until");
+  const kickBack = document.getElementById("kick-back");
   const nameInput = document.getElementById("name-input");
   const nameForm = document.getElementById("name-form");
   const navName = document.getElementById("nav-name");
@@ -110,6 +116,9 @@ export function mountPresence(options) {
   let showMap = true;
   let showOnline = true;
   let solo = false;
+  let kickedUntil = 0;
+  let beatTimer = 0;
+  let kickClock = 0;
   let planAt = 0;
   let peopleAt = 0;
   let holdUntil = 0;
@@ -141,6 +150,112 @@ export function mountPresence(options) {
 
   function hello() {
     return { t: "hi", name: myName, away: document.hidden, seat };
+  }
+
+  function beatAddress() {
+    const address = lobbyAddress();
+    if (!address) return "";
+    if (address.startsWith("ws://") || address.startsWith("wss://")) {
+      return address.replace(/^ws/, "http").replace(/\/lobby$/, "/lobby/beat");
+    }
+    if (address.startsWith("http://") || address.startsWith("https://")) {
+      return address.replace(/\/lobby$/, "/lobby/beat");
+    }
+    return "";
+  }
+
+  function stillKicked() {
+    return kickedUntil > Date.now();
+  }
+
+  function paintKick() {
+    if (!kickUntilEl) return;
+    if (kickedUntil <= Date.now()) {
+      kickUntilEl.textContent = "可以重新进入了。";
+      if (kickBack) kickBack.hidden = false;
+      window.clearInterval(kickClock);
+      kickClock = 0;
+      return;
+    }
+    if (kickBack) kickBack.hidden = true;
+    const when = new Date(kickedUntil).toLocaleString("zh-CN", {
+      hour12: false,
+      timeZone: "Asia/Shanghai",
+    });
+    kickUntilEl.textContent = "请在 " + when + " 之后再来。";
+  }
+
+  function stopBeat() {
+    window.clearInterval(beatTimer);
+    beatTimer = 0;
+  }
+
+  function showKick(until) {
+    kickedUntil = Number(until) || (Date.now() + 10 * 60 * 1000);
+    try {
+      sessionStorage.setItem(KICK_KEY, String(kickedUntil));
+    } catch {
+      /* 这一页里照样停着。 */
+    }
+    stopBeat();
+    if (kickGate) kickGate.hidden = false;
+    if (onKick) onKick(true);
+    if (onReleaseLook) onReleaseLook();
+    online.textContent = "已请出";
+    paintKick();
+    window.clearInterval(kickClock);
+    kickClock = window.setInterval(paintKick, 1000);
+  }
+
+  function applyKick(until) {
+    dropLink();
+    showKick(until);
+  }
+
+  function sendLeave() {
+    const url = beatAddress().replace(/\/lobby\/beat$/, "/lobby/leave");
+    if (!url || !seat || typeof navigator.sendBeacon !== "function") return;
+    const body = new Blob(
+      [JSON.stringify({ seat })],
+      { type: "text/plain;charset=UTF-8" },
+    );
+    try {
+      navigator.sendBeacon(url, body);
+    } catch {
+      /* 页面正在关。 */
+    }
+  }
+
+  function sendBeat() {
+    if (!solo || !confirmed || !myName || stillKicked()) return;
+    const url = beatAddress();
+    if (!url) return;
+    fetch(url, {
+      method: "POST",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { "content-type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify({ name: myName, seat, away: document.hidden }),
+    }).then(async (res) => {
+      if (res.status !== 403) return null;
+      try {
+        return await res.json();
+      } catch {
+        return null;
+      }
+    }).then((data) => {
+      if (data && data.t === "kick") applyKick(data.until);
+    }).catch(() => {
+      /* 下一轮心跳再试。 */
+    });
+  }
+
+  function startBeat() {
+    stopBeat();
+    if (!solo || !confirmed || !myName || stillKicked()) return;
+    sendBeat();
+    beatTimer = window.setInterval(sendBeat, BEAT_MS);
   }
 
   function rememberOther(person, snap) {
@@ -353,6 +468,10 @@ export function mountPresence(options) {
       else crowd.say(msg.id, msg.text, now);
       return;
     }
+    if (msg.t === "kick") {
+      applyKick(msg.until);
+      return;
+    }
     if (msg.t === "full") toast("展厅人满了");
   }
 
@@ -419,7 +538,7 @@ export function mountPresence(options) {
     if (id) beaconLeave(address, id);
     online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
     window.clearTimeout(retry);
-    if (dead || document.hidden || !confirmed || solo) return;
+    if (stillKicked() || dead || document.hidden || !confirmed || solo) return;
     retry = window.setTimeout(arm, 1500);
   }
 
@@ -479,7 +598,7 @@ export function mountPresence(options) {
   }
 
   function arm() {
-    if (solo || dead || document.hidden || !confirmed || !myName || socketLive()) return;
+    if (stillKicked() || solo || dead || document.hidden || !confirmed || !myName || socketLive()) return;
     const address = lobbyAddress();
     if (!address) {
       online.textContent = "未连接";
@@ -508,10 +627,18 @@ export function mountPresence(options) {
       }
       if (msg && typeof msg.t === "string") onMessage(msg);
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (socket !== ws) return;
       socket = null;
       linked = false;
+      if (stillKicked()) {
+        online.textContent = "已请出";
+        return;
+      }
+      if (event.code === 4001) {
+        applyKick(0);
+        return;
+      }
       online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
       window.clearTimeout(retry);
       if (dead || document.hidden || !confirmed || solo) return;
@@ -541,7 +668,8 @@ export function mountPresence(options) {
     nameGate.hidden = true;
     if (wasGate && onGate) onGate(false);
     if (solo) {
-      online.textContent = "单人";
+      online.textContent = stillKicked() ? "已请出" : "单人";
+      startBeat();
       return;
     }
     if (!linked) {
@@ -674,9 +802,12 @@ export function mountPresence(options) {
     }
     if (on) {
       dropLink();
-      online.textContent = confirmed ? "单人" : "先起个名字";
+      online.textContent = stillKicked() ? "已请出" : (confirmed ? "单人" : "先起个名字");
+      startBeat();
       return;
     }
+    stopBeat();
+    sendLeave();
     if (!confirmed || !myName) {
       online.textContent = "先起个名字";
       return;
@@ -782,7 +913,7 @@ export function mountPresence(options) {
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Tab" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-    if (!nameGate.hidden || event.repeat) return;
+    if (!nameGate.hidden || (kickGate && !kickGate.hidden) || event.repeat) return;
     const el = event.target;
     if (el && el.closest && el.closest("input, textarea")) return;
     event.preventDefault();
@@ -797,7 +928,8 @@ export function mountPresence(options) {
       closeChat();
       return;
     }
-    if (el && el.closest && el.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #day, #panel")) return;
+    if (kickGate && !kickGate.hidden) return;
+    if (el && el.closest && el.closest("input, textarea, button, select, #drawer, #roster, #name-gate, #kick-gate, #day, #panel")) return;
     if (!nameGate.hidden && event.key === "Enter" && !event.repeat) {
       event.preventDefault();
       nameInput.focus();
@@ -810,6 +942,8 @@ export function mountPresence(options) {
   });
 
   document.addEventListener("visibilitychange", () => {
+    if (stillKicked()) return;
+    if (solo) sendBeat();
     if (document.hidden) {
       window.clearTimeout(retry);
       if (Date.now() < holdUntil) return;
@@ -830,6 +964,8 @@ export function mountPresence(options) {
   window.addEventListener("pagehide", () => {
     dead = true;
     window.clearTimeout(retry);
+    stopBeat();
+    if (solo) sendLeave();
     if (http) {
       const leaving = http;
       stopHttp(leaving);
@@ -838,11 +974,43 @@ export function mountPresence(options) {
     if (socket) socket.close();
   });
 
+  try {
+    kickedUntil = Number(sessionStorage.getItem(KICK_KEY) || 0);
+  } catch {
+    kickedUntil = 0;
+  }
+  if (!(kickedUntil > Date.now())) kickedUntil = 0;
+
+  if (kickBack) {
+    kickBack.addEventListener("click", () => {
+      if (stillKicked()) return;
+      kickedUntil = 0;
+      try {
+        sessionStorage.removeItem(KICK_KEY);
+      } catch {
+        /* 这一页里先放行。 */
+      }
+      window.clearInterval(kickClock);
+      if (kickGate) kickGate.hidden = true;
+      if (onKick) onKick(false);
+      if (solo) {
+        online.textContent = confirmed ? "单人" : "先起个名字";
+        startBeat();
+        return;
+      }
+      if (confirmed && myName && !document.hidden) arm();
+    });
+  }
+
   syncNameInputs(myName);
-  if (confirmed && myName) {
+  if (kickedUntil) {
+    showKick(kickedUntil);
+  } else if (confirmed && myName) {
     nameGate.hidden = true;
-    if (solo) online.textContent = "单人";
-    else if (document.hidden) online.textContent = "未连接";
+    if (solo) {
+      online.textContent = "单人";
+      startBeat();
+    } else if (document.hidden) online.textContent = "未连接";
     else arm();
   } else if (new URLSearchParams(location.search).has("noname")) {
     nameGate.hidden = true;

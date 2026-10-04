@@ -31,6 +31,13 @@
     <input id="name-input" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
     <button type="submit">进入</button>
   </form>
+  <div id="kick-gate" hidden>
+    <div id="kick-card">
+      <p><strong>你已被请出展厅。</strong></p>
+      <p id="kick-until"></p>
+      <button type="button" id="kick-back" hidden>重新进入</button>
+    </div>
+  </div>
   <div id="corner" hidden>
     <div id="corner-bar">
       <span id="lag" title="网站延迟">延迟 –</span>

@@ -857,6 +857,40 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   color: #fffcf8;
 }
 
+#kick-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(44, 41, 38, 0.28);
+}
+#kick-gate[hidden] { display: none; }
+#kick-card {
+  width: min(360px, calc(100% - 32px));
+  padding: 18px 20px 16px;
+  background: rgba(255, 252, 248, 0.94);
+  border: 1px solid rgba(44, 41, 38, 0.1);
+  color: #2c2926;
+}
+#kick-card p {
+  margin: 0 0 10px;
+  color: #6f6a64;
+  font-size: 14px;
+  line-height: 1.6;
+}
+#kick-card strong { color: #2c2926; }
+#kick-back {
+  font: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 8px 14px;
+  border: 1px solid #2c2926;
+  background: #2c2926;
+  color: #fffcf8;
+}
+
 @media (max-width: 720px) {
   #panel { right: 12px; top: auto; bottom: 12px; transform: none; }
   #corner { --nav-w: 260px; --map-w: 168px; top: 12px; right: 12px; bottom: 12px; }

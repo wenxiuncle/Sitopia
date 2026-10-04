@@ -128,6 +128,7 @@ let nightCeilMat = null;
 let nightCeilPlateMat = null;
 let nightBeamMat = null;
 let presence = null;
+let visitorOut = false;
 let navHoldsLook = false;
 let doors = null;
 let liftDoors = null;
@@ -250,6 +251,7 @@ function hideEscCard() {
 }
 
 function requestWalk() {
+  if (visitorOut) return;
   parkFocus();
   const pending = view.requestPointerLock();
   if (pending && typeof pending.catch === "function") pending.catch(() => {});
@@ -294,7 +296,7 @@ function closePanel(relock) {
 
 function interactiveTarget(target) {
   return !!(target && target.closest && target.closest(
-    "#panel, #roster, #drawer, #name-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
+    "#panel, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
   ));
 }
 
@@ -685,7 +687,7 @@ function step(dt, now) {
       liftDoors.update(opens, lift.y);
     }
   }
-  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open");
+  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !visitorOut;
   document.body.classList.toggle("walking", locked);
   if (!locked) {
     vx = 0;
@@ -1555,6 +1557,10 @@ function buildScene(data) {
     onGate: (open) => {
       if (open) showEscCard();
       else hideEscCard();
+    },
+    onKick: (active) => {
+      visitorOut = !!active;
+      if (active) releaseLook();
     },
     onExclusive: (which) => {
       if (which === "roster") closeLiftPad();

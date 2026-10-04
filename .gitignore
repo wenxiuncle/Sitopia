@@ -2,5 +2,6 @@ data/frames/
 趣站博物馆参考素材/
 node_modules/
 .wrangler/
+.admin-token
 Thumbs.db
 Desktop.ini

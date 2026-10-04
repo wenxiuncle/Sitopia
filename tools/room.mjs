@@ -1,6 +1,48 @@
 // 线上同一套规则在 server/youqu-lobby/index.php。改这里时那份一起改。
-export const MAX_PEOPLE = 24;
+// 人数硬顶是 PEOPLE_CAP。后台可以把当前上限调低，不能再调高。
+export const PEOPLE_CAP = 24;
+export const MAX_PEOPLE = PEOPLE_CAP;
 export const LOG_MAX = 40;
+export const SOLO_MS = 45000;
+
+export function cleanMax(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1 || n > PEOPLE_CAP) return 0;
+  return n;
+}
+
+export function cleanIp(value) {
+  const text = String(value || "").trim();
+  if (text.length < 3 || text.length > 64) return "";
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(text)) {
+    const parts = text.split(".");
+    for (let i = 0; i < 4; i++) if (Number(parts[i]) > 255) return "";
+    return text;
+  }
+  if (/^[0-9A-Fa-f:]+$/.test(text) && text.includes(":")) return text;
+  return "";
+}
+
+export function kickSpan(minutes) {
+  return Number(minutes) === 1440 ? 1440 * 60 * 1000 : 10 * 60 * 1000;
+}
+
+export function kickUntil(kicks, seat, now) {
+  if (!kicks || !seat) return 0;
+  const until = Number(kicks[seat] || 0);
+  return until > now ? until : 0;
+}
+
+export function pruneKicks(kicks, now) {
+  const next = {};
+  if (!kicks) return next;
+  const seats = Object.keys(kicks);
+  for (let i = 0; i < seats.length; i++) {
+    const until = Number(kicks[seats[i]] || 0);
+    if (until > now) next[seats[i]] = until;
+  }
+  return next;
+}
 
 export function cleanName(value) {
   const text = String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 12);
@@ -47,11 +89,12 @@ export function blankPerson(id, now) {
     lastMove: 0,
     lastSay: 0,
     lastName: 0,
+    entered: 0,
     gone: false,
   };
 }
 
-function namedCount(people) {
+export function namedCount(people) {
   let n = 0;
   for (const person of people.values()) if (person.named && !person.away && !person.gone) n++;
   return n;
@@ -119,6 +162,7 @@ export function adoptSeat(people, person, seat) {
   person.lastMove = prev.lastMove || 0;
   person.lastSay = prev.lastSay || 0;
   person.lastName = prev.lastName || 0;
+  person.entered = prev.entered || person.entered || 0;
   person.seen = Math.max(person.seen || 0, prev.seen || 0);
   person.seat = clean;
   person.gone = false;
@@ -164,7 +208,73 @@ function welcome(person, people, log, resume) {
   return { who: "self", obj };
 }
 
-export function onClientMessage(people, log, person, msg, now) {
+export function rememberSolo(solo, msg, now, ip) {
+  const seat = cleanSeat(msg && msg.seat);
+  if (!seat) return { error: "seat" };
+  let row = solo.get(seat);
+  if (!row) {
+    row = { seat, name: "", ip: "", entered: now, seen: now, away: false };
+    solo.set(seat, row);
+  }
+  row.name = cleanName(msg.name);
+  row.seen = now;
+  row.away = msg.away === true;
+  if (ip) row.ip = ip;
+  if (!row.entered) row.entered = now;
+  return { ok: true, row };
+}
+
+export function forgetSolo(solo, seat) {
+  const clean = cleanSeat(seat);
+  if (!clean) return false;
+  return solo.delete(clean);
+}
+
+export function pruneSolo(solo, now) {
+  for (const [seat, row] of solo) {
+    if (!row || now - (row.seen || 0) > SOLO_MS) solo.delete(seat);
+  }
+}
+
+export function adminPeople(people, solo, now) {
+  pruneSolo(solo, now);
+  const onlineSeats = new Set();
+  const list = [];
+  for (const person of people.values()) {
+    if (!person || !person.named || person.gone) continue;
+    if (person.seat) onlineSeats.add(person.seat);
+    list.push({
+      mode: "online",
+      id: person.id,
+      seat: person.seat || "",
+      name: person.name || "",
+      ip: person.ip || "",
+      entered: person.entered || person.seen || now,
+      seen: person.seen || now,
+      away: !!person.away,
+      y: person.y || 0,
+    });
+  }
+  for (const row of solo.values()) {
+    if (onlineSeats.has(row.seat)) continue;
+    list.push({
+      mode: "solo",
+      id: "",
+      seat: row.seat,
+      name: row.name || "",
+      ip: row.ip || "",
+      entered: row.entered || row.seen || now,
+      seen: row.seen || now,
+      away: !!row.away,
+      y: null,
+    });
+  }
+  list.sort((a, b) => a.entered - b.entered);
+  return list;
+}
+
+export function onClientMessage(people, log, person, msg, now, room) {
+  const limit = cleanMax(room && room.maxPeople) || MAX_PEOPLE;
   const out = [];
   if (msg.t === "pong") {
     if (person.named) {
@@ -181,7 +291,12 @@ export function onClientMessage(people, log, person, msg, now) {
       if (prev.id === person.id || !prev.named || prev.away) continue;
       out.push({ who: "all", obj: { t: "bye", id: prev.id, name: prev.name, n: namedCount(people) } });
     }
+    const until = kickUntil(room && room.kicks, person.seat, now);
+    if (until) {
+      return { close: true, out: [{ who: "self", obj: { t: "kick", until } }], drop: dropped };
+    }
     if (person.named) {
+      if (!person.entered) person.entered = now;
       const wasAway = person.away;
       person.away = msg.away === true;
       out.push(welcome(person, people, log, true));
@@ -191,11 +306,12 @@ export function onClientMessage(people, log, person, msg, now) {
       }
       return { close: false, out, drop: dropped };
     }
-    if (namedCount(people) >= MAX_PEOPLE) {
+    if (namedCount(people) >= limit) {
       return { close: true, out: [{ who: "self", obj: { t: "full" } }], drop: dropped };
     }
     person.name = uniqueName(people, cleanName(msg.name), person.id);
     person.named = true;
+    if (!person.entered) person.entered = now;
     person.away = msg.away === true;
     out.push(welcome(person, people, log, false));
     if (!person.away) out.push({ who: "others", obj: present(person, people) });

@@ -1,5 +1,21 @@
 import crypto from "node:crypto";
-import { blankPerson, onClientMessage, onLeave } from "./room.mjs";
+import {
+  PEOPLE_CAP,
+  MAX_PEOPLE,
+  adminPeople,
+  blankPerson,
+  cleanIp,
+  cleanMax,
+  cleanSeat,
+  forgetSolo,
+  kickSpan,
+  kickUntil,
+  namedCount,
+  onClientMessage,
+  onLeave,
+  pruneKicks,
+  rememberSolo,
+} from "./room.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -28,9 +44,24 @@ function encodeText(text) {
   return encodeFrame(0x1, Buffer.from(text));
 }
 
+function closeSocket(socket, code, reason) {
+  const why = Buffer.from(String(reason || ""));
+  const payload = Buffer.alloc(2 + why.length);
+  payload.writeUInt16BE(code, 0);
+  why.copy(payload, 2);
+  try {
+    socket.write(encodeFrame(0x8, payload));
+    socket.end();
+  } catch {
+    socket.destroy();
+  }
+}
+
 export function attachLobby(server) {
   const people = new Map();
   const log = [];
+  const solo = new Map();
+  const room = { maxPeople: MAX_PEOPLE, kicks: {} };
 
   function send(socket, obj) {
     if (socket.destroyed) return;
@@ -66,7 +97,10 @@ export function attachLobby(server) {
       else if (ev.who === "others") broadcast(ev.obj, person.id);
       else broadcast(ev.obj);
     }
-    if (result.close) person.socket.end();
+    if (result.close) {
+      const kick = result.out.some((ev) => ev.obj && ev.obj.t === "kick");
+      closeSocket(person.socket, kick ? 4001 : 1000, kick ? "kicked" : "full");
+    }
   }
 
   function drop(person) {
@@ -89,7 +123,9 @@ export function attachLobby(server) {
       return;
     }
     if (!msg || typeof msg.t !== "string") return;
-    deliver(person, onClientMessage(people, log, person, msg, Date.now()));
+    const result = onClientMessage(people, log, person, msg, Date.now(), room);
+    if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
+    deliver(person, result);
   }
 
   function adopt(socket) {
@@ -186,7 +222,8 @@ export function attachLobby(server) {
       return;
     }
     const accept = crypto.createHash("sha1").update(key + GUID).digest("base64");
-    adopt(socket);
+    const person = adopt(socket);
+    person.ip = cleanIp(String(req.socket.remoteAddress || "").replace(/^::ffff:/, ""));
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\n" +
       "Upgrade: websocket\r\n" +
@@ -219,6 +256,62 @@ export function attachLobby(server) {
       clearInterval(timer);
       server.off("upgrade", onUpgrade);
       for (const person of Array.from(people.values())) person.socket.destroy();
+    },
+    beat(msg, ip) {
+      const now = Date.now();
+      const until = kickUntil(room.kicks, cleanSeat(msg && msg.seat), now);
+      if (until) return { status: 403, body: { t: "kick", until } };
+      const result = rememberSolo(solo, msg, now, cleanIp(ip));
+      if (result.error) return { status: 400, body: { error: result.error } };
+      return { status: 200, body: { ok: true } };
+    },
+    leave(msg) {
+      forgetSolo(solo, msg && msg.seat);
+      return { status: 200, body: { ok: true } };
+    },
+    state() {
+      const now = Date.now();
+      room.kicks = pruneKicks(room.kicks, now);
+      return {
+        max: room.maxPeople,
+        cap: PEOPLE_CAP,
+        inHall: namedCount(people),
+        now,
+        people: adminPeople(people, solo, now),
+      };
+    },
+    setMax(n) {
+      const clean = cleanMax(n);
+      if (!clean) return 0;
+      room.maxPeople = clean;
+      return clean;
+    },
+    kick(body) {
+      const now = Date.now();
+      let seat = cleanSeat(body && body.seat);
+      const id = body && typeof body.id === "string" ? body.id.slice(0, 16) : "";
+      if (!seat && id) {
+        for (const person of people.values()) {
+          if (!person.gone && person.id === id && person.seat) {
+            seat = person.seat;
+            break;
+          }
+        }
+      }
+      if (!seat && !id) return 0;
+      const until = now + kickSpan(body && body.minutes);
+      if (seat) {
+        room.kicks[seat] = until;
+        forgetSolo(solo, seat);
+      }
+      for (const person of Array.from(people.values())) {
+        if (person.gone || !person.socket || person.socket.destroyed) continue;
+        const match = (seat && person.seat === seat) || (id && person.id === id);
+        if (!match) continue;
+        send(person.socket, { t: "kick", until });
+        closeSocket(person.socket, 4001, "kicked");
+      }
+      return until;
     },
   };
 }
