@@ -2,7 +2,8 @@ name: refresh-frames
 
 on:
   schedule:
-    - cron: "0 20 * * *"
+    # 每天 09:00 北京时间。GitHub 的 cron 按 UTC 计算。
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 permissions:
