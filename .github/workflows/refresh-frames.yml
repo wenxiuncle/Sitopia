@@ -1,0 +1,34 @@
+name: refresh-frames
+
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: 拉取展品
+        run: node tools/fetch-sites.mjs
+      - name: 补画芯
+        run: node tools/fetch-sites.mjs --images
+      - name: 有变化就提交
+        run: |
+          git config user.name "Wenxi闻西"
+          git config user.email "226676894+wenxiuncle@users.noreply.github.com"
+          if git diff --quiet -- data/sites.json; then
+            echo "unchanged"
+            exit 0
+          fi
+          node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const data = JSON.parse(readFileSync('data/sites.json','utf8')); writeFileSync('data/refresh.json', JSON.stringify({ at: new Date().toISOString(), count: data.count || 0, missingPortal: data.missingPortal || 0 }) + '\n');"
+          git add data/sites.json data/refresh.json
+          git commit -m "更新馆内画框"
+          git push
