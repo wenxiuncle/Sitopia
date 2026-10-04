@@ -87,6 +87,7 @@ export async function frameStatus(token) {
   if (!run) return report;
   report.url = typeof run.html_url === "string" ? run.html_url : "";
   report.at = run.updated_at || run.run_started_at || "";
+  report.title = typeof run.display_title === "string" ? run.display_title : "";
   if (run.status === "queued" || run.status === "waiting" || run.status === "pending") report.status = "queued";
   else if (run.status !== "completed") report.status = "running";
   else if (run.conclusion === "success") report.status = "success";
@@ -98,13 +99,15 @@ export async function frameStatus(token) {
   return report;
 }
 
-export async function frameDispatch(token) {
+export async function frameDispatch(token, full) {
   if (!token) return { error: "unset" };
+  const body = { ref: REF };
+  if (full) body.inputs = { full: "true" };
   let res;
   try {
     res = await github(token, "/repos/" + REPO + "/actions/workflows/" + WORKFLOW + "/dispatches", {
       method: "POST",
-      body: JSON.stringify({ ref: REF }),
+      body: JSON.stringify(body),
     });
   } catch {
     return { error: "network" };

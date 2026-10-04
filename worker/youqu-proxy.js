@@ -96,7 +96,16 @@ export default {
     if (url.pathname === "/admin/api/frames") {
       if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
       if (request.method === "GET") return json(await frameStatus(env.GITHUB_DISPATCH_TOKEN || ""));
-      if (request.method === "POST") return json(await frameDispatch(env.GITHUB_DISPATCH_TOKEN || ""));
+      if (request.method === "POST") {
+        let full = false;
+        try {
+          const body = await request.json();
+          full = !!(body && body.full);
+        } catch {
+          full = false;
+        }
+        return json(await frameDispatch(env.GITHUB_DISPATCH_TOKEN || "", full));
+      }
       return new Response("method", { status: 405 });
     }
     if (url.pathname.startsWith("/admin/api/")) {

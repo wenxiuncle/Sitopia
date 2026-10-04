@@ -5,9 +5,20 @@ on:
     # 每天 09:00 北京时间。GitHub 的 cron 按 UTC 计算。
     - cron: "0 1 * * *"
   workflow_dispatch:
+    inputs:
+      full:
+        description: 重读四个分类的全部文章
+        type: boolean
+        default: false
+
+concurrency:
+  group: refresh-frames
+  cancel-in-progress: false
 
 permissions:
   contents: write
+
+run-name: ${{ (inputs.full == true || inputs.full == 'true') && '全部重抓' || '抓取新文章' }}
 
 jobs:
   fetch:
@@ -17,8 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: 拉取新展品
-        run: node tools/fetch-sites.mjs
+      - name: 拉取展品
+        run: node tools/fetch-sites.mjs ${{ (inputs.full == true || inputs.full == 'true') && '--full' || '' }}
       - name: 有变化就提交
         run: |
           git config user.name "Wenxi闻西"
@@ -29,5 +40,5 @@ jobs:
           fi
           node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const data = JSON.parse(readFileSync('data/sites.json','utf8')); writeFileSync('data/refresh.json', JSON.stringify({ at: new Date().toISOString(), count: data.count || 0, missingPortal: data.missingPortal || 0 }) + '\n');"
           git add data/sites.json data/refresh.json
-          git commit -m "更新馆内画框"
+          git commit -m "${{ (inputs.full == true || inputs.full == 'true') && '重读馆内画框' || '更新馆内画框' }}"
           git push

@@ -38,11 +38,15 @@ export const adminHtml = `<!DOCTYPE html>
       background: #fff;
     }
     input[type="password"] { width: 100%; }
-    button.solid, #login button {
+    button.solid, button.line, #login button {
       border: 1px solid #2c2926;
       background: #2c2926;
       color: #fffcf8;
       padding: 8px 14px;
+    }
+    button.line {
+      background: transparent;
+      color: #2c2926;
     }
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     #max-form, #kick-form, #visit-form, #frame-form, #arrange-form {
@@ -142,7 +146,8 @@ export const adminHtml = `<!DOCTYPE html>
     <h2>画框</h2>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
-      <span class="hint">只抓上次清单之后新发布的文章。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
+      <button class="line" id="frame-full" type="button">全部重抓</button>
+      <span class="hint">立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
     </form>
     <p id="frame-status">正在读取…</p>
     <h2>默认排列</h2>
@@ -365,8 +370,9 @@ export const adminHtml = `<!DOCTYPE html>
       }
       const count = data.count == null ? "" : " · 展品 " + data.count;
       const at = when(data.at);
+      const title = data.title ? " · " + data.title : "";
       if (data.status === "queued" || data.status === "running") {
-        frameStatus.textContent = "正在抓取" + (at ? " · " + at : "");
+        frameStatus.textContent = "正在抓取" + title + (at ? " · " + at : "");
         return;
       }
       if (data.status === "success") {
@@ -547,12 +553,13 @@ export const adminHtml = `<!DOCTYPE html>
       refreshVisits();
     });
 
-    document.getElementById("frame-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
+    async function queueFrames(full) {
       frameStatus.textContent = "正在排队…";
       const res = await fetch("/admin/api/frames", {
         method: "POST",
         credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ full: !!full }),
       });
       if (res.status === 401) {
         showLogin("口令已失效");
@@ -576,9 +583,17 @@ export const adminHtml = `<!DOCTYPE html>
         frameStatus.textContent = "没有排上这次抓取";
         return;
       }
-      frameStatus.textContent = "已经排队。抓完有变化才会换成新画框，打开着的展厅要刷新才看得到";
+      frameStatus.textContent = full
+        ? "已经排队。正在重读四个分类的全部文章，旧文的标题、已挂和删除会一起更新"
+        : "已经排队。只抓上次清单之后新发布的文章";
       window.setTimeout(refreshFrames, 4000);
+    }
+
+    document.getElementById("frame-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      queueFrames(false);
     });
+    document.getElementById("frame-full").addEventListener("click", () => queueFrames(true));
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {
       event.preventDefault();

@@ -117,7 +117,8 @@ async function route(req, res, lobby, path, url) {
     return;
   }
   if (path === "/admin/api/frames" && req.method === "POST") {
-    send(res, 200, await frameDispatch(process.env.GITHUB_DISPATCH_TOKEN || ""));
+    const body = await readBody(req);
+    send(res, 200, await frameDispatch(process.env.GITHUB_DISPATCH_TOKEN || "", !!(body && body.full)));
     return;
   }
   if (path === "/admin/api/arrange" && req.method === "GET") {
