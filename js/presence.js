@@ -230,13 +230,19 @@ export function mountPresence(options) {
     if (!solo || !confirmed || !myName || stillKicked()) return;
     const url = beatAddress();
     if (!url) return;
+    const y = Number(getPose().y);
     fetch(url, {
       method: "POST",
       mode: "cors",
       credentials: "omit",
       cache: "no-store",
       headers: { "content-type": "text/plain;charset=UTF-8" },
-      body: JSON.stringify({ name: myName, seat, away: document.hidden }),
+      body: JSON.stringify({
+        name: myName,
+        seat,
+        away: document.hidden,
+        y: Number.isFinite(y) ? y : 0,
+      }),
     }).then(async (res) => {
       if (res.status !== 403) return null;
       try {

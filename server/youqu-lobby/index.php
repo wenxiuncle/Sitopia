@@ -2,6 +2,7 @@
 // 有趣网址之家上已经挂着的房间。GitHub 预览页不连这里。
 // 规则和 tools/room.mjs 对齐。改房间行为时两处一起改。这次不传到主机。
 // 后台名单在 Cloudflare 房间。这里只认 state 里已经写上的 maxPeople 和 kicks。
+// 来访记录也只在那间房间，这里不记。
 declare(strict_types=1);
 
 const MAX_PEOPLE = 24;

@@ -3,18 +3,28 @@ import {
   PEOPLE_CAP,
   MAX_PEOPLE,
   adminPeople,
+  cleanArrange,
+  beginVisit,
   blankPerson,
+  cleanDay,
   cleanIp,
   cleanMax,
   cleanSeat,
+  createVisitBook,
+  finishVisit,
   forgetSolo,
   kickSpan,
   kickUntil,
   namedCount,
   onClientMessage,
   onLeave,
+  pruneBook,
   pruneKicks,
+  pruneSolo,
   rememberSolo,
+  shanghaiDay,
+  visitLeftAt,
+  visitsOnDay,
 } from "./room.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -61,7 +71,34 @@ export function attachLobby(server) {
   const people = new Map();
   const log = [];
   const solo = new Map();
+  const visits = createVisitBook();
+  let arrange = cleanArrange(null);
   const room = { maxPeople: MAX_PEOPLE, kicks: {} };
+
+  function settleSolo(now) {
+    const expired = [];
+    pruneSolo(solo, now, expired);
+    for (let i = 0; i < expired.length; i++) {
+      const row = expired[i];
+      finishVisit(visits, row.seat, visitLeftAt(row.seen, now));
+    }
+    return expired.length;
+  }
+
+  function arrive(person, mode, now) {
+    if (!person || !person.named || !person.seat) return;
+    beginVisit(visits, {
+      seat: person.seat,
+      mode,
+      name: person.name,
+      ip: person.ip,
+      now: now || Date.now(),
+    });
+  }
+
+  function depart(seat, seen, now) {
+    finishVisit(visits, seat, visitLeftAt(seen, now || Date.now()));
+  }
 
   function send(socket, obj) {
     if (socket.destroyed) return;
@@ -111,6 +148,7 @@ export function attachLobby(server) {
       return;
     }
     const out = onLeave(people, person);
+    if (person.named && person.seat) depart(person.seat, person.seen, Date.now());
     for (let i = 0; i < out.length; i++) broadcast(out[i].obj);
     if (!person.socket.destroyed) person.socket.destroy();
   }
@@ -123,7 +161,11 @@ export function attachLobby(server) {
       return;
     }
     if (!msg || typeof msg.t !== "string") return;
-    const result = onClientMessage(people, log, person, msg, Date.now(), room);
+    const now = Date.now();
+    const result = onClientMessage(people, log, person, msg, now, room);
+    if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
+      arrive(person, "online", now);
+    }
     if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
     deliver(person, result);
   }
@@ -263,15 +305,25 @@ export function attachLobby(server) {
       if (until) return { status: 403, body: { t: "kick", until } };
       const result = rememberSolo(solo, msg, now, cleanIp(ip));
       if (result.error) return { status: 400, body: { error: result.error } };
+      beginVisit(visits, {
+        seat: result.row.seat,
+        mode: "solo",
+        name: result.row.name,
+        ip: result.row.ip,
+        now,
+      });
       return { status: 200, body: { ok: true } };
     },
     leave(msg) {
-      forgetSolo(solo, msg && msg.seat);
+      const seat = cleanSeat(msg && msg.seat);
+      finishVisit(visits, seat, Date.now());
+      forgetSolo(solo, seat);
       return { status: 200, body: { ok: true } };
     },
     state() {
       const now = Date.now();
       room.kicks = pruneKicks(room.kicks, now);
+      settleSolo(now);
       return {
         max: room.maxPeople,
         cap: PEOPLE_CAP,
@@ -279,6 +331,27 @@ export function attachLobby(server) {
         now,
         people: adminPeople(people, solo, now),
       };
+    },
+    visits(day) {
+      const now = Date.now();
+      settleSolo(now);
+      pruneBook(visits, now);
+      const clean = cleanDay(day) || shanghaiDay(now);
+      const page = visitsOnDay(visits, clean, 500);
+      return {
+        day: clean,
+        keepDays: 90,
+        now,
+        truncated: page.truncated,
+        visits: page.visits,
+      };
+    },
+    arrange() {
+      return arrange;
+    },
+    setArrange(body) {
+      arrange = cleanArrange(body);
+      return arrange;
     },
     setMax(n) {
       const clean = cleanMax(n);
@@ -302,6 +375,7 @@ export function attachLobby(server) {
       const until = now + kickSpan(body && body.minutes);
       if (seat) {
         room.kicks[seat] = until;
+        finishVisit(visits, seat, now);
         forgetSolo(solo, seat);
       }
       for (const person of Array.from(people.values())) {

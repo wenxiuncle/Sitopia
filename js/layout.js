@@ -114,6 +114,37 @@ export const HALLS = [
 ];
 
 export const ASSIGN_IDS = ["qianqi", "qingsong", "online", "gongyi"];
+// 进门第一面墙左右各约 18 幅。置顶只占这一面。
+export const PIN_CAP = 36;
+
+export function cleanArrange(arrange) {
+  const halls = [];
+  const seen = new Set();
+  const raw = arrange && Array.isArray(arrange.halls) ? arrange.halls : [];
+  for (let i = 0; i < raw.length; i++) {
+    const id = String(raw[i] || "");
+    if (seen.has(id)) continue;
+    let known = false;
+    for (let h = 0; h < HALLS.length; h++) if (HALLS[h].id === id) known = true;
+    if (!known) continue;
+    seen.add(id);
+    halls.push(id);
+  }
+  for (let i = 0; i < HALLS.length; i++) {
+    if (!seen.has(HALLS[i].id)) halls.push(HALLS[i].id);
+  }
+  const order = arrange && arrange.order === "old" ? "old" : "new";
+  const pins = [];
+  const pinSeen = new Set();
+  const rawPins = arrange && Array.isArray(arrange.pins) ? arrange.pins : [];
+  for (let i = 0; i < rawPins.length && pins.length < PIN_CAP; i++) {
+    const id = Math.floor(Number(rawPins[i]));
+    if (!Number.isFinite(id) || id < 1 || id > 1e8 || pinSeen.has(id)) continue;
+    pinSeen.add(id);
+    pins.push(id);
+  }
+  return { halls, order, pins };
+}
 
 const FRAME_PAPER = "#f7f5f2";
 
@@ -213,15 +244,84 @@ function pushBox(list, minX, maxX, minZ, maxZ, h, tone, base) {
   list.push(box);
 }
 
-function pickOrdered(sites) {
-  const chosen = [];
-  for (let h = 0; h < HALLS.length; h++) {
-    const cat = HALLS[h].cat;
-    for (let i = 0; i < sites.length; i++) {
-      if (sites[i].cat === cat) chosen.push(i);
+function hangPlan(arrange) {
+  const clean = cleanArrange(arrange);
+  const halls = [];
+  for (let i = 0; i < clean.halls.length; i++) {
+    for (let h = 0; h < HALLS.length; h++) {
+      if (HALLS[h].id === clean.halls[i]) halls.push(HALLS[h]);
     }
   }
-  return chosen;
+  return { halls, order: clean.order, pins: clean.pins };
+}
+
+function siteCats(site) {
+  if (site && Array.isArray(site.cats) && site.cats.length) return site.cats;
+  return site && site.cat != null ? [site.cat] : [];
+}
+
+function assignedCat(site, halls) {
+  const cats = siteCats(site);
+  for (let i = 0; i < halls.length; i++) {
+    const cat = halls[i].cat;
+    for (let c = 0; c < cats.length; c++) if (cats[c] === cat) return cat;
+  }
+  return site && site.cat;
+}
+
+function orderGroup(indexes, sites, order) {
+  let ready = indexes.length > 0;
+  for (let i = 0; i < indexes.length; i++) {
+    const date = sites[indexes[i]] && sites[indexes[i]].date;
+    if (!date || Number.isNaN(Date.parse(date))) {
+      ready = false;
+      break;
+    }
+  }
+  if (!ready) {
+    if (order === "old") indexes.reverse();
+    return;
+  }
+  indexes.sort((a, b) => {
+    const da = Date.parse(sites[a].date);
+    const db = Date.parse(sites[b].date);
+    if (da !== db) return order === "old" ? da - db : db - da;
+    return order === "old" ? b - a : a - b;
+  });
+}
+
+function pickOrdered(sites, arrange) {
+  const plan = hangPlan(arrange);
+  const list = sites || [];
+  const hangCat = new Array(list.length);
+  const used = new Uint8Array(list.length);
+  const chosen = [];
+  const byId = new Map();
+  for (let i = 0; i < list.length; i++) {
+    const id = list[i] && list[i].id;
+    if (id != null && !byId.has(id)) byId.set(id, i);
+    hangCat[i] = assignedCat(list[i], plan.halls);
+  }
+  for (let p = 0; p < plan.pins.length; p++) {
+    const index = byId.get(plan.pins[p]);
+    if (index == null || used[index]) continue;
+    used[index] = 1;
+    chosen.push(index);
+  }
+  const groups = new Map();
+  for (let h = 0; h < plan.halls.length; h++) groups.set(plan.halls[h].cat, []);
+  for (let i = 0; i < list.length; i++) {
+    if (used[i]) continue;
+    const group = groups.get(hangCat[i]);
+    if (!group) continue;
+    group.push(i);
+  }
+  for (let h = 0; h < plan.halls.length; h++) {
+    const group = groups.get(plan.halls[h].cat);
+    orderGroup(group, list, plan.order);
+    for (let n = 0; n < group.length; n++) chosen.push(group[n]);
+  }
+  return { chosen, hangCat, halls: plan.halls };
 }
 
 function placeFace(frames, sites, cursor, minX, maxX, cz, nz, cones, sideCols, baseY, floor) {
@@ -998,8 +1098,10 @@ function addPlants(plants, floors) {
   }
 }
 
-export function buildMuseum(sites) {
-  const chosen = pickOrdered(sites || []);
+export function buildMuseum(sites, arrange) {
+  const ordered = pickOrdered(sites || [], arrange);
+  const chosen = ordered.chosen;
+  const hangCat = ordered.hangCat;
   const stone = [];
   const white = [];
   const curb = [];
@@ -1299,7 +1401,8 @@ export function buildMuseum(sites) {
   const floorNames = [];
   for (let f = 0; f < floorCount; f++) floorNames.push([]);
   for (let i = 0; i < frames.length; i++) {
-    const hall = hallByCat.get(sites[frames[i].siteIndex].cat);
+    const cat = hangCat[frames[i].siteIndex];
+    const hall = hallByCat.get(cat);
     const name = hall ? hall.name : "";
     if (name && floorNames[frames[i].floor].indexOf(name) < 0) floorNames[frames[i].floor].push(name);
   }
@@ -1347,14 +1450,15 @@ export function buildMuseum(sites) {
   });
 
   const counts = new Map();
-  for (let i = 0; i < HALLS.length; i++) counts.set(HALLS[i].cat, 0);
+  for (let i = 0; i < ordered.halls.length; i++) counts.set(ordered.halls[i].cat, 0);
   for (let i = 0; i < frames.length; i++) {
-    const cat = sites[frames[i].siteIndex].cat;
+    const cat = hangCat[frames[i].siteIndex];
     if (counts.has(cat)) counts.set(cat, counts.get(cat) + 1);
   }
   const legend = [];
-  for (let i = 0; i < HALLS.length; i++) {
-    legend.push({ name: HALLS[i].name, cat: HALLS[i].cat, count: counts.get(HALLS[i].cat) });
+  for (let i = 0; i < ordered.halls.length; i++) {
+    const hall = ordered.halls[i];
+    legend.push({ name: hall.name, cat: hall.cat, count: counts.get(hall.cat) });
   }
 
   const signs = [
@@ -1432,6 +1536,7 @@ export function buildMuseum(sites) {
     zones,
     floors: floorCount,
     floorNames,
+    hangCat,
     legend,
     signs,
     bounds: { minX, maxX, minZ, maxZ },

@@ -3,6 +3,7 @@
 
 import { adminHtml } from "../tools/admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "../tools/admin-auth.mjs";
+import { frameDispatch, frameStatus } from "../tools/frames.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
 
@@ -92,11 +93,22 @@ export default {
     if (url.pathname === "/admin" || url.pathname === "/admin/") return adminPage();
     if (url.pathname === "/admin/api/login" && request.method === "POST") return adminLogin(request, env);
     if (url.pathname === "/admin/api/logout" && request.method === "POST") return adminLogout(request);
+    if (url.pathname === "/admin/api/frames") {
+      if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
+      if (request.method === "GET") return json(await frameStatus(env.GITHUB_DISPATCH_TOKEN || ""));
+      if (request.method === "POST") return json(await frameDispatch(env.GITHUB_DISPATCH_TOKEN || ""));
+      return new Response("method", { status: 405 });
+    }
     if (url.pathname.startsWith("/admin/api/")) {
       if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
       return forwardAdmin(request, env);
     }
-    if (url.pathname === "/lobby" || url.pathname === "/lobby/beat" || url.pathname === "/lobby/leave") {
+    if (
+      url.pathname === "/lobby" ||
+      url.pathname === "/lobby/beat" ||
+      url.pathname === "/lobby/leave" ||
+      url.pathname === "/lobby/arrange"
+    ) {
       return forward(request, env);
     }
     return new Response("not found", { status: 404 });

@@ -190,7 +190,7 @@ async function fetchCategory(cat) {
   const posts = [];
   let pages = 1;
   for (let page = 1; page <= pages && page <= 80; page++) {
-    const url = `${endpoint}?categories=${cat}&per_page=40&page=${page}&orderby=date&order=desc&_fields=id,link,title,content,categories`;
+    const url = `${endpoint}?categories=${cat}&per_page=40&page=${page}&orderby=date&order=desc&_fields=id,date,link,title,content,categories`;
     const { items, pages: reported } = await getJson(url);
     if (reported) pages = reported;
     if (!items.length) break;
@@ -208,6 +208,18 @@ async function appendLog(line) {
   await appendFile(logFile, line);
 }
 
+function knownCats(categories) {
+  const found = [];
+  const list = Array.isArray(categories) ? categories : [];
+  for (let i = 0; i < list.length; i++) {
+    const n = Number(list[i]);
+    for (let h = 0; h < HALLS.length; h++) {
+      if (HALLS[h].cat === n && found.indexOf(n) < 0) found.push(n);
+    }
+  }
+  return found;
+}
+
 function toSite(post, cat) {
   const html = post.content && post.content.rendered ? post.content.rendered : "";
   const title = decodeText(post.title && post.title.rendered ? post.title.rendered : "");
@@ -218,7 +230,10 @@ function toSite(post, cat) {
     portal: extractPortal(html),
     article: post.link,
     cat,
+    date: typeof post.date === "string" ? post.date : "",
   };
+  const cats = knownCats(post.categories);
+  if (cats.length) site.cats = cats;
   if (markedDown(html)) site.down = true;
   return site;
 }

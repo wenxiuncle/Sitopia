@@ -1,9 +1,16 @@
 // 线上同一套规则在 server/youqu-lobby/index.php。改这里时那份一起改。
 // 人数硬顶是 PEOPLE_CAP。后台可以把当前上限调低，不能再调高。
+// 来访表只给后台按天查看。PHP 那间房间不记这张表。
+// 画框排列存在这间房间里。PHP 那间不存，展厅读不到时用原来的顺序。
+export { PIN_CAP, cleanArrange } from "../js/layout.js";
 export const PEOPLE_CAP = 24;
 export const MAX_PEOPLE = PEOPLE_CAP;
 export const LOG_MAX = 40;
 export const SOLO_MS = 45000;
+export const VISIT_KEEP_MS = 90 * 24 * 60 * 60 * 1000;
+export const VISIT_LIMIT = 500;
+// 安静超过这段时间才把离开记到最后一次心跳。正常关页面仍记现在。
+export const VISIT_IDLE_MS = 40000;
 
 export function cleanMax(value) {
   const n = Math.floor(Number(value));
@@ -51,6 +58,14 @@ export function cleanName(value) {
 
 export function cleanText(value) {
   return String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 80);
+}
+
+// 单人心跳只上报高度。缺高度留空，后台楼层显示「—」，不要当成 1F。
+export function cleanHeight(value) {
+  if (value == null || value === "") return null;
+  const y = Number(value);
+  if (!Number.isFinite(y) || y < -1 || y > 90) return null;
+  return Math.round(y * 1000) / 1000;
 }
 
 export function cleanPose(msg) {
@@ -221,6 +236,8 @@ export function rememberSolo(solo, msg, now, ip) {
   row.away = msg.away === true;
   if (ip) row.ip = ip;
   if (!row.entered) row.entered = now;
+  const y = cleanHeight(msg.y);
+  if (y != null) row.y = y;
   return { ok: true, row };
 }
 
@@ -230,10 +247,153 @@ export function forgetSolo(solo, seat) {
   return solo.delete(clean);
 }
 
-export function pruneSolo(solo, now) {
+export function pruneSolo(solo, now, expired) {
   for (const [seat, row] of solo) {
-    if (!row || now - (row.seen || 0) > SOLO_MS) solo.delete(seat);
+    if (!row || now - (row.seen || 0) > SOLO_MS) {
+      solo.delete(seat);
+      if (row && expired) expired.push(row);
+    }
   }
+}
+
+export function shanghaiDay(ms) {
+  const shifted = new Date(Number(ms) + 8 * 60 * 60 * 1000);
+  if (Number.isNaN(shifted.getTime())) return "";
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(shifted.getUTCDate()).padStart(2, "0");
+  return y + "-" + m + "-" + d;
+}
+
+export function cleanDay(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const y = Number(text.slice(0, 4));
+  const m = Number(text.slice(5, 7));
+  const d = Number(text.slice(8, 10));
+  if (y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) return "";
+  return text;
+}
+
+export function dayBounds(day) {
+  const y = Number(day.slice(0, 4));
+  const m = Number(day.slice(5, 7));
+  const d = Number(day.slice(8, 10));
+  const start = Date.UTC(y, m - 1, d) - 8 * 60 * 60 * 1000;
+  return { start, end: start + 24 * 60 * 60 * 1000 };
+}
+
+export function visitLeftAt(seen, now) {
+  const at = Number(now) || Date.now();
+  const last = Number(seen) || 0;
+  if (last > 0 && at - last > VISIT_IDLE_MS) return last;
+  return at;
+}
+
+export function createVisitBook() {
+  return { open: new Map(), closed: [], seq: 1 };
+}
+
+// 同一个座位还开着时只改最后的昵称、模式和地址，不另起一行。
+export function beginVisit(book, row) {
+  const seat = cleanSeat(row && row.seat);
+  if (!seat) return null;
+  const now = Number(row.now) || Date.now();
+  const name = cleanName(row.name);
+  const mode = row.mode === "solo" ? "solo" : "online";
+  const ip = cleanIp(row.ip);
+  const prev = book.open.get(seat);
+  if (prev) {
+    let changed = false;
+    if (name && name !== prev.nameLast) {
+      prev.nameLast = name;
+      changed = true;
+    }
+    if (ip && ip !== prev.ip) {
+      prev.ip = ip;
+      changed = true;
+    }
+    if (mode !== prev.mode) {
+      prev.mode = mode;
+      changed = true;
+    }
+    if (now - (prev.seen || 0) >= 15000) {
+      prev.seen = now;
+      changed = true;
+    }
+    return { created: false, changed, visit: prev };
+  }
+  const visit = {
+    id: book.seq++,
+    seat,
+    mode,
+    nameIn: name,
+    nameLast: name,
+    ip: ip || "",
+    entered: now,
+    seen: now,
+    leftAt: 0,
+  };
+  book.open.set(seat, visit);
+  return { created: true, changed: true, visit };
+}
+
+export function finishVisit(book, seat, leftAt, remember) {
+  const clean = cleanSeat(seat);
+  if (!clean) return null;
+  const visit = book.open.get(clean);
+  if (!visit) return null;
+  book.open.delete(clean);
+  let at = Number(leftAt) || Date.now();
+  if (at < visit.entered) at = visit.entered;
+  visit.leftAt = at;
+  if (remember !== false && book.closed) book.closed.push(visit);
+  return visit;
+}
+
+export function pruneBook(book, now) {
+  const cut = (Number(now) || Date.now()) - VISIT_KEEP_MS;
+  if (!book.closed || !book.closed.length) return;
+  const next = [];
+  for (let i = 0; i < book.closed.length; i++) {
+    const row = book.closed[i];
+    if ((row.leftAt || row.entered) >= cut) next.push(row);
+  }
+  book.closed = next;
+}
+
+export function visitView(row) {
+  const nameIn = row.nameIn || row.name_in || "";
+  return {
+    mode: row.mode === "solo" ? "solo" : "online",
+    nameIn,
+    nameLast: row.nameLast || row.name_last || nameIn,
+    ip: row.ip || "",
+    entered: Number(row.entered) || 0,
+    leftAt: Number(row.leftAt != null ? row.leftAt : row.left_at) || 0,
+  };
+}
+
+export function visitsOnDay(book, day, limit) {
+  const clean = cleanDay(day);
+  if (!clean) return { visits: [], truncated: false };
+  const cap = limit || VISIT_LIMIT;
+  const { start, end } = dayBounds(clean);
+  const all = [];
+  if (book.closed) {
+    for (let i = 0; i < book.closed.length; i++) all.push(book.closed[i]);
+  }
+  for (const row of book.open.values()) all.push(row);
+  const list = [];
+  for (let i = 0; i < all.length; i++) {
+    const row = all[i];
+    if (row.entered >= start && row.entered < end) list.push(row);
+  }
+  list.sort((a, b) => b.entered - a.entered || (b.id || 0) - (a.id || 0));
+  const sliced = list.length > cap ? list.slice(0, cap) : list;
+  const visits = [];
+  for (let i = 0; i < sliced.length; i++) visits.push(visitView(sliced[i]));
+  return { visits, truncated: list.length > cap };
 }
 
 export function adminPeople(people, solo, now) {
@@ -266,7 +426,7 @@ export function adminPeople(people, solo, now) {
       entered: row.entered || row.seen || now,
       seen: row.seen || now,
       away: !!row.away,
-      y: null,
+      y: cleanHeight(row.y),
     });
   }
   list.sort((a, b) => a.entered - b.entered);

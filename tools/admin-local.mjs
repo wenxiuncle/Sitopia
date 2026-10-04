@@ -1,5 +1,6 @@
 import { adminHtml } from "./admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "./admin-auth.mjs";
+import { frameDispatch, frameStatus } from "./frames.mjs";
 
 const token = process.env.MUSEUM_ADMIN_TOKEN || "local-museum";
 
@@ -50,6 +51,10 @@ function clientIp(req) {
 export function handleLocalAdmin(req, res, lobby) {
   const url = new URL(req.url, "http://127.0.0.1");
   const path = url.pathname;
+  if (path === "/lobby/arrange" && req.method === "GET") {
+    send(res, 200, lobby.arrange());
+    return true;
+  }
   if (path === "/lobby/beat" || path === "/lobby/leave") {
     if (req.method !== "POST") {
       res.writeHead(405);
@@ -76,7 +81,7 @@ export function handleLocalAdmin(req, res, lobby) {
     res.end(adminHtml);
     return true;
   }
-  route(req, res, lobby, path);
+  route(req, res, lobby, path, url);
   return true;
 }
 
@@ -87,7 +92,7 @@ async function allowed(req) {
   return safeEqual(got, mac);
 }
 
-async function route(req, res, lobby, path) {
+async function route(req, res, lobby, path, url) {
   if (path === "/admin/api/login" && req.method === "POST") {
     const body = await readBody(req);
     const given = body && typeof body.token === "string" ? body.token : "";
@@ -107,8 +112,33 @@ async function route(req, res, lobby, path) {
     send(res, 401, { error: "login" });
     return;
   }
+  if (path === "/admin/api/frames" && req.method === "GET") {
+    send(res, 200, await frameStatus(process.env.GITHUB_DISPATCH_TOKEN || ""));
+    return;
+  }
+  if (path === "/admin/api/frames" && req.method === "POST") {
+    send(res, 200, await frameDispatch(process.env.GITHUB_DISPATCH_TOKEN || ""));
+    return;
+  }
+  if (path === "/admin/api/arrange" && req.method === "GET") {
+    send(res, 200, lobby.arrange());
+    return;
+  }
+  if (path === "/admin/api/arrange" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body) {
+      send(res, 400, { error: "body" });
+      return;
+    }
+    send(res, 200, lobby.setArrange(body));
+    return;
+  }
   if (path === "/admin/api/state" && req.method === "GET") {
     send(res, 200, lobby.state());
+    return;
+  }
+  if (path === "/admin/api/visits" && req.method === "GET") {
+    send(res, 200, lobby.visits(url.searchParams.get("day")));
     return;
   }
   if (path === "/admin/api/max" && req.method === "POST") {

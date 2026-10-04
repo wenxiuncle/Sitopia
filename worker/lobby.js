@@ -2,12 +2,21 @@ import { DurableObject } from "cloudflare:workers";
 import {
   MAX_PEOPLE,
   PEOPLE_CAP,
+  VISIT_KEEP_MS,
+  VISIT_LIMIT,
   adminPeople,
+  beginVisit,
+  cleanArrange,
   blankPerson,
+  cleanDay,
+  cleanHeight,
   cleanIp,
   cleanMax,
   cleanName,
   cleanSeat,
+  createVisitBook,
+  dayBounds,
+  finishVisit,
   forgetSolo,
   kickSpan,
   kickUntil,
@@ -17,6 +26,9 @@ import {
   pruneKicks,
   pruneSolo,
   rememberSolo,
+  shanghaiDay,
+  visitLeftAt,
+  visitView,
 } from "../tools/room.mjs";
 import { safeEqual } from "../tools/admin-auth.mjs";
 
@@ -81,12 +93,16 @@ export class SitopiaLobby extends DurableObject {
     this.log = [];
     this.token = env.ADMIN_TOKEN || "";
     this.maxPeople = MAX_PEOPLE;
+    this.arrange = cleanArrange(null);
     this.kicks = {};
     this.solo = new Map();
+    this.visits = createVisitBook();
+    this.visitPruned = 0;
     ctx.blockConcurrencyWhile(async () => {
       this.log = (await ctx.storage.get("log")) || [];
       const max = cleanMax(await ctx.storage.get("maxPeople"));
       if (max) this.maxPeople = max;
+      this.arrange = cleanArrange(await ctx.storage.get("arrange"));
       this.kicks = pruneKicks((await ctx.storage.get("kicks")) || {}, Date.now());
       const saved = (await ctx.storage.get("solo")) || {};
       const seats = Object.keys(saved);
@@ -95,17 +111,167 @@ export class SitopiaLobby extends DurableObject {
         const row = saved[seats[i]];
         const seat = cleanSeat(seats[i]);
         if (!seat || !row) continue;
-        this.solo.set(seat, {
+        const stored = {
           seat,
           name: cleanName(row.name),
           ip: cleanIp(row.ip),
           entered: Number(row.entered) || now,
           seen: Number(row.seen) || 0,
           away: !!row.away,
-        });
+        };
+        const y = cleanHeight(row.y);
+        if (y != null) stored.y = y;
+        this.solo.set(seat, stored);
       }
-      pruneSolo(this.solo, now);
+      this.ensureVisits();
+      this.loadOpenVisits();
+      const swept = this.sweepSolo(now);
+      if (swept) await this.persistSolo();
     });
+  }
+
+  sql(query, ...args) {
+    return this.ctx.storage.sql.exec(query, ...args);
+  }
+
+  ensureVisits() {
+    this.sql(
+      "CREATE TABLE IF NOT EXISTS visits (" +
+      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+      "seat TEXT NOT NULL," +
+      "mode TEXT NOT NULL," +
+      "name_in TEXT NOT NULL," +
+      "name_last TEXT NOT NULL," +
+      "ip TEXT NOT NULL DEFAULT ''," +
+      "entered INTEGER NOT NULL," +
+      "seen INTEGER NOT NULL," +
+      "left_at INTEGER NOT NULL DEFAULT 0" +
+      ")",
+    );
+    this.sql("CREATE INDEX IF NOT EXISTS visits_entered ON visits(entered)");
+    this.sql("CREATE INDEX IF NOT EXISTS visits_open_seat ON visits(seat, left_at)");
+  }
+
+  loadOpenVisits() {
+    const rows = this.sql(
+      "SELECT id, seat, mode, name_in, name_last, ip, entered, seen FROM visits WHERE left_at = 0 ORDER BY id",
+    ).toArray();
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const seat = cleanSeat(row.seat);
+      if (!seat) continue;
+      const prev = this.visits.open.get(seat);
+      if (prev && prev.id) {
+        this.sql("UPDATE visits SET left_at = ? WHERE id = ?", Number(prev.seen) || Number(prev.entered) || Date.now(), prev.id);
+      }
+      const visit = {
+        id: Number(row.id) || 0,
+        seat,
+        mode: row.mode === "solo" ? "solo" : "online",
+        nameIn: cleanName(row.name_in),
+        nameLast: cleanName(row.name_last),
+        ip: cleanIp(row.ip),
+        entered: Number(row.entered) || Date.now(),
+        seen: Number(row.seen) || Number(row.entered) || 0,
+        leftAt: 0,
+      };
+      this.visits.open.set(seat, visit);
+      if (visit.id >= this.visits.seq) this.visits.seq = visit.id + 1;
+    }
+  }
+
+  pruneVisitStore(now) {
+    if (this.visitPruned && now - this.visitPruned < 3600000) return;
+    try {
+      this.sql("DELETE FROM visits WHERE left_at > 0 AND left_at < ?", now - VISIT_KEEP_MS);
+      this.visitPruned = now;
+    } catch {
+      /* 过期记录下次再删。 */
+    }
+  }
+
+  noteArrival(row) {
+    try {
+      const result = beginVisit(this.visits, row);
+      if (!result || !result.changed) return;
+      const visit = result.visit;
+      if (result.created) {
+        try {
+          const inserted = this.sql(
+            "INSERT INTO visits (seat, mode, name_in, name_last, ip, entered, seen, left_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0) RETURNING id",
+            visit.seat,
+            visit.mode,
+            visit.nameIn,
+            visit.nameLast,
+            visit.ip,
+            visit.entered,
+            visit.seen,
+          ).toArray();
+          visit.id = Number(inserted[0] && inserted[0].id) || 0;
+          if (!visit.id) {
+            const got = this.sql("SELECT last_insert_rowid() AS id").toArray();
+            visit.id = Number(got[0] && got[0].id) || 0;
+          }
+        } catch (err) {
+          this.visits.open.delete(visit.seat);
+          throw err;
+        }
+        return;
+      }
+      if (!visit.id) return;
+      this.sql(
+        "UPDATE visits SET name_last = ?, ip = ?, mode = ?, seen = ? WHERE id = ?",
+        visit.nameLast,
+        visit.ip,
+        visit.mode,
+        visit.seen,
+        visit.id,
+      );
+    } catch {
+      /* 来访没记上，馆里的人照旧。 */
+    }
+  }
+
+  noteDeparture(seat, leftAt) {
+    try {
+      const visit = finishVisit(this.visits, seat, leftAt, false);
+      if (!visit || !visit.id) return;
+      this.sql("UPDATE visits SET left_at = ? WHERE id = ?", visit.leftAt, visit.id);
+    } catch {
+      /* 离开时间没补上，人已经不在这间。 */
+    }
+  }
+
+  sweepSolo(now) {
+    const expired = [];
+    pruneSolo(this.solo, now, expired);
+    for (let i = 0; i < expired.length; i++) {
+      const row = expired[i];
+      this.noteDeparture(row.seat, visitLeftAt(row.seen, now));
+    }
+    return expired.length;
+  }
+
+  // 房间重启后，套接字已经不在、又超过静默时限的来访补上离开。刚醒的连接先留着。
+  reconcileVisits(now) {
+    const live = new Set();
+    for (const seat of this.solo.keys()) live.add(seat);
+    const sockets = this.ctx.getWebSockets();
+    for (let i = 0; i < sockets.length; i++) {
+      const person = sockets[i].deserializeAttachment();
+      if (person && !person.gone && person.seat) live.add(person.seat);
+    }
+    const stale = [];
+    for (const [seat, visit] of this.visits.open) {
+      if (live.has(seat)) continue;
+      const seen = visit.seen || visit.entered || 0;
+      if (now - seen < 90000) continue;
+      stale.push(seat);
+    }
+    for (let i = 0; i < stale.length; i++) {
+      const visit = this.visits.open.get(stale[i]);
+      this.noteDeparture(stale[i], visit && visit.seen ? visit.seen : now);
+    }
   }
 
   room() {
@@ -143,7 +309,7 @@ export class SitopiaLobby extends DurableObject {
   }
 
   async persistSolo() {
-    pruneSolo(this.solo, Date.now());
+    this.sweepSolo(Date.now());
     const saved = {};
     for (const [seat, row] of this.solo) {
       saved[seat] = {
@@ -153,6 +319,8 @@ export class SitopiaLobby extends DurableObject {
         seen: row.seen,
         away: !!row.away,
       };
+      const y = cleanHeight(row.y);
+      if (y != null) saved[seat].y = y;
     }
     await this.ctx.storage.put("solo", saved);
   }
@@ -165,6 +333,13 @@ export class SitopiaLobby extends DurableObject {
     if (until) return json({ t: "kick", until }, 403, request);
     const result = rememberSolo(this.solo, msg, now, clientIp(request, this.token));
     if (result.error) return json({ error: result.error }, 400, request);
+    this.noteArrival({
+      seat: result.row.seat,
+      mode: "solo",
+      name: result.row.name,
+      ip: result.row.ip,
+      now,
+    });
     await this.persistSolo();
     return json({ ok: true }, 200, request);
   }
@@ -172,7 +347,9 @@ export class SitopiaLobby extends DurableObject {
   async leave(request) {
     const msg = await readJson(request);
     if (!msg) return json({ error: "body" }, 400, request);
-    forgetSolo(this.solo, msg.seat);
+    const seat = cleanSeat(msg.seat);
+    this.noteDeparture(seat, Date.now());
+    forgetSolo(this.solo, seat);
     await this.persistSolo();
     return json({ ok: true }, 200, request);
   }
@@ -216,6 +393,9 @@ export class SitopiaLobby extends DurableObject {
     if (url.pathname === "/admin/api/state" && request.method === "GET") {
       const now = Date.now();
       this.kicks = pruneKicks(this.kicks, now);
+      const swept = this.sweepSolo(now);
+      this.reconcileVisits(now);
+      if (swept) await this.persistSolo();
       return json({
         max: this.maxPeople,
         cap: PEOPLE_CAP,
@@ -223,6 +403,41 @@ export class SitopiaLobby extends DurableObject {
         now,
         people: adminPeople(this.roster(), this.solo, now),
       }, 200);
+    }
+    if (url.pathname === "/admin/api/visits" && request.method === "GET") {
+      const now = Date.now();
+      const swept = this.sweepSolo(now);
+      this.reconcileVisits(now);
+      this.pruneVisitStore(now);
+      if (swept) await this.persistSolo();
+      const day = cleanDay(url.searchParams.get("day")) || shanghaiDay(now);
+      const bounds = dayBounds(day);
+      const rows = this.sql(
+        "SELECT mode, name_in, name_last, ip, entered, left_at FROM visits WHERE entered >= ? AND entered < ? ORDER BY entered DESC LIMIT " + (VISIT_LIMIT + 1),
+        bounds.start,
+        bounds.end,
+      ).toArray();
+      const truncated = rows.length > VISIT_LIMIT;
+      const shown = truncated ? rows.slice(0, VISIT_LIMIT) : rows;
+      const visits = [];
+      for (let i = 0; i < shown.length; i++) visits.push(visitView(shown[i]));
+      return json({
+        day,
+        keepDays: 90,
+        now,
+        truncated,
+        visits,
+      }, 200);
+    }
+    if (url.pathname === "/admin/api/arrange" && request.method === "GET") {
+      return json(this.arrange, 200);
+    }
+    if (url.pathname === "/admin/api/arrange" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body) return json({ error: "body" }, 400);
+      this.arrange = cleanArrange(body);
+      await this.ctx.storage.put("arrange", this.arrange);
+      return json(this.arrange, 200);
     }
     if (url.pathname === "/admin/api/max" && request.method === "POST") {
       const body = await readJson(request);
@@ -245,6 +460,7 @@ export class SitopiaLobby extends DurableObject {
         this.kicks[seat] = until;
         this.kicks = pruneKicks(this.kicks, now);
         await this.ctx.storage.put("kicks", this.kicks);
+        this.noteDeparture(seat, now);
         forgetSolo(this.solo, seat);
         await this.persistSolo();
       }
@@ -256,6 +472,9 @@ export class SitopiaLobby extends DurableObject {
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/lobby/arrange" && request.method === "GET") {
+      return json(this.arrange, 200, request);
+    }
     if (url.pathname === "/lobby/beat") {
       if (request.method !== "POST") return new Response("method", { status: 405 });
       return this.beat(request);
@@ -312,10 +531,20 @@ export class SitopiaLobby extends DurableObject {
     if (!msg || typeof msg.t !== "string") return;
     const people = this.roster();
     people.set(person.id, person);
-    const result = onClientMessage(people, this.log, person, msg, Date.now(), this.room());
+    const now = Date.now();
+    const result = onClientMessage(people, this.log, person, msg, now, this.room());
     ws.serializeAttachment(person);
     if (person.seat) this.retireSameSeat(ws, person.seat);
     this.fanout(ws, result.out);
+    if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
+      this.noteArrival({
+        seat: person.seat,
+        mode: "online",
+        name: person.name,
+        ip: person.ip,
+        now,
+      });
+    }
     if (msg.t === "hi" && !result.close && person.seat && this.solo.delete(person.seat)) {
       await this.persistSolo();
     }
@@ -343,6 +572,15 @@ export class SitopiaLobby extends DurableObject {
         try { ws.close(1001, "stale"); } catch { /* 已经在关。 */ }
         continue;
       }
+      if (person.named && person.seat) {
+        this.noteArrival({
+          seat: person.seat,
+          mode: "online",
+          name: person.name,
+          ip: person.ip,
+          now: person.seen || now,
+        });
+      }
       live += 1;
       try {
         ws.send(JSON.stringify({ t: "ping" }));
@@ -351,6 +589,7 @@ export class SitopiaLobby extends DurableObject {
         try { ws.close(1001, "stale"); } catch { /* 已经在关。 */ }
       }
     }
+    this.reconcileVisits(now);
     if (live) await this.ctx.storage.setAlarm(now + PING_MS);
   }
 
@@ -377,6 +616,7 @@ export class SitopiaLobby extends DurableObject {
     const people = this.roster();
     people.set(person.id, person);
     const out = onLeave(people, person);
+    if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, Date.now()));
     ws.serializeAttachment(person);
     this.fanout(ws, out);
   }
@@ -399,6 +639,12 @@ export default {
     const url = new URL(request.url);
     const upgrade = request.headers.get("Upgrade");
     const websocket = upgrade && upgrade.toLowerCase() === "websocket";
+    if (url.pathname === "/lobby/arrange") {
+      if (request.method !== "GET") return new Response("method", { status: 405 });
+      if (!allow(request.headers.get("Origin"))) return new Response("forbidden", { status: 403 });
+      const stub = env.LOBBY.get(env.LOBBY.idFromName("hall"));
+      return stub.fetch(request);
+    }
     if (url.pathname === "/lobby/beat" || url.pathname === "/lobby/leave") {
       if (request.method === "OPTIONS") return preflight(request);
       if (request.method !== "POST") return new Response("method", { status: 405 });

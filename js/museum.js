@@ -317,8 +317,10 @@ function parkFocus() {
 }
 
 function openFrame(index) {
-  const site = sites[built.frames[index].siteIndex];
-  const hall = HALLS.find((item) => item.cat === site.cat);
+  const siteIndex = built.frames[index].siteIndex;
+  const site = sites[siteIndex];
+  const cat = built.hangCat ? built.hangCat[siteIndex] : site.cat;
+  const hall = HALLS.find((item) => item.cat === cat);
   panelHall.textContent = hall ? hall.name : "";
   panelTitle.textContent = site.title;
   panelBlurb.hidden = !site.blurb;
@@ -1155,9 +1157,9 @@ function warmPrograms() {
   }
 }
 
-function buildScene(data) {
+function buildScene(data, arrange) {
   sites = data.sites;
-  built = buildMuseum(sites);
+  built = buildMuseum(sites, arrange);
   const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
   bodyRoom = {
     minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
@@ -1948,10 +1950,27 @@ markDay(dayCursor);
 bind();
 resize();
 
+function arrangeAddress() {
+  const host = location.hostname;
+  if (host === "127.0.0.1" || host === "localhost") return location.origin + "/lobby/arrange";
+  const custom = new URLSearchParams(location.search).get("lobby");
+  if (custom && /^(https?|wss?):\/\//.test(custom)) {
+    const base = custom.replace(/^ws/i, "http").replace(/\/lobby\/?$/, "");
+    return base.replace(/\/$/, "") + "/lobby/arrange";
+  }
+  return "https://lobby.youquhome.com/lobby/arrange";
+}
+
+function loadArrange() {
+  return fetch(arrangeAddress(), { cache: "no-store", signal: AbortSignal.timeout(4000) })
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null);
+}
+
 fetch("data/sites.json")
   .then((res) => {
     if (!res.ok) throw new Error("sites.json " + res.status);
     return res.json();
   })
-  .then(buildScene)
+  .then((data) => loadArrange().then((arrange) => buildScene(data, arrange)))
   .catch(() => showFatal("展品清单没有读到。请先运行 node tools/fetch-sites.mjs"));
