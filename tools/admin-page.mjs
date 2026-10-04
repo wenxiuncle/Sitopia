@@ -142,7 +142,7 @@ export const adminHtml = `<!DOCTYPE html>
     <h2>画框</h2>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
-      <span class="hint">向 GitHub 要一次抓取。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
+      <span class="hint">只抓上次清单之后新发布的文章。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
     </form>
     <p id="frame-status">正在读取…</p>
     <h2>默认排列</h2>

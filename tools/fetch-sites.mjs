@@ -163,12 +163,12 @@ export function extractBlurb(html) {
   return text;
 }
 
-async function getJson(url) {
+async function getJson(url, emptyOn400) {
   let last;
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(90000) });
-      if (res.status === 400) return { items: [], pages: 0 };
+      if (res.status === 400 && emptyOn400) return { items: [], pages: 0 };
       if (res.status === 429 || res.status >= 500) {
         last = new Error("HTTP " + res.status);
         await sleep(700 * attempt);
@@ -186,12 +186,13 @@ async function getJson(url) {
   throw last;
 }
 
-async function fetchCategory(cat) {
+async function fetchCategory(cat, after) {
   const posts = [];
   let pages = 1;
   for (let page = 1; page <= pages && page <= 80; page++) {
-    const url = `${endpoint}?categories=${cat}&per_page=40&page=${page}&orderby=date&order=desc&_fields=id,date,link,title,content,categories`;
-    const { items, pages: reported } = await getJson(url);
+    let url = `${endpoint}?categories=${cat}&per_page=40&page=${page}&orderby=date&order=desc&_fields=id,date,date_gmt,link,title,content,categories`;
+    if (after) url += `&after=${encodeURIComponent(after)}`;
+    const { items, pages: reported } = await getJson(url, page > 1);
     if (reported) pages = reported;
     if (!items.length) break;
     for (let i = 0; i < items.length; i++) posts.push(items[i]);
@@ -230,12 +231,68 @@ function toSite(post, cat) {
     portal: extractPortal(html),
     article: post.link,
     cat,
-    date: typeof post.date === "string" ? post.date : "",
   };
+  if (typeof post.date === "string" && post.date) site.date = post.date;
+  if (typeof post.date_gmt === "string" && post.date_gmt) site.gmt = post.date_gmt;
   const cats = knownCats(post.categories);
   if (cats.length) site.cats = cats;
+  const image = usableFrameImage(extractImage(html));
+  if (image) site.image = image;
   if (markedDown(html)) site.down = true;
   return site;
+}
+
+function gmtMinusOne(gmt) {
+  const ms = Date.parse(gmt.endsWith("Z") ? gmt : gmt + "Z");
+  if (Number.isNaN(ms)) return gmt;
+  return new Date(ms - 1000).toISOString().slice(0, 19);
+}
+
+// 有 gmt 就从最新一篇的前一秒接着拉。老清单没有逐篇时间时，用上次整包的日期。
+export function sinceCursor(data) {
+  const sites = data && data.sites ? data.sites : [];
+  let max = "";
+  for (let i = 0; i < sites.length; i++) {
+    const gmt = sites[i] && sites[i].gmt;
+    if (typeof gmt === "string" && gmt > max) max = gmt;
+  }
+  if (max) return gmtMinusOne(max);
+  const day = data && data.fetched;
+  if (typeof day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day)) return day + "T00:00:00";
+  return "";
+}
+
+export function mergeFresh(sites, fresh) {
+  const next = sites.slice();
+  const order = [];
+  for (let i = 0; i < ASSIGN_IDS.length; i++) {
+    const hall = HALLS.find((item) => item.id === ASSIGN_IDS[i]);
+    if (hall) order.push(hall.cat);
+  }
+  for (let h = 0; h < order.length; h++) {
+    const cat = order[h];
+    const group = [];
+    for (let i = 0; i < fresh.length; i++) if (fresh[i].cat === cat) group.push(fresh[i]);
+    if (!group.length) continue;
+    let at = -1;
+    for (let i = 0; i < next.length; i++) {
+      if (next[i].cat === cat) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) {
+      at = next.length;
+      for (let i = 0; i < next.length; i++) {
+        if (order.indexOf(next[i].cat) > h) {
+          at = i;
+          break;
+        }
+      }
+    }
+    for (let i = 0; i < group.length; i++) next.splice(at + i, 0, group[i]);
+  }
+  return next;
 }
 
 async function fillFrameImages(sites) {
@@ -301,6 +358,7 @@ async function keepImages(sites) {
     }
   }
   for (let i = 0; i < sites.length; i++) {
+    if (sites[i].image) continue;
     const image = map.get(sites[i].id);
     if (image) sites[i].image = image;
   }
@@ -317,19 +375,27 @@ async function refreshFrameImages() {
   console.log(outFile);
 }
 
-async function main() {
-  await mkdir(path.dirname(outFile), { recursive: true });
-  await writeFile(logFile, `start ${new Date().toISOString()}\n`);
+async function readExisting() {
+  try {
+    return JSON.parse(await readFile(outFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function collect(after) {
   const byCat = new Map();
   for (let i = 0; i < HALLS.length; i++) {
     const hall = HALLS[i];
-    const posts = await fetchCategory(hall.cat);
+    const posts = await fetchCategory(hall.cat, after);
     byCat.set(hall.cat, posts);
     console.log(`${hall.name} ${posts.length}`);
   }
+  return byCat;
+}
 
+function assignPosts(byCat, seen) {
   const sites = [];
-  const seen = new Set();
   for (let i = 0; i < ASSIGN_IDS.length; i++) {
     const hall = HALLS.find((item) => item.id === ASSIGN_IDS[i]);
     const posts = byCat.get(hall.cat) || [];
@@ -341,19 +407,51 @@ async function main() {
       sites.push(site);
     }
   }
+  return sites;
+}
 
-  await keepImages(sites);
+function pack(sites) {
   let missingPortal = 0;
   for (let i = 0; i < sites.length; i++) if (!sites[i].portal) missingPortal++;
-  const data = {
+  return {
     source: "https://youquhome.com/",
     fetched: new Date().toISOString().slice(0, 10),
     count: sites.length,
     missingPortal,
     sites,
   };
+}
+
+async function main() {
+  const full = process.argv.includes("--full");
+  await mkdir(path.dirname(outFile), { recursive: true });
+  await writeFile(logFile, `start ${new Date().toISOString()}\n`);
+  const existing = await readExisting();
+  const cursor = !full && existing ? sinceCursor(existing) : "";
+  if (cursor) {
+    console.log(`since ${cursor}`);
+    const seen = new Set();
+    const old = existing.sites || [];
+    for (let i = 0; i < old.length; i++) seen.add(old[i].id);
+    const fresh = assignPosts(await collect(cursor), seen);
+    console.log(`new ${fresh.length}`);
+    if (!fresh.length) {
+      console.log("unchanged");
+      return;
+    }
+    const sites = mergeFresh(old, fresh);
+    const data = pack(sites);
+    await writeFile(outFile, JSON.stringify(data));
+    console.log(`sites ${sites.length} missingPortal ${data.missingPortal}`);
+    console.log(outFile);
+    return;
+  }
+  console.log(full ? "full" : "full, no cursor");
+  const sites = assignPosts(await collect(""), new Set());
+  await keepImages(sites);
+  const data = pack(sites);
   await writeFile(outFile, JSON.stringify(data));
-  console.log(`sites ${sites.length} missingPortal ${missingPortal}`);
+  console.log(`sites ${sites.length} missingPortal ${data.missingPortal}`);
   console.log(outFile);
 }
 

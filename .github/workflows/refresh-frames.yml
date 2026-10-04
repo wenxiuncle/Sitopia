@@ -17,10 +17,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: 拉取展品
+      - name: 拉取新展品
         run: node tools/fetch-sites.mjs
-      - name: 补画芯
-        run: node tools/fetch-sites.mjs --images
       - name: 有变化就提交
         run: |
           git config user.name "Wenxi闻西"
