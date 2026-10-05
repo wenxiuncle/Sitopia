@@ -20,7 +20,7 @@ export const adminHtml = `<!DOCTYPE html>
     main { max-width: 1080px; margin: 0 auto; padding: 28px 20px 48px; }
     h1 { font-size: 22px; font-weight: 650; margin: 0; }
     h2 { font-size: 18px; font-weight: 650; margin: 28px 0 0; }
-    button, input, select { font: inherit; color: inherit; }
+    button, input, select, textarea { font: inherit; color: inherit; }
     button { cursor: pointer; }
     #login {
       max-width: 360px;
@@ -49,7 +49,7 @@ export const adminHtml = `<!DOCTYPE html>
       color: #2c2926;
     }
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    #max-form, #kick-form, #visit-form, #frame-form, #arrange-form {
+    #max-form, #kick-form, #visit-form, #frame-form {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
@@ -59,13 +59,69 @@ export const adminHtml = `<!DOCTYPE html>
       background: rgba(255, 252, 248, 0.94);
       border: 1px solid rgba(44, 41, 38, 0.1);
     }
+    #arrange-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px;
+      margin: 18px 0;
+    }
+    .arrange-card {
+      min-width: 0;
+      padding: 12px 14px;
+      background: rgba(255, 252, 248, 0.94);
+      border: 1px solid rgba(44, 41, 38, 0.1);
+    }
+    #arrange-order-card { display: flex; flex-direction: column; }
+    #arrange-order-card .hint { display: block; margin-top: auto; padding-top: 12px; }
+    #arrange-pin { display: flex; flex-direction: column; }
+    #arrange-pin > label {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+    }
+    #arrange-pin .solid { align-self: flex-start; margin-top: 12px; }
+    @media (max-width: 720px) {
+      #arrange-form { grid-template-columns: 1fr; }
+    }
     #max { width: 5em; }
     #halls { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     #halls li { display: flex; align-items: center; gap: 8px; }
     #halls button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; }
-    #arrange-pins { width: min(100%, 28em); }
+    #arrange-pins {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      flex: 1;
+      min-height: 12em;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid rgba(44, 41, 38, 0.16);
+      background: #fff;
+      resize: vertical;
+    }
     #frame-status, #arrange-status { min-height: 1.4em; color: #6f6a64; }
     #visit-status { min-height: 1.4em; color: #6f6a64; }
+    #visit-trend {
+      margin: 18px 0;
+      padding: 12px 14px 8px;
+      background: rgba(255, 252, 248, 0.94);
+      border: 1px solid rgba(44, 41, 38, 0.1);
+    }
+    #visit-trend figcaption { margin: 0 0 4px; font-size: 13px; font-weight: 650; color: #6f6a64; }
+    #visit-chart { position: relative; }
+    #visit-chart svg { display: block; width: 100%; height: auto; cursor: crosshair; }
+    #visit-tip {
+      position: absolute;
+      z-index: 2;
+      padding: 6px 8px;
+      background: #2c2926;
+      color: #fffcf8;
+      font-size: 13px;
+      line-height: 1.45;
+      pointer-events: none;
+      white-space: nowrap;
+    }
     .hint { color: #6f6a64; }
     #status { min-height: 1.4em; color: #6f6a64; }
     table { width: 100%; border-collapse: collapse; background: rgba(255, 252, 248, 0.94); }
@@ -122,6 +178,10 @@ export const adminHtml = `<!DOCTYPE html>
     </table>
     <p id="empty" hidden>现在没有人。</p>
     <h2>来访记录</h2>
+    <figure id="visit-trend">
+      <figcaption>近 30 天 <span class="hint">按入馆的北京时间，含今天。停在某一天看当天访问量。</span></figcaption>
+      <div id="visit-chart"></div>
+    </figure>
     <form id="visit-form">
       <label>日期 <input id="visit-day" type="date"></label>
       <button class="solid" type="submit">查看</button>
@@ -147,21 +207,27 @@ export const adminHtml = `<!DOCTYPE html>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
       <button class="line" id="frame-full" type="button">全部重抓</button>
-      <span class="hint">立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
+      <span class="hint">每天上午9:07和9:41自动抓取。立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
     </form>
     <p id="frame-status">正在读取…</p>
     <h2>默认排列</h2>
     <form id="arrange-form">
-      <ol id="halls"></ol>
-      <label>厅内顺序
-        <select id="arrange-order">
-          <option value="new">从新到旧</option>
-          <option value="old">从旧到新</option>
-        </select>
-      </label>
-      <label>进门置顶 <input id="arrange-pins" type="text" inputmode="numeric" autocomplete="off" placeholder="文章编号，用逗号或空格分开"></label>
-      <button class="solid" type="submit">保存排列</button>
-      <span class="hint">下次进馆生效。厅的先后决定先看到哪一类；一篇文章进了多个分类时，归到更靠前的厅。最多 ${PIN_CAP} 篇置顶，按填写顺序挂在进门那面墙。墙上几行几列不变。</span>
+      <div class="arrange-card" id="arrange-order-card">
+        <ol id="halls"></ol>
+        <label>厅内顺序
+          <select id="arrange-order">
+            <option value="new">从新到旧</option>
+            <option value="old">从旧到新</option>
+          </select>
+        </label>
+        <span class="hint">下次进馆生效。厅的先后决定先看到哪一类；一篇文章进了多个分类时，归到更靠前的厅。最多 ${PIN_CAP} 篇置顶，按填写顺序挂在进门那面墙。墙上几行几列不变。</span>
+      </div>
+      <div class="arrange-card" id="arrange-pin">
+        <label>进门置顶
+          <textarea id="arrange-pins" rows="10" inputmode="numeric" autocomplete="off" placeholder="文章编号，用逗号或空格分开"></textarea>
+        </label>
+        <button class="solid" type="submit">保存排列</button>
+      </div>
     </form>
     <p id="arrange-status"></p>
   </main>
@@ -462,6 +528,177 @@ export const adminHtml = `<!DOCTYPE html>
         }
         visitRows.appendChild(tr);
       }
+      paintTrend(data.trend);
+    }
+
+    function paintTrend(days) {
+      const host = document.getElementById("visit-chart");
+      const list = Array.isArray(days) ? days : [];
+      if (!list.length) {
+        host.dataset.sig = "";
+        host.replaceChildren();
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = "还没有近 30 天的访问";
+        host.appendChild(note);
+        return;
+      }
+      const parts = [];
+      for (let i = 0; i < list.length; i++) parts.push((list[i].day || "") + ":" + (Number(list[i].count) || 0));
+      const sig = parts.join(",");
+      if (host.dataset.sig === sig && host.querySelector("svg")) return;
+      host.dataset.sig = sig;
+      host.replaceChildren();
+
+      const svgNS = "http://www.w3.org/2000/svg";
+      const width = 640;
+      const height = 168;
+      const padL = 36;
+      const padR = 12;
+      const padT = 16;
+      const padB = 26;
+      const plotW = width - padL - padR;
+      const plotH = height - padT - padB;
+      const colW = plotW / list.length;
+      let peak = 0;
+      const counts = [];
+      for (let i = 0; i < list.length; i++) {
+        const n = Number(list[i].count) || 0;
+        counts.push(n);
+        if (n > peak) peak = n;
+      }
+      const max = peak > 0 ? peak : 1;
+      const base = padT + plotH;
+
+      function xAt(i) { return padL + colW * i + colW / 2; }
+      function yAt(count) { return base - (plotH * count) / max; }
+      function el(name) { return document.createElementNS(svgNS, name); }
+
+      const svg = el("svg");
+      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", "近30天访问趋势");
+
+      const coords = [];
+      for (let i = 0; i < list.length; i++) coords.push(xAt(i) + "," + yAt(counts[i]));
+      const area = el("polygon");
+      area.setAttribute("fill", "rgba(44,41,38,0.08)");
+      area.setAttribute("points", xAt(0) + "," + base + " " + coords.join(" ") + " " + xAt(list.length - 1) + "," + base);
+      svg.appendChild(area);
+
+      const line = el("polyline");
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", "#2c2926");
+      line.setAttribute("stroke-width", "1.75");
+      line.setAttribute("stroke-linejoin", "round");
+      line.setAttribute("stroke-linecap", "round");
+      line.setAttribute("points", coords.join(" "));
+      svg.appendChild(line);
+
+      const axis = el("line");
+      axis.setAttribute("x1", String(padL));
+      axis.setAttribute("x2", String(padL + plotW));
+      axis.setAttribute("y1", String(base));
+      axis.setAttribute("y2", String(base));
+      axis.setAttribute("stroke", "rgba(44,41,38,0.16)");
+      svg.appendChild(axis);
+
+      function textAt(content, x, y, anchor) {
+        const node = el("text");
+        node.textContent = content;
+        node.setAttribute("x", String(x));
+        node.setAttribute("y", String(y));
+        node.setAttribute("text-anchor", anchor);
+        node.setAttribute("dominant-baseline", "middle");
+        node.setAttribute("fill", "#6f6a64");
+        node.setAttribute("font-size", "11");
+        return node;
+      }
+      svg.appendChild(textAt(String(peak), padL - 6, yAt(peak), "end"));
+      if (peak > 0) svg.appendChild(textAt("0", padL - 6, base, "end"));
+
+      const marks = [];
+      for (let i = 0; i < list.length; i++) {
+        if (i === 0 || i === list.length - 1 || i % 5 === 0) marks.push(i);
+      }
+      const kept = [];
+      for (let i = 0; i < marks.length; i++) {
+        const index = marks[i];
+        if (!kept.length || index - kept[kept.length - 1] >= 4) kept.push(index);
+        else if (index === list.length - 1) {
+          kept.pop();
+          kept.push(index);
+        }
+      }
+      for (let i = 0; i < kept.length; i++) {
+        const index = kept[i];
+        svg.appendChild(textAt(String(list[index].day || "").slice(5), xAt(index), height - 10, "middle"));
+      }
+
+      const guide = el("line");
+      guide.setAttribute("y1", String(padT));
+      guide.setAttribute("y2", String(base));
+      guide.setAttribute("stroke", "rgba(44,41,38,0.35)");
+      guide.setAttribute("visibility", "hidden");
+      svg.appendChild(guide);
+
+      const dot = el("circle");
+      dot.setAttribute("r", "3.5");
+      dot.setAttribute("fill", "#2c2926");
+      dot.setAttribute("visibility", "hidden");
+      svg.appendChild(dot);
+
+      const tip = document.createElement("div");
+      tip.id = "visit-tip";
+      tip.hidden = true;
+
+      function hide() {
+        tip.hidden = true;
+        guide.setAttribute("visibility", "hidden");
+        dot.setAttribute("visibility", "hidden");
+      }
+
+      function show(index) {
+        const x = xAt(index);
+        const y = yAt(counts[index]);
+        guide.setAttribute("x1", String(x));
+        guide.setAttribute("x2", String(x));
+        guide.setAttribute("visibility", "visible");
+        dot.setAttribute("cx", String(x));
+        dot.setAttribute("cy", String(y));
+        dot.setAttribute("visibility", "visible");
+        tip.replaceChildren();
+        const dateLine = document.createElement("div");
+        dateLine.textContent = "日期 " + (list[index].day || "");
+        const countLine = document.createElement("div");
+        countLine.textContent = "访问量 " + counts[index];
+        tip.append(dateLine, countLine);
+        tip.hidden = false;
+        const svgBox = svg.getBoundingClientRect();
+        const hostBox = host.getBoundingClientRect();
+        const px = svgBox.left - hostBox.left + (x / width) * svgBox.width;
+        const py = svgBox.top - hostBox.top + (y / height) * svgBox.height;
+        let left = px + 12;
+        let top = py - tip.offsetHeight - 10;
+        if (top < 0) top = py + 12;
+        if (left + tip.offsetWidth > host.clientWidth) left = Math.max(0, px - tip.offsetWidth - 12);
+        tip.style.left = left + "px";
+        tip.style.top = top + "px";
+      }
+
+      function hit(event) {
+        const box = svg.getBoundingClientRect();
+        if (!box.width) return;
+        const x = ((event.clientX - box.left) / box.width) * width;
+        const index = Math.floor((x - padL) / colW);
+        if (x < padL || x > padL + plotW || index < 0 || index >= list.length) hide();
+        else show(index);
+      }
+
+      svg.addEventListener("pointermove", hit);
+      svg.addEventListener("pointerdown", hit);
+      svg.addEventListener("pointerleave", hide);
+      host.append(svg, tip);
     }
 
     async function refreshVisits() {

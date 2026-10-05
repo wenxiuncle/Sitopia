@@ -29,6 +29,8 @@ import {
   shanghaiDay,
   visitLeftAt,
   visitView,
+  addVisitTrend,
+  emptyVisitTrend,
 } from "../tools/room.mjs";
 import { safeEqual } from "../tools/admin-auth.mjs";
 
@@ -421,12 +423,20 @@ export class SitopiaLobby extends DurableObject {
       const shown = truncated ? rows.slice(0, VISIT_LIMIT) : rows;
       const visits = [];
       for (let i = 0; i < shown.length; i++) visits.push(visitView(shown[i]));
+      const trend = emptyVisitTrend(now);
+      const stamps = this.sql(
+        "SELECT entered FROM visits WHERE entered >= ? AND entered < ?",
+        trend.start,
+        trend.end,
+      ).toArray();
+      for (let i = 0; i < stamps.length; i++) addVisitTrend(trend, stamps[i].entered);
       return json({
         day,
         keepDays: 90,
         now,
         truncated,
         visits,
+        trend: trend.points,
       }, 200);
     }
     if (url.pathname === "/admin/api/arrange" && request.method === "GET") {

@@ -24,6 +24,7 @@ import {
   rememberSolo,
   shanghaiDay,
   visitLeftAt,
+  visitTrend,
   visitsOnDay,
 } from "./room.mjs";
 
@@ -344,6 +345,7 @@ export function attachLobby(server) {
         now,
         truncated: page.truncated,
         visits: page.visits,
+        trend: visitTrend(visits, now),
       };
     },
     arrange() {

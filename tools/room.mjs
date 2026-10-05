@@ -396,6 +396,40 @@ export function visitsOnDay(book, day, limit) {
   return { visits, truncated: list.length > cap };
 }
 
+// 近 30 天按入馆的北京时间计次。没有来访的日子也占一格，次数是 0。
+export const VISIT_TREND_DAYS = 30;
+
+export function emptyVisitTrend(now, days) {
+  const span = days || VISIT_TREND_DAYS;
+  const today = shanghaiDay(now);
+  const end = dayBounds(today).end;
+  const start = end - span * 24 * 60 * 60 * 1000;
+  const step = 24 * 60 * 60 * 1000;
+  const points = [];
+  for (let i = 0; i < span; i++) {
+    points.push({ day: shanghaiDay(start + i * step + 12 * 60 * 60 * 1000), count: 0 });
+  }
+  return { start, end, points };
+}
+
+export function addVisitTrend(trend, entered) {
+  const at = Number(entered) || 0;
+  if (at < trend.start || at >= trend.end) return;
+  const index = Math.floor((at - trend.start) / (24 * 60 * 60 * 1000));
+  if (trend.points[index]) trend.points[index].count += 1;
+}
+
+export function visitTrend(book, now, days) {
+  const trend = emptyVisitTrend(now, days);
+  if (book && book.closed) {
+    for (let i = 0; i < book.closed.length; i++) addVisitTrend(trend, book.closed[i].entered);
+  }
+  if (book && book.open) {
+    for (const row of book.open.values()) addVisitTrend(trend, row.entered);
+  }
+  return trend.points;
+}
+
 export function adminPeople(people, solo, now) {
   pruneSolo(solo, now);
   const onlineSeats = new Set();
