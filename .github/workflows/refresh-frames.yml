@@ -2,8 +2,12 @@ name: refresh-frames
 
 on:
   schedule:
-    # 每天 09:00 北京时间。GitHub 的 cron 按 UTC 计算。
-    - cron: "0 1 * * *"
+    # 北京时间上午。GitHub 在每小时整点最挤，排上的定时任务会被丢掉，所以不写 09:00。
+    # 09:41 是补跑：09:07 那次没被排上时，这次还能抓。没有新文章就不会提交。
+    - cron: "7 9 * * *"
+      timezone: "Asia/Shanghai"
+    - cron: "41 9 * * *"
+      timezone: "Asia/Shanghai"
   workflow_dispatch:
     inputs:
       full:
