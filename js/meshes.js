@@ -131,6 +131,9 @@ export function atlasGrid(count, maxSize) {
 
 const FRAME_EXT = /\.(webp|jpe?g|png|gif|avif)$/i;
 
+// 没配图，或配图拉不下来时，画芯共用这一张。地址仍要过 usableFrameImage。
+export const FALLBACK_FRAME_IMAGE = "https://img.youquhome.com/wupeitu.webp";
+
 // 画芯只收图片站的 https 地址。本地 data/frames 仍可用，给还没改地址的清单兜底。
 export function usableFrameImage(src) {
   if (!src || typeof src !== "string") return "";

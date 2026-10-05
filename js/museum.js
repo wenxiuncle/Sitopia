@@ -34,6 +34,7 @@ import {
   cellUv,
   colliderLines,
   coverRect,
+  FALLBACK_FRAME_IMAGE,
   usableFrameImage,
   doorRig,
   floorAndCeiling,
@@ -142,6 +143,7 @@ let loadWait = [];
 let loadActive = 0;
 let loadPumping = false;
 const LOAD_CAP = 2;
+const FALLBACK_SRC = usableFrameImage(FALLBACK_FRAME_IMAGE);
 let liftPadOpen = false;
 let doorCall = false;
 let revealFloor = -1;
@@ -1826,7 +1828,7 @@ function drawCover(ctx, img, ox, oy, cellW, cellH) {
   ctx.drawImage(img, sx, sy, sw, sh, x0, y0, x1 - x0, y1 - y0);
 }
 
-function paintIntoSlot(token, floor, pictures) {
+function paintIntoSlot(token, floor, pictures, fallback) {
   if (token !== buildSerial || !mats) return;
   const slot = claimSlot();
   const holder = atlasSlots[slot];
@@ -1834,6 +1836,7 @@ function paintIntoSlot(token, floor, pictures) {
   const uv = blankUv();
   let cursor = 0;
   let clearY = 0;
+  let planted = !fallback;
   const step = () => {
     if (token !== buildSerial) return;
     if (clearY < holder.h) {
@@ -1841,6 +1844,13 @@ function paintIntoSlot(token, floor, pictures) {
       holder.ctx.fillStyle = "#f7f5f2";
       holder.ctx.fillRect(0, clearY, holder.w, h);
       clearY += h;
+      yieldTurn(step);
+      return;
+    }
+    // 第 0 格是占位图。没配图或没拉下来的画框都指着它，不各占一格。
+    if (!planted) {
+      drawCover(holder.ctx, fallback, 0, 0, grid.cellW, grid.cellH);
+      planted = true;
       yieldTurn(step);
       return;
     }
@@ -1890,28 +1900,47 @@ function startBuild(floor, showWhenDone) {
   const token = ++buildSerial;
   dropQueued();
   const jobs = floorPictureJobs(floor);
-  if (!jobs.length) {
-    const slot = claimSlot();
-    const pack = { floor, texture: atlasSlots[slot].texture, uv: blankUv(), slot, count: 0 };
-    atlasReady.set(floor, pack);
-    if (revealFloor === floor) applyAtlas(pack);
-    else markPictures(0);
+  const pictures = [];
+  let fallback = null;
+  let left = jobs.length + (FALLBACK_SRC ? 1 : 0);
+  if (!left) {
+    commitPlain(floor);
     if (showWhenDone) prefetchAround(floor);
     return;
   }
-  const pictures = [];
-  let left = jobs.length;
+  const finish = () => {
+    if (token !== buildSerial) return;
+    left -= 1;
+    if (left > 0) return;
+    if (showWhenDone) prefetchAround(floor);
+    if (!pictures.length && !fallback) {
+      commitPlain(floor);
+      return;
+    }
+    paintIntoSlot(token, floor, pictures, fallback);
+  };
+  if (FALLBACK_SRC) {
+    loadImage(FALLBACK_SRC).then((img) => {
+      if (token !== buildSerial) return;
+      fallback = img;
+      finish();
+    });
+  }
   for (let i = 0; i < jobs.length; i++) {
     loadImage(jobs[i].src).then((img) => {
       if (token !== buildSerial) return;
       if (img) pictures.push({ index: jobs[i].index, img });
-      left -= 1;
-      if (left === 0) {
-        if (showWhenDone) prefetchAround(floor);
-        paintIntoSlot(token, floor, pictures);
-      }
+      finish();
     });
   }
+}
+
+function commitPlain(floor) {
+  const slot = claimSlot();
+  const pack = { floor, texture: atlasSlots[slot].texture, uv: blankUv(), slot, count: 0 };
+  atlasReady.set(floor, pack);
+  if (revealFloor === floor) applyAtlas(pack);
+  else markPictures(0);
 }
 
 function trackPictures() {

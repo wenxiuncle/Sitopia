@@ -31,7 +31,7 @@ import {
 } from "../js/layout.js";
 import { DAYS, dropShadowPose, findDay, floorLamps, groundShadow, lampAt, openingQuads, sunVector } from "../js/day.js";
 import { createLift } from "../js/lift.js";
-import { atlasGrid, cellUv, coverRect, doorRig, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { atlasGrid, cellUv, coverRect, doorRig, FALLBACK_FRAME_IMAGE, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
 import { bakeLoop, museumImpulse } from "../js/ambience.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
@@ -201,6 +201,7 @@ function checkParser() {
   assert(usableFrameImage("https://img.youquhome.com/uploads/2026/09/kami.webp") === "https://img.youquhome.com/uploads/2026/09/kami.webp", "picture host is usable");
   assert(usableFrameImage("https://evil.example/a.webp") === "", "other hosts are not frame images");
   assert(usableFrameImage("http://img.youquhome.com/a.webp") === "", "picture url stays https");
+  assert(usableFrameImage(FALLBACK_FRAME_IMAGE) === FALLBACK_FRAME_IMAGE, "fallback picture is usable");
   const wide = coverRect(1000, 200, 370, 180);
   assert(Math.abs(wide.h - 180) < 1e-6 && wide.w > 370, "wide image covers the frame");
   assert(Math.abs(wide.w / wide.h - 5) < 1e-6, "wide image keeps its ratio");
