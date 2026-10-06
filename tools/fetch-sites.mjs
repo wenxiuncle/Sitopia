@@ -13,7 +13,7 @@ const UA = {
   Accept: "application/json",
 };
 
-const BAD_HOST = /(^|\.)youquhome\.com$|gravatar\.com$|wordpress\.(org|com)$|wp\.com$|w\.org$|schema\.org$|gmpg\.org$|googleapis\.com$|gstatic\.com$|doubleclick\.net$/i;
+const BAD_HOST = /(^|\.)(youquhome\.com|gravatar\.com|wordpress\.(?:org|com)|wp\.com|w\.org|schema\.org|gmpg\.org|googleapis\.com|gstatic\.com|doubleclick\.net)$/i;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

@@ -187,6 +187,14 @@ function checkParser() {
   assert(extractPortal(tetra) === "", "portal after more is ignored");
   assert(extractPortal(ad) === "", "ad slot has no portal");
   assert(extractPortal(dead) === "http://www.jellyjumper.com/", "struck portal is kept");
+  const beard = '<p>介绍。</p><p>传送门&nbsp;<a href="http://www.beardsfrombelow.org/" target="_blank">http://www.beardsfrombelow.org/</a>&nbsp;<!--more--></p>';
+  assert(extractPortal(beard) === "http://www.beardsfrombelow.org/", "org host ending in w stays");
+  const worg = '<p>传送门 <a href="https://s.w.org/images/core/emoji/14/svg/1f600.svg">x</a></p>';
+  assert(extractPortal(worg) === "", "w.org host stays blocked");
+  const home = '<p>传送门 <a href="https://img.youquhome.com/a.webp">x</a></p>';
+  assert(extractPortal(home) === "", "youquhome host stays blocked");
+  const wpcom = '<p>传送门 <a href="https://mywp.com/">x</a></p>';
+  assert(extractPortal(wpcom) === "https://mywp.com/", "host ending in wp.com stays");
   assert(markedDown(dead) === true, "已挂 is flagged");
   assert(markedDown(kami) === false, "live portal is not flagged");
   assert(extractBlurb(kami).includes("折叠屏"), "blurb keeps opening");
