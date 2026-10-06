@@ -207,7 +207,7 @@ export const adminHtml = `<!DOCTYPE html>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
       <button class="line" id="frame-full" type="button">全部重抓</button>
-      <span class="hint">每天上午9:07和9:41自动抓取。立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
+      <span class="hint">每天上午9:07和9:41由这台反代排队抓取。GitHub自己的定时在上午会被挤掉，所以闹钟放在反代上。中午12:17再补一次。立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
     </form>
     <p id="frame-status">正在读取…</p>
     <h2>默认排列</h2>

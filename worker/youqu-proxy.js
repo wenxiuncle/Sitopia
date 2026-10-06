@@ -1,5 +1,6 @@
 // lobby.youquhome.com 把 /lobby 转到 Adhesive Quarter 上的房间。
 // /admin 留在这台反代上：先对口令，再把名单、人数和踢人转给房间。
+// 每天 09:07 和 09:41（北京时间）由本文件的 scheduled 去叫 GitHub 抓新文章。
 
 import { adminHtml } from "../tools/admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "../tools/admin-auth.mjs";
@@ -88,6 +89,15 @@ function adminLogout(request) {
 }
 
 export default {
+  async scheduled(event, env) {
+    const cron = event && event.cron ? event.cron : "";
+    const result = await frameDispatch(env.GITHUB_DISPATCH_TOKEN || "", false);
+    if (!result || result.ok !== true) {
+      console.log("frame dispatch failed " + cron + " " + ((result && result.error) || ""));
+      throw new Error("frame dispatch failed");
+    }
+    console.log("frame dispatch ok " + cron);
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/admin" || url.pathname === "/admin/") return adminPage();

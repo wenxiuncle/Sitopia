@@ -2,12 +2,10 @@ name: refresh-frames
 
 on:
   schedule:
-    # 北京时间上午。GitHub 在每小时整点最挤，排上的定时任务会被丢掉，所以不写 09:00。
-    # 09:41 是补跑：09:07 那次没被排上时，这次还能抓。没有新文章就不会提交。
-    - cron: "7 9 * * *"
-      timezone: "Asia/Shanghai"
-    - cron: "41 9 * * *"
-      timezone: "Asia/Shanghai"
+    # 上午不放在这里。GitHub 在北京时间 9 点前后会把 schedule 挤掉，或推迟好几个小时。
+    # 09:07 和 09:41 由 lobby.youquhome.com 反代的 Cron 调用 workflow_dispatch。
+    # 这里只留中午 12:17（北京时间，04:17 UTC）补一次，躲开那个高峰。没有新文章就不会提交。
+    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       full:
