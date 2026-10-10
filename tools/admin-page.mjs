@@ -133,6 +133,8 @@ export const adminHtml = `<!DOCTYPE html>
     .hint { color: #6f6a64; }
     #status { min-height: 1.4em; color: #6f6a64; }
     table { width: 100%; border-collapse: collapse; background: rgba(255, 252, 248, 0.94); }
+    #visit-table { table-layout: fixed; }
+    #visit-table .nick { text-align: center; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(44, 41, 38, 0.08); vertical-align: top; }
     th { font-size: 13px; color: #6f6a64; font-weight: 650; }
     td button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; }
@@ -196,10 +198,18 @@ export const adminHtml = `<!DOCTYPE html>
       <span class="hint">按入馆的北京时间，保留 90 天。同一个标签页记一次，新开一个标签再记一次。</span>
     </form>
     <p id="visit-status">正在读取…</p>
-    <table>
+    <table id="visit-table">
+      <colgroup>
+        <col id="visit-nick-col">
+        <col>
+        <col>
+        <col>
+        <col>
+        <col>
+      </colgroup>
       <thead>
         <tr>
-          <th>昵称</th>
+          <th class="nick">昵称</th>
           <th>模式</th>
           <th>入馆</th>
           <th>离开</th>
@@ -511,6 +521,40 @@ export const adminHtml = `<!DOCTYPE html>
       }
     }
 
+    function widenVisitNick() {
+      const table = document.getElementById("visit-table");
+      const col = document.getElementById("visit-nick-col");
+      const width = table.clientWidth;
+      if (!width) return;
+      const holder = document.createElement("div");
+      holder.style.cssText = "position:absolute;left:-9999px;top:0;visibility:hidden;width:" + width + "px;";
+      const probe = document.createElement("table");
+      const head = document.createElement("tr");
+      const labels = ["昵称", "模式", "入馆", "离开", "停留", "IP"];
+      for (let i = 0; i < labels.length; i++) {
+        const th = document.createElement("th");
+        th.textContent = labels[i];
+        head.appendChild(th);
+      }
+      probe.appendChild(head);
+      const rows = visitRows.rows;
+      for (let r = 0; r < rows.length; r++) {
+        const tr = document.createElement("tr");
+        const cells = rows[r].cells;
+        for (let c = 0; c < cells.length; c++) {
+          const td = document.createElement("td");
+          td.textContent = cells[c].textContent;
+          tr.appendChild(td);
+        }
+        probe.appendChild(tr);
+      }
+      holder.appendChild(probe);
+      document.body.appendChild(holder);
+      const natural = head.cells[0].getBoundingClientRect().width;
+      holder.remove();
+      if (natural > 0) col.style.width = Math.round(natural * 2) + "px";
+    }
+
     function paintVisitRows() {
       const data = visitCache || { visits: [] };
       const list = data.visits || [];
@@ -535,11 +579,13 @@ export const adminHtml = `<!DOCTYPE html>
         ];
         for (let c = 0; c < cells.length; c++) {
           const td = document.createElement("td");
+          if (c === 0) td.className = "nick";
           td.textContent = cells[c];
           tr.appendChild(td);
         }
         visitRows.appendChild(tr);
       }
+      widenVisitNick();
       visitPager.replaceChildren();
       visitPager.hidden = list.length <= VISIT_PAGE;
       for (let p = 1; p <= pages && !visitPager.hidden; p++) {
