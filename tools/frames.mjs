@@ -99,6 +99,16 @@ export async function frameStatus(token) {
   return report;
 }
 
+export function fetchedToday(report, now) {
+  if (!report) return false;
+  if (report.status !== "success" && report.status !== "running" && report.status !== "queued") return false;
+  const ms = Date.parse(report.at || "");
+  if (Number.isNaN(ms)) return false;
+  const at = typeof now === "number" ? now : Date.now();
+  const day = (t) => new Date(t + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return day(ms) === day(at);
+}
+
 export async function frameDispatch(token, full) {
   if (!token) return { error: "unset" };
   const body = { ref: REF };

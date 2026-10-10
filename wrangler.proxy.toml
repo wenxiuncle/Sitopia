@@ -9,6 +9,7 @@ pattern = "lobby.youquhome.com"
 custom_domain = true
 zone_name = "youquhome.com"
 
-# Cloudflare 的 Cron 只用 UTC。01:07 和 01:41 是北京时间 09:07 和 09:41。
+# Cloudflare 的 Cron 只用 UTC。01:07 是北京时间 09:07，每天叫一次。
+# 01:41 是北京时间 09:41。Worker 里若当天已经抓成功，这次直接跳过。
 [triggers]
 crons = ["7 1 * * *", "41 1 * * *"]

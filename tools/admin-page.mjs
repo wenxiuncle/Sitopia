@@ -102,6 +102,14 @@ export const adminHtml = `<!DOCTYPE html>
     }
     #frame-status, #arrange-status { min-height: 1.4em; color: #6f6a64; }
     #visit-status { min-height: 1.4em; color: #6f6a64; }
+    #visit-pager {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 12px 0 0;
+    }
+    #visit-pager button { padding: 4px 10px; min-width: 2.4em; }
+    #visit-pager button:disabled { cursor: default; }
     #visit-trend {
       margin: 18px 0;
       padding: 12px 14px 8px;
@@ -191,8 +199,7 @@ export const adminHtml = `<!DOCTYPE html>
     <table>
       <thead>
         <tr>
-          <th>进馆昵称</th>
-          <th>最后昵称</th>
+          <th>昵称</th>
           <th>模式</th>
           <th>入馆</th>
           <th>离开</th>
@@ -202,12 +209,13 @@ export const adminHtml = `<!DOCTYPE html>
       </thead>
       <tbody id="visit-rows"></tbody>
     </table>
+    <nav id="visit-pager" hidden></nav>
     <p id="visit-empty" hidden>这一天没有来访。</p>
     <h2>画框</h2>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
       <button class="line" id="frame-full" type="button">全部重抓</button>
-      <span class="hint">每天上午9:07和9:41由这台反代排队抓取。GitHub自己的定时在上午会被挤掉，所以闹钟放在反代上。中午12:17再补一次。立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
+      <span class="hint">每天上午 9:07 抓一次新文章。这次已经成功，9:41 就不再抓；只有上午没成功才会补一次。立即更新只抓上次清单之后新发布的文章。全部重抓会重读四个分类，旧文改过的标题、已挂和已删除会一起更新。有变化才会换成新画框，已经打开的展厅要刷新才看得到。</span>
     </form>
     <p id="frame-status">正在读取…</p>
     <h2>默认排列</h2>
@@ -243,6 +251,10 @@ export const adminHtml = `<!DOCTYPE html>
     const visitRows = document.getElementById("visit-rows");
     const visitEmpty = document.getElementById("visit-empty");
     const visitStatus = document.getElementById("visit-status");
+    const visitPager = document.getElementById("visit-pager");
+    const VISIT_PAGE = 20;
+    let visitPage = 1;
+    let visitCache = null;
     const frameStatus = document.getElementById("frame-status");
     const arrangeStatus = document.getElementById("arrange-status");
     const arrangeOrder = document.getElementById("arrange-order");
@@ -499,21 +511,21 @@ export const adminHtml = `<!DOCTYPE html>
       }
     }
 
-    function paintVisits(data) {
+    function paintVisitRows() {
+      const data = visitCache || { visits: [] };
       const list = data.visits || [];
       const now = data.now || Date.now();
-      shownVisitDay = data.day || visitDay.value;
-      let text = (data.day || "") + " · " + list.length + " 次";
-      if (data.truncated) text += " · 只列出最近 500 次";
-      text += " · 保留 " + (data.keepDays || 90) + " 天";
-      visitStatus.textContent = text;
+      const pages = Math.max(1, Math.ceil(list.length / VISIT_PAGE));
+      if (visitPage > pages) visitPage = pages;
+      if (visitPage < 1) visitPage = 1;
+      const start = (visitPage - 1) * VISIT_PAGE;
+      const slice = list.slice(start, start + VISIT_PAGE);
       visitRows.replaceChildren();
       visitEmpty.hidden = list.length > 0;
-      for (let i = 0; i < list.length; i++) {
-        const visit = list[i];
+      for (let i = 0; i < slice.length; i++) {
+        const visit = slice[i];
         const tr = document.createElement("tr");
         const cells = [
-          visit.nameIn || "访客",
           visit.nameLast || visit.nameIn || "访客",
           visit.mode === "solo" ? "单人" : "联机",
           clock(visit.entered),
@@ -528,6 +540,34 @@ export const adminHtml = `<!DOCTYPE html>
         }
         visitRows.appendChild(tr);
       }
+      visitPager.replaceChildren();
+      visitPager.hidden = list.length <= VISIT_PAGE;
+      for (let p = 1; p <= pages && !visitPager.hidden; p++) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = String(p);
+        button.dataset.page = String(p);
+        button.className = p === visitPage ? "solid" : "line";
+        if (p === visitPage) {
+          button.disabled = true;
+          button.setAttribute("aria-current", "page");
+        }
+        visitPager.appendChild(button);
+      }
+    }
+
+    function paintVisits(data) {
+      const list = data.visits || [];
+      const day = data.day || visitDay.value;
+      if (day !== shownVisitDay) visitPage = 1;
+      shownVisitDay = day;
+      visitCache = data;
+      let text = day + " · " + list.length + " 次";
+      if (data.truncated) text += " · 只列出最近 500 次";
+      text += " · 保留 " + (data.keepDays || 90) + " 天";
+      if (list.length > VISIT_PAGE) text += " · 每页 " + VISIT_PAGE + " 条";
+      visitStatus.textContent = text;
+      paintVisitRows();
       paintTrend(data.trend);
     }
 
@@ -787,7 +827,17 @@ export const adminHtml = `<!DOCTYPE html>
 
     document.getElementById("visit-form").addEventListener("submit", (event) => {
       event.preventDefault();
+      visitPage = 1;
       refreshVisits();
+    });
+
+    visitPager.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || button.disabled) return;
+      const page = Number(button.dataset.page);
+      if (!page || page === visitPage) return;
+      visitPage = page;
+      paintVisitRows();
     });
 
     async function queueFrames(full) {

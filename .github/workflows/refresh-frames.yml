@@ -1,11 +1,9 @@
 name: refresh-frames
 
 on:
-  schedule:
-    # 上午不放在这里。GitHub 在北京时间 9 点前后会把 schedule 挤掉，或推迟好几个小时。
-    # 09:07 和 09:41 由 lobby.youquhome.com 反代的 Cron 调用 workflow_dispatch。
-    # 这里只留中午 12:17（北京时间，04:17 UTC）补一次，躲开那个高峰。没有新文章就不会提交。
-    - cron: "17 4 * * *"
+  # 不在这里放 schedule。GitHub 会把中午的定时推迟到傍晚，上午已经成功还会再跑一遍。
+  # 每天 09:07（北京时间）由 lobby.youquhome.com 反代调用 workflow_dispatch。
+  # 09:41 只在当天还没成功时补一次。
   workflow_dispatch:
     inputs:
       full:

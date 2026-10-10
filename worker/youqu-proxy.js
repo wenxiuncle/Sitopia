@@ -1,10 +1,11 @@
 // lobby.youquhome.com 把 /lobby 转到 Adhesive Quarter 上的房间。
 // /admin 留在这台反代上：先对口令，再把名单、人数和踢人转给房间。
-// 每天 09:07 和 09:41（北京时间）由本文件的 scheduled 去叫 GitHub 抓新文章。
+// 每天 09:07（北京时间）由本文件的 scheduled 去叫 GitHub 抓新文章。
+// 09:41 只在当天还没抓成功时补一次。中午和傍晚不再另抓。
 
 import { adminHtml } from "../tools/admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "../tools/admin-auth.mjs";
-import { frameDispatch, frameStatus } from "../tools/frames.mjs";
+import { fetchedToday, frameDispatch, frameStatus } from "../tools/frames.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
 
@@ -91,7 +92,13 @@ function adminLogout(request) {
 export default {
   async scheduled(event, env) {
     const cron = event && event.cron ? event.cron : "";
-    const result = await frameDispatch(env.GITHUB_DISPATCH_TOKEN || "", false);
+    const token = env.GITHUB_DISPATCH_TOKEN || "";
+    const report = await frameStatus(token);
+    if (fetchedToday(report)) {
+      console.log("frame dispatch skipped " + cron);
+      return;
+    }
+    const result = await frameDispatch(token, false);
     if (!result || result.ok !== true) {
       console.log("frame dispatch failed " + cron + " " + ((result && result.error) || ""));
       throw new Error("frame dispatch failed");
