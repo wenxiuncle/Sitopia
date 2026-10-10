@@ -17,6 +17,7 @@ import {
   doorBoxes,
   doorWantsOpen,
   groundAt,
+  hallDoorNear,
   hallBlend,
   inLiftCar,
   liftDoorBoxes,
@@ -53,8 +54,13 @@ import {
   paneMesh,
   plateMesh,
   setFacadeSignNight,
+  castShadowMaterial,
+  deckShadowPolys,
   dropShadowMesh,
   placeDropShadows,
+  shapeShadowMaterial,
+  shapeShadowMesh,
+  yardShadowPolys,
   placePlantShadows,
   plantMeshes,
   plantShadowMesh,
@@ -124,6 +130,8 @@ let shadowMesh = null;
 let coneMat = null;
 let discMat = null;
 let shadowMat = null;
+let shapeMat = null;
+let shapeMesh = null;
 let bodyRoom = null;
 let nightCeilMat = null;
 let nightCeilPlateMat = null;
@@ -136,6 +144,7 @@ let liftDoors = null;
 let lift = null;
 let doorOpen = [];
 let doorHeld = [];
+const hallNear = [];
 let shownFloor = -1;
 let pictureGrid = null;
 const imageCache = new Map();
@@ -540,6 +549,7 @@ function fillLiftPad() {
       event.stopPropagation();
       if (!lift) return;
       const chosen = lift.has(f);
+      if (ambience) ambience.press();
       if (chosen) lift.cancel(f);
       else lift.call(f);
       paintLiftChoices();
@@ -553,10 +563,12 @@ function onDoorKey() {
   if (!lift || !built) return;
   if (insideLift()) {
     if (lift.phase === "moving") return;
+    if (ambience) ambience.press();
     lift.call(lift.current);
     return;
   }
   if (!atLiftDoor()) return;
+  if (ambience) ambience.press();
   doorCall = true;
   lift.call(playerFloor());
 }
@@ -638,7 +650,7 @@ function poseSelf(pulled) {
   selfVisitor.group.rotation.y = yawFacing(fwd);
   placeBodyShadow(selfVisitor, px, py, pz, yawFacing(fwd));
   const speed = Math.hypot(vx, vz);
-  if (speed > 0.2) walkPhase += speed * 0.026;
+  if (speed > 0.2) walkPhase += speed * 0.02;
   poseVisitor(selfVisitor.parts, walkPhase, speed > 0.2 ? 1 : 0);
 }
 
@@ -672,11 +684,30 @@ function placeCamera() {
   poseSelf(pulled);
 }
 
+function footSurface() {
+  if (lift && inLiftCar(px, pz) && Math.abs(py - lift.y) < 1.3) return "indoor";
+  const support = groundAt(px, pz, py, built.floors);
+  if (support == null) return "air";
+  const slab = Math.round(support / STORY) * STORY;
+  if (Math.abs(support - slab) > 0.12) return "stair";
+  if (hallBlend(px, pz, built.interior) >= 0.42) return "indoor";
+  return "plaza";
+}
+
+function liftNear() {
+  if (!lift) return 0;
+  if (inLiftCar(px, pz) && Math.abs(py - lift.y) < 1.3) return 1;
+  const horiz = Math.hypot(px - LIFT.cx, pz - LIFT.cz);
+  const dy = Math.abs(py - lift.y);
+  return Math.exp(-horiz * 0.22) * Math.exp(-dy * 0.32);
+}
+
 function step(dt, now) {
   const floorNow = playerFloor();
   for (let f = 0; f < built.floors; f++) {
     const want = f === floorNow && Math.abs(py - f * STORY) < 1.35 && doorWantsOpen(px, pz, doorHeld[f]);
     doorHeld[f] = want;
+    hallNear[f] = hallDoorNear(px, py, pz, f);
     const aim = want ? 1 : 0;
     doorOpen[f] += (aim - (doorOpen[f] || 0)) * (1 - Math.exp(-dt * 8));
     if (doorOpen[f] < 0.0008) doorOpen[f] = 0;
@@ -726,7 +757,22 @@ function step(dt, now) {
   syncLiftHint();
   trackPictures();
   if (presence) presence.update(dt, now);
-  if (ambience && built) ambience.hear(hallBlend(px, pz, built.interior));
+  if (ambience && built) {
+    const indoors = hallBlend(px, pz, built.interior);
+    ambience.hear(indoors);
+    ambience.place({
+      outdoor: 1 - indoors,
+      surface: footSurface(),
+      speed: Math.hypot(vx, vz),
+      day: DAYS[dayCursor].id,
+      dt,
+      liftY: lift ? lift.y : 0,
+      liftPhase: lift ? lift.phase : "idle",
+      liftNear: liftNear(),
+      hallHeld: doorHeld,
+      hallNear,
+    });
+  }
 }
 
 function noteGesture() {
@@ -866,6 +912,22 @@ function publishSelfTest() {
 }
 
 function bind() {
+  // 昵称框里从右往左拖选，松开时落点在画面上。这次不能当成点画面走进去。
+  let suppressWalkClick = false;
+  let draggingField = false;
+  document.addEventListener("pointerdown", (event) => {
+    if (draggingField) return;
+    const target = event.target;
+    const onField = event.button === 0 && !!(target && target.closest && target.closest("input, textarea"));
+    if (!onField) suppressWalkClick = false;
+    draggingField = onField;
+    if (onField) suppressWalkClick = true;
+  }, true);
+  const releaseFieldDrag = () => {
+    draggingField = false;
+  };
+  document.addEventListener("pointerup", releaseFieldDrag, true);
+  document.addEventListener("pointercancel", releaseFieldDrag, true);
   view.addEventListener("click", () => {
     if (performance.now() < ignoreUntil) return;
     if (document.pointerLockElement !== view) return;
@@ -874,15 +936,18 @@ function bind() {
   });
   document.addEventListener("click", (event) => {
     noteGesture();
+    const selecting = suppressWalkClick;
+    if (selecting) suppressWalkClick = false;
     if (performance.now() < ignoreUntil) return;
     const gate = document.getElementById("name-gate");
     if (gate && !gate.hidden) return;
-    if (interactiveTarget(event.target)) return;
+    if (selecting || interactiveTarget(event.target)) return;
     if (performance.now() < clickShieldUntil) return;
     if (document.pointerLockElement === view) return;
     enterWalk();
   }, true);
   document.addEventListener("mousemove", (event) => {
+    if (draggingField) return;
     if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
     if (orbiting) {
@@ -1087,6 +1152,18 @@ function writePatches(day, sun) {
   col.needsUpdate = true;
 }
 
+function placeShapeShadows(sun) {
+  if (!shapeMat || !built) return;
+  const polys = yardShadowPolys(built.yard, sun).concat(deckShadowPolys(built.lobes, sun));
+  const next = shapeShadowMesh(polys, shapeMat);
+  if (shapeMesh) {
+    scene.remove(shapeMesh);
+    shapeMesh.geometry.dispose();
+  }
+  shapeMesh = next;
+  if (shapeMesh) scene.add(shapeMesh);
+}
+
 function applyDay(day) {
   const sun = sunVector(day);
   sunShared.dir.value.set(sun.x, sun.y, sun.z);
@@ -1119,7 +1196,9 @@ function applyDay(day) {
   if (nightCeilMat) nightCeilMat.color.setHex(0x2c2c31);
   if (nightCeilPlateMat) nightCeilPlateMat.color.setHex(0x2c2c31);
   if (nightBeamMat) nightBeamMat.color.setHex(0x1c1c20);
-  if (shadowMat) shadowMat.opacity = day.blob;
+  if (shadowMat) shadowMat.opacity = 1 - day.shade;
+  if (shapeMat) shapeMat.opacity = 1 - day.shade;
+  placeShapeShadows(sun);
   if (horizon && horizon.glow) horizon.glow.color.set(WINDOW_GLOW[day.id] || WINDOW_GLOW.noon);
   // 门口光斑是室外太阳投进来的。馆内改由天花灯照，地面不再铺这条亮带。
   writePatches({ streak: 0x000000, streakGain: 0 }, sun);
@@ -1177,6 +1256,8 @@ function buildScene(data, arrange) {
     front: { value: PLAZA.minZ },
     roof: { value: 6.5 },
     shade: { value: 0.42 },
+    slab: { value: new THREE.Vector4() },
+    slabY: { value: 0 },
     lamps: { value: lamps.tex },
     lampInv: { value: new THREE.Vector2(1 / lamps.cols, 1 / lamps.floors) },
     story: { value: STORY },
@@ -1194,8 +1275,11 @@ function buildScene(data, arrange) {
   sunRoles.body.lamps.value = 2;
   sunRoles.ground.cast.value = 1;
   const roof = built.dress.find((item) => item.kind === "roof");
-  sunShared.block.value.set(roof.minX, roof.maxX, roof.minZ, roof.maxZ);
-  sunShared.roof.value = (roof.minY + roof.maxY) / 2;
+  const shell = built.shell;
+  sunShared.block.value.set(shell.minX, shell.maxX, shell.minZ, shell.maxZ);
+  sunShared.roof.value = shell.top;
+  sunShared.slab.value.set(roof.minX, roof.maxX, roof.minZ, roof.maxZ);
+  sunShared.slabY.value = roof.maxY;
   bodyRoom.maxY = sunShared.roof.value - 1;
 
   const skyGeo = new THREE.SphereGeometry(SKY_R, 20, 12);
@@ -1362,7 +1446,7 @@ function buildScene(data, arrange) {
   });
   nightCeilPlateMat = ceilPlateMat;
   const storySlabs = plateMesh(built.floorPlates, plateMat);
-  const storyCeils = plateMesh(built.ceilPlates, ceilPlateMat);
+  const storyCeils = plateMesh(built.ceilPlates, ceilPlateMat, plateMat);
   if (storySlabs) scene.add(storySlabs);
   if (storyCeils) scene.add(storyCeils);
   const props = lobbyPropMeshes(built.extinguishers, built.tables, {
@@ -1440,14 +1524,9 @@ function buildScene(data, arrange) {
     scene.add(indoorDropMesh);
   }
   dropItems = horizon && horizon.shadows ? horizon.shadows.slice() : [];
-  for (let i = 0; i < built.yard.length; i++) {
-    const item = built.yard[i];
-    if (item.kind === "tree") dropItems.push({ x: item.x, z: item.z, rx: 1.7, rz: 1.25, h: 3.6, y: 0.04 });
-    else if (item.kind === "hedge") dropItems.push({ x: item.x, z: item.z, rx: item.w * 0.5, rz: item.d * 0.5, h: 0.62, y: 0.035 });
-    else if (item.kind === "bench") dropItems.push({ x: item.x, z: item.z, rx: 1.2, rz: 0.46, h: 0.55, y: 0.03 });
-  }
+  shapeMat = shapeShadowMaterial(1 - DAYS[dayCursor].shade);
   if (dropItems.length) {
-    shadowMat = softShadowMaterial(0.36);
+    shadowMat = castShadowMaterial(1 - DAYS[dayCursor].shade);
     dropMesh = dropShadowMesh(dropItems.length, shadowMat);
     if (dropMesh) scene.add(dropMesh);
   }
@@ -1565,6 +1644,9 @@ function buildScene(data, arrange) {
     onKick: (active) => {
       visitorOut = !!active;
       if (active) releaseLook();
+    },
+    onMusic: (view) => {
+      if (ambience) ambience.follow(view);
     },
     onExclusive: (which) => {
       if (which === "roster") closeLiftPad();

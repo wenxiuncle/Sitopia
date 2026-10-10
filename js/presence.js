@@ -1,4 +1,4 @@
-import { PLAZA, STORY, zoneAt } from "./layout.js";
+import { PLAZA, STORY, occupiesHall, zoneAt } from "./layout.js";
 import { forwardFromYaw } from "./basis.js";
 import { createCrowd } from "./avatar.js";
 
@@ -14,6 +14,8 @@ const KICK_KEY = "quzhan-museum-kicked";
 const BEAT_MS = 30000;
 const BUBBLE_LIFE = 6000;
 const HOLD_MS = 30000;
+// 点画框白卡上的链接跳出去时，人先留在在线名单里，十分钟后仍没回来再离开。
+const CARD_HOLD_MS = 10 * 60 * 1000;
 const SEAT_KEY = "quzhan-museum-seat";
 
 function readSeat() {
@@ -67,6 +69,7 @@ export function mountPresence(options) {
     onReleaseLook,
     onGate,
     onKick,
+    onMusic,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
@@ -124,6 +127,9 @@ export function mountPresence(options) {
   let holdUntil = 0;
   let holdTimer = 0;
   let holdToken = 0;
+  let sawHall = false;
+  let wasInHall = false;
+  let musicTimer = 0;
 
   corner.hidden = false;
 
@@ -230,7 +236,8 @@ export function mountPresence(options) {
     if (!solo || !confirmed || !myName || stillKicked()) return;
     const url = beatAddress();
     if (!url) return;
-    const y = Number(getPose().y);
+    const pose = getPose();
+    const y = Number(pose.y);
     fetch(url, {
       method: "POST",
       mode: "cors",
@@ -240,11 +247,20 @@ export function mountPresence(options) {
       body: JSON.stringify({
         name: myName,
         seat,
-        away: document.hidden,
+        away: document.hidden && !(holdUntil > Date.now()),
         y: Number.isFinite(y) ? y : 0,
+        x: pose.x,
+        z: pose.z,
       }),
     }).then(async (res) => {
-      if (res.status !== 403) return null;
+      if (res.status === 403) {
+        try {
+          return await res.json();
+        } catch {
+          return null;
+        }
+      }
+      if (!res.ok) return null;
       try {
         return await res.json();
       } catch {
@@ -252,6 +268,7 @@ export function mountPresence(options) {
       }
     }).then((data) => {
       if (data && data.t === "kick") applyKick(data.until);
+      else if (data && data.music && onMusic) onMusic(data.music);
     }).catch(() => {
       /* 下一轮心跳再试。 */
     });
@@ -262,6 +279,36 @@ export function mountPresence(options) {
     if (!solo || !confirmed || !myName || stillKicked()) return;
     sendBeat();
     beatTimer = window.setInterval(sendBeat, BEAT_MS);
+  }
+
+  function musicAddress() {
+    const beat = beatAddress();
+    if (!beat) return "";
+    return beat.replace(/\/lobby\/beat$/, "/lobby/music");
+  }
+
+  function pollMusic() {
+    if (!solo || dead || document.hidden || !confirmed || !myName || stillKicked()) return;
+    const url = musicAddress();
+    if (!url) return;
+    fetch(url, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.t === "music" && onMusic) onMusic(data);
+      })
+      .catch(() => {});
+  }
+
+  function watchHall(pose) {
+    const inside = occupiesHall(pose.x, pose.z);
+    if (!sawHall) {
+      sawHall = true;
+      wasInHall = inside;
+      return;
+    }
+    if (inside === wasInHall) return;
+    wasInHall = inside;
+    if (solo && confirmed && myName && !stillKicked()) sendBeat();
   }
 
   function rememberOther(person, snap) {
@@ -384,6 +431,11 @@ export function mountPresence(options) {
   function onMessage(msg) {
     if (msg.t === "ping") {
       send({ t: "pong" });
+      if (msg.music && onMusic) onMusic(msg.music);
+      return;
+    }
+    if (msg.t === "music") {
+      if (onMusic) onMusic(msg);
       return;
     }
     if (msg.t === "welcome") {
@@ -410,6 +462,7 @@ export function mountPresence(options) {
       }
       if (document.hidden) send({ t: "away" });
       else if (msg.away) send({ t: "back" });
+      if (msg.music && onMusic) onMusic(msg.music);
       publishAt = 0;
       sentX = NaN;
       sentY = NaN;
@@ -722,15 +775,25 @@ export function mountPresence(options) {
     online.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
-  function holdPresence() {
+  function holdPresence(ms) {
+    const wait = ms > 0 ? ms : HOLD_MS;
     const token = ++holdToken;
-    holdUntil = Date.now() + HOLD_MS;
+    holdUntil = Date.now() + wait;
     window.clearTimeout(holdTimer);
-    holdTimer = window.setTimeout(() => {
+    const tick = () => {
       if (token !== holdToken) return;
+      const left = holdUntil - Date.now();
+      // 后台页把很长的一次定时拖慢。拆成短间隔，到点再看人还在不在。
+      if (left > 0) {
+        holdTimer = window.setTimeout(tick, left > 20000 ? 15000 : left);
+        return;
+      }
       holdUntil = 0;
-      if (document.hidden && linked) send({ t: "away" });
-    }, HOLD_MS);
+      if (!document.hidden) return;
+      if (linked) send({ t: "away" });
+      else if (solo) sendBeat();
+    };
+    tick();
   }
 
   function outboundLink(event) {
@@ -747,7 +810,7 @@ export function mountPresence(options) {
       return;
     }
     if (link.target !== "_blank" && url.origin === location.origin) return;
-    holdPresence();
+    holdPresence(link.closest("#panel") ? CARD_HOLD_MS : HOLD_MS);
   }
 
   function applyOnline(show) {
@@ -810,6 +873,7 @@ export function mountPresence(options) {
       dropLink();
       online.textContent = stillKicked() ? "已请出" : (confirmed ? "单人" : "先起个名字");
       startBeat();
+      pollMusic();
       return;
     }
     stopBeat();
@@ -971,6 +1035,7 @@ export function mountPresence(options) {
     dead = true;
     window.clearTimeout(retry);
     stopBeat();
+    window.clearInterval(musicTimer);
     if (solo) sendLeave();
     if (http) {
       const leaving = http;
@@ -1002,6 +1067,7 @@ export function mountPresence(options) {
       if (solo) {
         online.textContent = confirmed ? "单人" : "先起个名字";
         startBeat();
+        pollMusic();
         return;
       }
       if (confirmed && myName && !document.hidden) arm();
@@ -1016,6 +1082,7 @@ export function mountPresence(options) {
     if (solo) {
       online.textContent = "单人";
       startBeat();
+      pollMusic();
     } else if (document.hidden) online.textContent = "未连接";
     else arm();
   } else if (new URLSearchParams(location.search).has("noname")) {
@@ -1104,6 +1171,8 @@ export function mountPresence(options) {
     drawDot(X(pose.x), Y(pose.z), pose.yaw, true, "你");
   }
 
+  musicTimer = window.setInterval(pollMusic, 4000);
+
   return {
     others() { return crowd.list(); },
     closeRoster() { setRoster(false); },
@@ -1115,6 +1184,7 @@ export function mountPresence(options) {
     update(dt, now) {
       crowd.update(dt, now);
       const pose = getPose();
+      if (!document.hidden) watchHall(pose);
       if (showMap && (!planAt || now - planAt > 140)) {
         planAt = now;
         drawPlan(pose);

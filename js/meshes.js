@@ -19,17 +19,26 @@ import {
   LAMP_WASH_IN,
   LAMP_WASH_OUT,
   LAMP_WRAP,
-  LAMP_STORY_BLEND,
-  LAMP_CORNER_REACH,
+  LAMP_SOFFIT_FADE,
+  LAMP_SOFFIT_KEEP,
+  LAMP_SOUTH_HOLD,
+  LAMP_SOUTH_SPILL,
   LAMP_PACK_XZ,
   LAMP_PACK_Y,
   LAMPS_PER_FLOOR,
+  APRON_KEEP,
+  CAST_EDGE,
   FRONT_SHADOW_SLACK,
   SHADOW_IN,
   SHADOW_OUT,
+  castBox,
+  castCylinder,
+  castEllipsoid,
   dropShadowPose,
   floorLamps,
   packLamp,
+  projectShadowXZ,
+  shadowHull,
 } from "./day.js";
 import { CEIL_TILT, FLOOR_TILT, FRAME, FRAME_WALL_GAP, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, STAIR_LAMP_H, STAIR_LAMP_R, STAIR_LIGHT, STORY, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
 
@@ -535,6 +544,8 @@ function patchSunShader(shader, shared, role) {
   shader.uniforms.uBlock = shared.block;
   shader.uniforms.uFront = shared.front;
   shader.uniforms.uRoof = shared.roof;
+  shader.uniforms.uSlab = shared.slab;
+  shader.uniforms.uSlabY = shared.slabY;
   shader.uniforms.uShade = shared.shade;
   shader.uniforms.uFill = role.fill;
   shader.uniforms.uGain = role.gain;
@@ -576,47 +587,52 @@ function patchSunShader(shader, shared, role) {
       float rows = uLampInv.y > 0.0 ? (1.0 / uLampInv.y) : 1.0;
       float u = (vSunW.y + 0.05) / uStory;
       float fy = clamp(floor(u), 0.0, rows - 1.0);
-      bool onSouth = abs(vSunW.z - ${glslNum(STAIR_LIGHT.cornerZ)}) < 0.2 && vSunW.x > ${glslNum(STAIR_LIGHT.minX)} && vSunW.x < ${glslNum(STAIR_LIGHT.maxX)};
-      bool onEast = abs(vSunW.x - ${glslNum(STAIR_LIGHT.cornerX)}) < 0.2 && vSunW.z > ${glslNum(STAIR_LIGHT.minZ)} && vSunW.z < ${glslNum(STAIR_LIGHT.cornerZ)} + 0.08;
-      bool upright = abs(nrm.y) < 0.55;
-      vec3 cornerN = vec3(-0.70710678, 0.0, -0.70710678);
-      if (onSouth && nrm.z < -0.45) {
-        float along = max(${glslNum(STAIR_LIGHT.cornerX)} - vSunW.x, 0.0);
-        float feather = 1.0 - smoothstep(0.0, ${glslNum(LAMP_CORNER_REACH)}, along);
-        nrm = normalize(mix(nrm, cornerN, feather));
-      } else if (onEast && nrm.x < -0.45) {
-        float along = max(${glslNum(STAIR_LIGHT.cornerZ)} - vSunW.z, 0.0);
-        float feather = 1.0 - smoothstep(0.0, ${glslNum(LAMP_CORNER_REACH)}, along);
-        nrm = normalize(mix(nrm, cornerN, feather));
+      float southW = 0.0;
+      if (abs(vSunW.z - ${glslNum(STAIR_LIGHT.cornerZ)}) < 0.2 && vSunW.x < ${glslNum(STAIR_LIGHT.maxX)}) {
+        float west = ${glslNum(STAIR_LIGHT.minX)} - vSunW.x;
+        southW = west <= ${glslNum(LAMP_SOUTH_HOLD)} ? 1.0 : 1.0 - smoothstep(${glslNum(LAMP_SOUTH_HOLD)}, ${glslNum(LAMP_SOUTH_HOLD + LAMP_SOUTH_SPILL)}, west);
       }
+      float eastW = 0.0;
+      if (abs(vSunW.x - ${glslNum(STAIR_LIGHT.cornerX)}) < 0.2 && vSunW.z < ${glslNum(STAIR_LIGHT.cornerZ)} + 0.08) {
+        float north = ${glslNum(STAIR_LIGHT.minZ)} - vSunW.z;
+        eastW = north <= ${glslNum(LAMP_SOUTH_HOLD)} ? 1.0 : 1.0 - smoothstep(${glslNum(LAMP_SOUTH_HOLD)}, ${glslNum(LAMP_SOUTH_HOLD + LAMP_SOUTH_SPILL)}, north);
+      }
+      vec3 rimInfo = stairRimInfo(vSunW.xz);
+      float rimDist = rimInfo.x;
+      float inVoid = stairVoid(vSunW.xz);
+      float storyY = mod(max(vSunW.y, 0.0), uStory);
+      float soffitDown = max(-nrm.y, 0.0);
+      bool faceDown = nrm.y < -0.45;
+      bool highSoffit = faceDown && inVoid < 0.5 && storyY > ${glslNum(WALL_H - LAMP_SOFFIT_KEEP)};
+      if (faceDown && inVoid < 0.5 && !highSoffit) {
+        float near = 1.0 - smoothstep(0.04, ${glslNum(LAMP_SOFFIT_FADE)}, rimDist);
+        nrm = normalize(mix(nrm, vec3(rimInfo.y, 0.0, rimInfo.z), near));
+      }
+      bool upright = abs(nrm.y) < 0.55;
+      bool onRim = upright && rimDist < ${glslNum(STAIR_LIGHT.rim)};
       float rowV = (fy + 0.5) * uLampInv.y;
       float lamp = 0.0;
       ${lampSamples("lamp")}
-      if (upright && (onSouth || onEast)) {
+      float sideW = max(southW, eastW);
+      if (onRim) sideW = 1.0;
+      if (!(faceDown && inVoid > 0.5) && upright && sideW > 0.0) {
+        float next = floor(u) + 1.0;
         float frac = u - floor(u);
-        float band = ${glslNum(LAMP_STORY_BLEND)} / uStory;
-        float wNext = 0.5 * smoothstep(1.0 - band, 1.0, frac);
-        float wPrev = 0.5 * (1.0 - smoothstep(0.0, band, frac));
-        float neighbor = fy;
-        float wMix = 0.0;
-        if (wNext > 0.001 && fy + 1.0 < rows) {
-          neighbor = fy + 1.0;
-          wMix = wNext;
-        } else if (wPrev > 0.001 && fy > 0.0) {
-          neighbor = fy - 1.0;
-          wMix = wPrev;
-        }
-        if (wMix > 0.0) {
-          rowV = (neighbor + 0.5) * uLampInv.y;
-          float other = 0.0;
-          ${lampSamples("other")}
-          lamp = mix(lamp, other, wMix);
+        if (next > 0.5 && next < rows - 0.5 && frac > 0.0) {
+          float w = frac * frac * (3.0 - 2.0 * frac);
+          rowV = (next + 0.5) * uLampInv.y;
+          float upper = 0.0;
+          ${lampSamples("upper")}
+          lamp = mix(lamp, upper, w * sideW);
         }
       }
       shade = min(${glslNum(LAMP_FILL)} + ${glslNum(LAMP_GAIN)} * lamp, ${glslNum(LAMP_CLAMP)});
-      float storyY = mod(max(vSunW.y, 0.0), uStory);
       float ceilLift = smoothstep(${glslNum(WALL_H - 1.15)}, ${glslNum(WALL_H - 0.28)}, storyY);
-      shade = mix(shade, max(shade, 0.94), max(-nrm.y, 0.0) * ceilLift);
+      float liftN = max(-nrm.y, 0.0);
+      if (faceDown && inVoid > 0.5) ceilLift = 0.0;
+      else if (highSoffit) liftN = soffitDown;
+      else if (faceDown) ceilLift *= smoothstep(0.06, ${glslNum(LAMP_SOFFIT_FADE)}, rimDist);
+      shade = mix(shade, max(shade, 0.94), liftN * ceilLift);
       sunTint = uLampTint;
     } else {
       float ndl = max(dot(nrm, normalize(uSunDir)), 0.0);
@@ -648,12 +664,22 @@ function patchSunShader(shader, shared, role) {
           t1 = min(t1, b);
         }
         float mask = 0.0;
-        bool inFront = p.y > uFront - ${glslNum(FRONT_SHADOW_SLACK)} && p.x > lo.x && p.x < hi.x;
-        if (!inFront && !miss && t1 >= max(t0, 0.0)) {
-          float enter = max(t0, 0.0);
-          float yHit = uSunDir.y * enter;
-          float slack = ((yHit - uRoof) / max(uSunDir.y, 0.05)) * length(dir);
-          mask = 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
+        bool under = p.x > lo.x && p.x < hi.x && p.y > lo.y && p.y < hi.y;
+        bool apron = p.y > uFront - ${glslNum(FRONT_SHADOW_SLACK)} && p.y < uFront + ${glslNum(APRON_KEEP)} && p.x > lo.x && p.x < hi.x;
+        if (!under && !apron) {
+          if (!miss && t1 >= max(t0, 0.0)) {
+            float enter = max(t0, 0.0);
+            float yHit = uSunDir.y * enter;
+            float slack = ((yHit - uRoof) / max(uSunDir.y, 0.05)) * length(dir);
+            mask = 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
+          }
+          if (uSlabY > 1.0) {
+            vec2 at = p + dir * (uSlabY / max(uSunDir.y, 0.05));
+            float ix = min(at.x - uSlab.x, uSlab.y - at.x);
+            float iz = min(at.y - uSlab.z, uSlab.w - at.y);
+            float slabSlack = -min(ix, iz);
+            mask = max(mask, 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slabSlack));
+          }
         }
         shade *= mix(1.0, uShade, mask);
       }
@@ -666,6 +692,8 @@ uniform vec3 uSunTint;
 uniform vec4 uBlock;
 uniform float uFront;
 uniform float uRoof;
+uniform vec4 uSlab;
+uniform float uSlabY;
 uniform float uShade;
 uniform float uFill;
 uniform float uGain;
@@ -678,12 +706,33 @@ uniform vec3 uLampTint;
 uniform float uLampMode;
 varying vec3 vSunN;
 varying vec3 vSunW;
+float segDist(vec2 p, vec2 a, vec2 b) {
+  vec2 ab = b - a;
+  float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+  return length(p - (a + ab * t));
+}
+vec3 stairRimInfo(vec2 p) {
+  float dist = segDist(p, vec2(${glslNum(STAIR_LIGHT.lipX0)}, ${glslNum(STAIR_LIGHT.lipZ)}), vec2(${glslNum(STAIR_LIGHT.lipX1)}, ${glslNum(STAIR_LIGHT.lipZ)}));
+  vec2 faceN = vec2(0.0, 1.0);
+  float d = segDist(p, vec2(${glslNum(STAIR_LIGHT.runX)}, ${glslNum(STAIR_LIGHT.runZ0)}), vec2(${glslNum(STAIR_LIGHT.runX)}, ${glslNum(STAIR_LIGHT.runZ1)}));
+  if (d < dist) { dist = d; faceN = vec2(1.0, 0.0); }
+  d = segDist(p, vec2(${glslNum(STAIR_LIGHT.endX0)}, ${glslNum(STAIR_LIGHT.endZ)}), vec2(${glslNum(STAIR_LIGHT.endX1)}, ${glslNum(STAIR_LIGHT.endZ)}));
+  if (d < dist) { dist = d; faceN = vec2(0.0, 1.0); }
+  d = segDist(p, vec2(${glslNum(STAIR_LIGHT.westX)}, ${glslNum(STAIR_LIGHT.westZ0)}), vec2(${glslNum(STAIR_LIGHT.westX)}, ${glslNum(STAIR_LIGHT.westZ1)}));
+  if (d < dist) { dist = d; faceN = vec2(1.0, 0.0); }
+  return vec3(dist, faceN);
+}
+float stairVoid(vec2 p) {
+  bool west = p.x > ${glslNum(STAIR_LIGHT.holeX0)} && p.x < ${glslNum(STAIR_LIGHT.holeX1)} && p.y > ${glslNum(STAIR_LIGHT.holeLip)} && p.y < ${glslNum(STAIR_LIGHT.holeSouth)};
+  bool east = p.x >= ${glslNum(STAIR_LIGHT.holeX1)} && p.x < ${glslNum(STAIR_LIGHT.holeEast)} && p.y > ${glslNum(STAIR_LIGHT.holeNorth)} && p.y < ${glslNum(STAIR_LIGHT.holeSouth)};
+  return (west || east) ? 1.0 : 0.0;
+}
 ` + fragment;
 }
 
 export function attachSun(material, shared, role) {
   material.onBeforeCompile = (shader) => patchSunShader(shader, shared, role);
-  material.customProgramCacheKey = () => "museum-sun-9";
+  material.customProgramCacheKey = () => "museum-sun-18";
 }
 
 // 画芯共用一张图集。frameUv 是格子偏移和缩放。
@@ -699,7 +748,7 @@ export function attachFramePicture(material, shared, role) {
     if (next === shader.vertexShader) throw new Error("画框贴图坐标没有对上");
     shader.vertexShader = "attribute vec4 frameUv;\n" + next;
   };
-  material.customProgramCacheKey = () => "museum-sun-frame-9";
+  material.customProgramCacheKey = () => "museum-sun-frame-18";
 }
 
 export function sunPatchMesh(count) {
@@ -809,6 +858,133 @@ export function softShadowMap() {
   shadowBlob.magFilter = THREE.LinearFilter;
   shadowBlob.needsUpdate = true;
   return shadowBlob;
+}
+
+let castBlob = null;
+
+export function castShadowMap() {
+  if (castBlob) return castBlob;
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  const glow = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  glow.addColorStop(0, "rgba(0,0,0,1)");
+  glow.addColorStop(CAST_EDGE, "rgba(0,0,0,1)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 128, 128);
+  castBlob = new THREE.CanvasTexture(canvas);
+  castBlob.colorSpace = THREE.SRGBColorSpace;
+  castBlob.generateMipmaps = false;
+  castBlob.minFilter = THREE.LinearFilter;
+  castBlob.magFilter = THREE.LinearFilter;
+  castBlob.needsUpdate = true;
+  return castBlob;
+}
+
+export function castShadowMaterial(opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: 0x1a1614,
+    map: castShadowMap(),
+    transparent: true,
+    depthWrite: false,
+    opacity,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
+  });
+}
+
+// 不写深度。同一高度上再比一次深度，软边和地面会跟着走动闪。
+// 树冠和树干、椅面和椅腿先合成一块，软边只铺在实心外面。
+export function shapeShadowMaterial(opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: 0x1a1614,
+    vertexColors: true,
+    transparent: true,
+    depthWrite: false,
+    opacity,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -8,
+  });
+}
+
+export function shapeShadowMesh(polys, material) {
+  if (!polys || !polys.length) return null;
+  const skirt = 0.16;
+  const usable = [];
+  for (let i = 0; i < polys.length; i++) {
+    if (polys[i] && polys[i].length >= 3) usable.push(polys[i]);
+  }
+  if (!usable.length) return null;
+  let tris = 0;
+  for (let i = 0; i < usable.length; i++) tris += (usable[i].length - 2) + usable[i].length * 2;
+  const pos = new Float32Array(tris * 9);
+  const col = new Float32Array(tris * 12);
+  let v = 0;
+  // 广场路面在 0.016 上下，一层楼板顶在 0.04。再低就会和这两张面抢深度。
+  const y = 0.06;
+  const push = (x, z, a) => {
+    pos[v * 3] = x;
+    pos[v * 3 + 1] = y;
+    pos[v * 3 + 2] = z;
+    col[v * 4] = 1;
+    col[v * 4 + 1] = 1;
+    col[v * 4 + 2] = 1;
+    col[v * 4 + 3] = a;
+    v += 1;
+  };
+  for (let p = 0; p < usable.length; p++) {
+    const poly = usable[p];
+    // 凸包在 xz 上逆时针，按 (0, i, i+1) 法线朝下，广场上看不见。反绕成 (0, i+1, i)，正面才朝上。
+    for (let i = 1; i < poly.length - 1; i++) {
+      push(poly[0][0], poly[0][1], 1);
+      push(poly[i + 1][0], poly[i + 1][1], 1);
+      push(poly[i][0], poly[i][1], 1);
+    }
+  }
+  for (let p = 0; p < usable.length; p++) {
+    const poly = usable[p];
+    const n = poly.length;
+    const off = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const prev = poly[(i + n - 1) % n];
+      const cur = poly[i];
+      const next = poly[(i + 1) % n];
+      const outward = (a, b) => {
+        const dx = b[0] - a[0];
+        const dz = b[1] - a[1];
+        const len = Math.hypot(dx, dz) || 1;
+        return [dz / len, -dx / len];
+      };
+      const n0 = outward(prev, cur);
+      const n1 = outward(cur, next);
+      let ox = n0[0] + n1[0];
+      let oz = n0[1] + n1[1];
+      const ol = Math.hypot(ox, oz) || 1;
+      off[i] = [cur[0] + (ox / ol) * skirt, cur[1] + (oz / ol) * skirt];
+    }
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      push(poly[i][0], poly[i][1], 1);
+      push(poly[j][0], poly[j][1], 1);
+      push(off[j][0], off[j][1], 0);
+      push(poly[i][0], poly[i][1], 1);
+      push(off[j][0], off[j][1], 0);
+      push(off[i][0], off[i][1], 0);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 4));
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 1;
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  return mesh;
 }
 
 export function softShadowMaterial(opacity, contact) {
@@ -1049,8 +1225,93 @@ function writeXZPath(path, points) {
   return path;
 }
 
+function edgeDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy || 1e-6;
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const ex = px - (ax + dx * t);
+  const ey = py - (ay + dy * t);
+  return ex * ex + ey * ey;
+}
+
+// 挤出时洞和外圈侧面在同一组。只把贴着洞边的三角留在第二种材质上。
+function tintHoleSides(geo, holes) {
+  if (!holes || !holes.length) return false;
+  const pos = geo.getAttribute("position");
+  const nor = geo.getAttribute("normal");
+  const uv = geo.getAttribute("uv");
+  const cap = geo.groups[0];
+  const side = geo.groups[1];
+  if (!cap || !side) return false;
+  const tris = [];
+  let holeN = 0;
+  for (let i = side.start; i < side.start + side.count; i += 3) {
+    let x = 0;
+    let y = 0;
+    for (let k = 0; k < 3; k++) {
+      x += pos.getX(i + k);
+      y += pos.getY(i + k);
+    }
+    x /= 3;
+    y /= 3;
+    let hole = false;
+    for (let h = 0; h < holes.length && !hole; h++) {
+      const ring = holes[h];
+      for (let e = 0; e < ring.length; e++) {
+        const a = ring[e];
+        const b = ring[(e + 1) % ring.length];
+        if (edgeDist2(x, y, a[0], -a[1], b[0], -b[1]) < 0.0004) {
+          hole = true;
+          break;
+        }
+      }
+    }
+    if (hole) holeN += 1;
+    tris.push({ i, hole });
+  }
+  if (!holeN) return false;
+  if (holeN === tris.length) return true;
+  const copyRange = (attr) => {
+    const item = attr.itemSize;
+    const src = attr.array;
+    const chunk = new src.constructor(side.count * item);
+    chunk.set(src.subarray(side.start * item, (side.start + side.count) * item));
+    return chunk;
+  };
+  const posChunk = copyRange(pos);
+  const norChunk = copyRange(nor);
+  const uvChunk = uv ? copyRange(uv) : null;
+  const order = [];
+  for (let t = 0; t < tris.length; t++) if (!tris[t].hole) order.push(tris[t]);
+  for (let t = 0; t < tris.length; t++) if (tris[t].hole) order.push(tris[t]);
+  const writeBack = (attr, chunk) => {
+    const item = attr.itemSize;
+    const dst = attr.array;
+    let cursor = side.start;
+    for (let t = 0; t < order.length; t++) {
+      const from = (order[t].i - side.start) * item;
+      dst.set(chunk.subarray(from, from + 3 * item), cursor * item);
+      cursor += 3;
+    }
+    attr.needsUpdate = true;
+  };
+  writeBack(pos, posChunk);
+  writeBack(nor, norChunk);
+  if (uv) writeBack(uv, uvChunk);
+  const outerCount = (tris.length - holeN) * 3;
+  const holeCount = holeN * 3;
+  geo.clearGroups();
+  geo.addGroup(cap.start, side.start - cap.start + outerCount, 0);
+  geo.addGroup(side.start + outerCount, holeCount, 1);
+  return true;
+}
+
 // 一层楼板或天花是一块挤出的板。洞的绕向和外轮廓相反，楼梯孔才是空的。
-export function plateMesh(plates, material) {
+// sideMaterial 只铺楼梯孔的竖边。盖板、外圈和井道仍用 material，孔边上下才不会一深一浅。
+export function plateMesh(plates, material, sideMaterial) {
   if (!plates || !plates.length) return null;
   const root = new THREE.Group();
   for (let i = 0; i < plates.length; i++) {
@@ -1060,7 +1321,8 @@ export function plateMesh(plates, material) {
     for (let h = 0; h < holes.length; h++) shape.holes.push(writeXZPath(new THREE.Path(), holes[h]));
     const depth = Math.max(0.008, plate.maxY - plate.minY);
     const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 1 });
-    const mesh = new THREE.Mesh(geo, material);
+    const split = sideMaterial && tintHoleSides(geo, holes);
+    const mesh = new THREE.Mesh(geo, split ? [material, sideMaterial] : material);
     mesh.rotation.x = FLOOR_TILT;
     mesh.position.y = plate.minY;
     mesh.frustumCulled = false;
@@ -1616,6 +1878,132 @@ function paintBoxes(list, material) {
   return commit(mesh);
 }
 
+// 广场树、篱、长椅的尺寸。网格和地面落影共用，影子才跟模型是同一个形体。
+const YARD_TRUNK_Y = 1.34;
+const YARD_TRUNK_H = 2.65;
+const YARD_TRUNK_TOP = 0.12;
+const YARD_TRUNK_BOTTOM = 0.18;
+const YARD_CROWN_Y = 3.15;
+const YARD_CROWN_R = 1.22;
+const YARD_CROWN_SX = 1.12;
+const YARD_CROWN_SY = 0.82;
+const YARD_CROWN_SZ = 1.12;
+const YARD_HEDGE_H = 0.4;
+const BENCH_SEAT = { y: 0.44, lx: 0, lz: 0.02, hx: 1.28, hy: 0.035, hz: 0.23 };
+const BENCH_BACK = { y: 0.66, lx: 0, lz: -0.2, hx: 1.28, hy: 0.21, hz: 0.03 };
+const BENCH_LEG = { y: 0.21, lx: 1.12, lz: 0.02, hx: 0.04, hy: 0.21, hz: 0.23 };
+
+function pushPoly(out, poly) {
+  if (poly && poly.length >= 3) out.push(poly);
+}
+
+function benchPoly(x, z, yaw, part, sun) {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const cx = x + part.lx * c + part.lz * s;
+  const cz = z - part.lx * s + part.lz * c;
+  return castBox(cx, part.y, cz, part.hx, part.hy, part.hz, yaw, sun);
+}
+
+// 树冠和树干、椅面和椅腿合成一块。分开铺在同一高度上会互相闪。
+function unionHull(parts) {
+  const pts = [];
+  for (let i = 0; i < parts.length; i++) {
+    const poly = parts[i];
+    if (!poly) continue;
+    for (let k = 0; k < poly.length; k++) pts.push(poly[k]);
+  }
+  return shadowHull(pts);
+}
+
+// 树冠、树干、矮篱、长椅各自按网格投到地面。长椅带朝向，不跟太阳转成一条椭圆。
+export function yardShadowPolys(items, sun) {
+  const polys = [];
+  if (!items || !sun) return polys;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "tree") {
+      pushPoly(polys, unionHull([
+        castEllipsoid(
+          item.x,
+          YARD_CROWN_Y,
+          item.z,
+          YARD_CROWN_R * YARD_CROWN_SX,
+          YARD_CROWN_R * YARD_CROWN_SY,
+          YARD_CROWN_R * YARD_CROWN_SZ,
+          sun,
+          18,
+        ),
+        castCylinder(
+          item.x,
+          item.z,
+          YARD_TRUNK_Y - YARD_TRUNK_H / 2,
+          YARD_TRUNK_Y + YARD_TRUNK_H / 2,
+          YARD_TRUNK_BOTTOM,
+          YARD_TRUNK_TOP,
+          sun,
+          6,
+        ),
+      ]));
+    } else if (item.kind === "hedge") {
+      pushPoly(polys, castBox(item.x, YARD_HEDGE_H / 2, item.z, item.w / 2, YARD_HEDGE_H / 2, item.d / 2, 0, sun));
+    } else if (item.kind === "bench") {
+      const yaw = item.yaw || 0;
+      pushPoly(polys, unionHull([
+        benchPoly(item.x, item.z, yaw, BENCH_SEAT, sun),
+        benchPoly(item.x, item.z, yaw, BENCH_BACK, sun),
+        benchPoly(item.x, item.z, yaw, { ...BENCH_LEG, lx: -BENCH_LEG.lx }, sun),
+        benchPoly(item.x, item.z, yaw, BENCH_LEG, sun),
+      ]));
+    }
+  }
+  return polys;
+}
+
+// 凸多边形切掉 z 小于 zMin 的部分，绕向不变。
+function clipMinZ(poly, zMin) {
+  if (!poly || poly.length < 3) return [];
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const prev = poly[(i + poly.length - 1) % poly.length];
+    const cur = poly[i];
+    const prevIn = prev[1] >= zMin;
+    const curIn = cur[1] >= zMin;
+    if (curIn !== prevIn) {
+      const dz = cur[1] - prev[1];
+      const t = dz === 0 ? 0 : (zMin - prev[1]) / dz;
+      out.push([prev[0] + (cur[0] - prev[0]) * t, zMin]);
+    }
+    if (curIn) out.push(cur);
+  }
+  return out.length >= 3 ? out : [];
+}
+
+// 观景台是朝广场的半圆板。只把最低一层投到板外的广场上。
+// 上面几层落在下一层台面上。都铺到地面会叠成一片，还压进一层楼板里，跟着走动闪。
+export function deckShadowPolys(lobes, sun) {
+  const polys = [];
+  if (!lobes || !sun || !lobes.length) return polys;
+  let lobe = lobes[0];
+  for (let i = 1; i < lobes.length; i++) {
+    if (lobes[i].y < lobe.y) lobe = lobes[i];
+  }
+  const n = 28;
+  const top = lobe.y + 0.04;
+  const bot = top - DECK_THICK;
+  const pts = [];
+  for (let s = 0; s <= n; s++) {
+    const a = Math.PI + (Math.PI * s) / n;
+    const x = lobe.x + Math.cos(a) * lobe.r;
+    const z = lobe.z - Math.sin(a) * lobe.r;
+    pts.push(projectShadowXZ(x, top, z, sun));
+    pts.push(projectShadowXZ(x, bot, z, sun));
+  }
+  // 软边还会再向外 0.16。切线留出这段，才不会搭上 y=0.04 的楼板顶。
+  pushPoly(polys, clipMinZ(shadowHull(pts), lobe.z + 0.22));
+  return polys;
+}
+
 export function yardMeshes(items, trunkMat, leafMat, hedgeMat, benchMat) {
   if (!items || !items.length) return null;
   const trees = [];
@@ -1629,17 +2017,21 @@ export function yardMeshes(items, trunkMat, leafMat, hedgeMat, benchMat) {
   }
   const root = new THREE.Group();
   if (trees.length) {
-    const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.18, 2.65, 6), trunkMat, trees.length);
-    const crown = new THREE.InstancedMesh(new THREE.SphereGeometry(1.22, 7, 5), leafMat, trees.length);
+    const trunk = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(YARD_TRUNK_TOP, YARD_TRUNK_BOTTOM, YARD_TRUNK_H, 6),
+      trunkMat,
+      trees.length,
+    );
+    const crown = new THREE.InstancedMesh(new THREE.SphereGeometry(YARD_CROWN_R, 7, 5), leafMat, trees.length);
     for (let i = 0; i < trees.length; i++) {
       const t = trees[i];
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 1);
-      dummy.position.set(t.x, 1.34, t.z);
+      dummy.position.set(t.x, YARD_TRUNK_Y, t.z);
       dummy.updateMatrix();
       trunk.setMatrixAt(i, dummy.matrix);
-      dummy.scale.set(1.12, 0.82, 1.12);
-      dummy.position.set(t.x, 3.15, t.z);
+      dummy.scale.set(YARD_CROWN_SX, YARD_CROWN_SY, YARD_CROWN_SZ);
+      dummy.position.set(t.x, YARD_CROWN_Y, t.z);
       dummy.updateMatrix();
       crown.setMatrixAt(i, dummy.matrix);
     }
@@ -1650,33 +2042,46 @@ export function yardMeshes(items, trunkMat, leafMat, hedgeMat, benchMat) {
     for (let i = 0; i < hedges.length; i++) {
       const h = hedges[i];
       dummy.rotation.set(0, 0, 0);
-      dummy.scale.set(h.w, 0.4, h.d);
-      dummy.position.set(h.x, 0.2, h.z);
+      dummy.scale.set(h.w, YARD_HEDGE_H, h.d);
+      dummy.position.set(h.x, YARD_HEDGE_H / 2, h.z);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     }
     root.add(commit(mesh));
   }
   if (benches.length) {
-    const seat = new THREE.InstancedMesh(new THREE.BoxGeometry(2.56, 0.07, 0.46), benchMat, benches.length);
-    const back = new THREE.InstancedMesh(new THREE.BoxGeometry(2.56, 0.42, 0.06), benchMat, benches.length);
-    const leg = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.42, 0.46), benchMat, benches.length * 2);
+    const seat = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(BENCH_SEAT.hx * 2, BENCH_SEAT.hy * 2, BENCH_SEAT.hz * 2),
+      benchMat,
+      benches.length,
+    );
+    const back = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(BENCH_BACK.hx * 2, BENCH_BACK.hy * 2, BENCH_BACK.hz * 2),
+      benchMat,
+      benches.length,
+    );
+    const leg = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(BENCH_LEG.hx * 2, BENCH_LEG.hy * 2, BENCH_LEG.hz * 2),
+      benchMat,
+      benches.length * 2,
+    );
     for (let i = 0; i < benches.length; i++) {
       const b = benches[i];
       const yaw = b.yaw || 0;
       const c = Math.cos(yaw);
       const s = Math.sin(yaw);
-      const put = (mesh, index, y, lx, lz) => {
+      const put = (mesh, index, part, lx) => {
         dummy.rotation.set(0, yaw, 0);
         dummy.scale.set(1, 1, 1);
-        dummy.position.set(b.x + lx * c + lz * s, y, b.z - lx * s + lz * c);
+        const xOff = lx == null ? part.lx : lx;
+        dummy.position.set(b.x + xOff * c + part.lz * s, part.y, b.z - xOff * s + part.lz * c);
         dummy.updateMatrix();
         mesh.setMatrixAt(index, dummy.matrix);
       };
-      put(seat, i, 0.44, 0, 0.02);
-      put(back, i, 0.66, 0, -0.2);
-      put(leg, i * 2, 0.21, -1.12, 0.02);
-      put(leg, i * 2 + 1, 0.21, 1.12, 0.02);
+      put(seat, i, BENCH_SEAT);
+      put(back, i, BENCH_BACK);
+      put(leg, i * 2, BENCH_LEG, -BENCH_LEG.lx);
+      put(leg, i * 2 + 1, BENCH_LEG, BENCH_LEG.lx);
     }
     root.add(commit(seat), commit(back), commit(leg));
   }
@@ -1846,7 +2251,7 @@ export function horizonMeshes(mats) {
         }
         pushWindows(darkWins, litWins, mass, row.axis, row.face, seed + 11);
       }
-      shadows.push({ x, z, rx: w * 0.52, rz: d * 0.52, h, y: 0.03 });
+      shadows.push({ kind: "hall", x, z, rx: w * 0.52, rz: d * 0.52, h, y: 0.03 });
     }
   }
   const shell = paintBoxes(bodies, mats.plaster);

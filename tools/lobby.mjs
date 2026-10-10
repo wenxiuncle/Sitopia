@@ -16,6 +16,9 @@ import {
   kickSpan,
   kickUntil,
   namedCount,
+  attachMusic,
+  blankMusic,
+  musicView,
   onClientMessage,
   onLeave,
   pruneBook,
@@ -23,6 +26,7 @@ import {
   pruneSolo,
   rememberSolo,
   shanghaiDay,
+  syncMusic,
   visitLeftAt,
   visitTrend,
   visitsOnDay,
@@ -74,7 +78,16 @@ export function attachLobby(server) {
   const solo = new Map();
   const visits = createVisitBook();
   let arrange = cleanArrange(null);
-  const room = { maxPeople: MAX_PEOPLE, kicks: {} };
+  const room = { maxPeople: MAX_PEOPLE, kicks: {}, music: blankMusic(Date.now()) };
+
+  function touchMusic(now) {
+    const at = now || Date.now();
+    settleSolo(at);
+    syncMusic(room.music, people, solo, at);
+    const view = musicView(room.music, at);
+    broadcast(view);
+    return view;
+  }
 
   function settleSolo(now) {
     const expired = [];
@@ -150,6 +163,9 @@ export function attachLobby(server) {
     }
     const out = onLeave(people, person);
     if (person.named && person.seat) depart(person.seat, person.seen, Date.now());
+    const at = Date.now();
+    const music = syncMusic(room.music, people, solo, at);
+    if (music) out.push({ who: "all", obj: music });
     for (let i = 0; i < out.length; i++) broadcast(out[i].obj);
     if (!person.socket.destroyed) person.socket.destroy();
   }
@@ -164,10 +180,13 @@ export function attachLobby(server) {
     if (!msg || typeof msg.t !== "string") return;
     const now = Date.now();
     const result = onClientMessage(people, log, person, msg, now, room);
+    if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
+    const music = syncMusic(room.music, people, solo, now);
+    if (music) result.out.push({ who: "all", obj: music });
+    attachMusic(result.out, room.music, now);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
       arrive(person, "online", now);
     }
-    if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
     deliver(person, result);
   }
 
@@ -291,6 +310,7 @@ export function attachLobby(server) {
         person.socket.destroy();
       }
     }
+    if (people.size || solo.size) touchMusic(now);
   }, 20000);
   timer.unref();
 
@@ -313,13 +333,26 @@ export function attachLobby(server) {
         ip: result.row.ip,
         now,
       });
-      return { status: 200, body: { ok: true } };
+      settleSolo(now);
+      const music = syncMusic(room.music, people, solo, now);
+      if (music) broadcast(music);
+      return { status: 200, body: { ok: true, music: musicView(room.music, now) } };
     },
     leave(msg) {
+      const now = Date.now();
       const seat = cleanSeat(msg && msg.seat);
-      finishVisit(visits, seat, Date.now());
+      finishVisit(visits, seat, now);
       forgetSolo(solo, seat);
-      return { status: 200, body: { ok: true } };
+      const music = syncMusic(room.music, people, solo, now);
+      if (music) broadcast(music);
+      return { status: 200, body: { ok: true, music: musicView(room.music, now) } };
+    },
+    music() {
+      const now = Date.now();
+      settleSolo(now);
+      const music = syncMusic(room.music, people, solo, now);
+      if (music) broadcast(music);
+      return musicView(room.music, now);
     },
     state() {
       const now = Date.now();

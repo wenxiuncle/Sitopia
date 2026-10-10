@@ -8,6 +8,8 @@ declare(strict_types=1);
 const MAX_PEOPLE = 24;
 const LOG_MAX = 40;
 const STALE_MS = 90000;
+// 与 js/score.js 的 SCORE_MS 相同。曲目或时长变了要一起改。
+const SCORE_MS = 1622062;
 
 header("X-Robots-Tag: noindex");
 header("X-Content-Type-Options: nosniff");
@@ -88,6 +90,8 @@ if (!rateOk($data, $ip, $now)) {
 }
 
 sweep($data, $now);
+$booted = syncMusic($data, $now);
+if ($booted) deliver($data, "", [["who" => "all", "obj" => $booted]]);
 
 $seat = "";
 if (isset($body["seat"]) && is_string($body["seat"])) $seat = cleanSeat($body["seat"]);
@@ -144,9 +148,16 @@ foreach ($msgs as $msg) {
         break;
     }
     $result = onClientMessage($data["people"], $data["log"], $data["people"][$id], $msg, $now, $data);
+    if (!$result["close"]) {
+        $ev = syncMusic($data, $now);
+        if ($ev) $result["out"][] = ["who" => "all", "obj" => $ev];
+        stampMusic($result["out"], $data, $now);
+    }
     deliver($data, $id, $result["out"]);
     if ($result["close"]) {
         if (isset($data["people"][$id])) deliver($data, $id, onLeave($data, $id));
+        $ev = syncMusic($data, $now);
+        if ($ev) deliver($data, "", [["who" => "all", "obj" => $ev]]);
         $closing = true;
         break;
     }
@@ -362,6 +373,72 @@ function namedCount(array $people): int {
         if (!empty($person["named"]) && empty($person["away"]) && empty($person["gone"])) $n++;
     }
     return $n;
+}
+
+// 与 js/layout.js 的 occupiesHall 同一条界：展厅和轿厢算在里面，广场和观景台不算。
+function occupiesHall($x, $z): bool {
+    if (!is_numeric($x) || !is_numeric($z)) return false;
+    $x = (float) $x;
+    $z = (float) $z;
+    if ($x > -18.24 && $x < -15.62 && $z > -4.65 && $z < -0.85) return true;
+    if ($x < -18.48 || $x > 18.33) return false;
+    if ($z < -34.23 || $z >= 4.48) return false;
+    return true;
+}
+
+function wrapScore(int $ms): int {
+    $n = $ms % SCORE_MS;
+    if ($n < 0) $n += SCORE_MS;
+    return $n;
+}
+
+function musicPos(array $music, int $now): int {
+    $pos = (int) ($music["pos"] ?? 0);
+    if (!empty($music["playing"])) $pos += $now - (int) ($music["at"] ?? $now);
+    return wrapScore($pos);
+}
+
+function musicView(array $music, int $now): array {
+    return [
+        "t" => "music",
+        "pos" => musicPos($music, $now),
+        "playing" => !empty($music["playing"]),
+        "at" => $now,
+    ];
+}
+
+function hallOccupied(array $people): bool {
+    foreach ($people as $person) {
+        if (!is_array($person) || empty($person["named"]) || !empty($person["away"]) || !empty($person["gone"])) continue;
+        if (occupiesHall($person["x"] ?? null, $person["z"] ?? null)) return true;
+    }
+    return false;
+}
+
+function syncMusic(array &$data, int $now): ?array {
+    if (!isset($data["people"]) || !is_array($data["people"])) $data["people"] = [];
+    if (!isset($data["music"]) || !is_array($data["music"])) {
+        $data["music"] = ["pos" => 0, "at" => $now, "playing" => false];
+    }
+    $playing = !empty($data["music"]["playing"]);
+    $want = hallOccupied($data["people"]);
+    if ($want === $playing) return null;
+    if ($playing) $data["music"]["pos"] = musicPos($data["music"], $now);
+    $data["music"]["playing"] = $want;
+    $data["music"]["at"] = $now;
+    return musicView($data["music"], $now);
+}
+
+function stampMusic(array &$events, array &$data, int $now): void {
+    if (!isset($data["music"]) || !is_array($data["music"])) {
+        $data["music"] = ["pos" => 0, "at" => $now, "playing" => false];
+    }
+    $view = musicView($data["music"], $now);
+    foreach ($events as &$ev) {
+        if (!is_array($ev) || !isset($ev["obj"]) || !is_array($ev["obj"])) continue;
+        if (($ev["obj"]["t"] ?? "") === "welcome") $ev["obj"]["music"] = $view;
+    }
+    unset($ev);
 }
 
 function snapshot(array $people, string $exceptId): array {

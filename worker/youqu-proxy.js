@@ -133,6 +133,7 @@ export default {
       url.pathname === "/lobby" ||
       url.pathname === "/lobby/beat" ||
       url.pathname === "/lobby/leave" ||
+      url.pathname === "/lobby/music" ||
       url.pathname === "/lobby/arrange"
     ) {
       return forward(request, env);

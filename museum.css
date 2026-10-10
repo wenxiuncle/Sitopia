@@ -684,10 +684,30 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 }
 
 #help-keys li {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   color: #3d3935;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.75;
+}
+
+#help-keys kbd {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 1.55em;
+  margin: 0 1px;
+  padding: 0 0.38em;
+  border: 1px solid rgba(44, 41, 38, 0.55);
+  border-bottom-width: 3px;
+  border-radius: 4px;
+  background: #fffcf8;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: #2c2926;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  vertical-align: 1px;
   white-space: nowrap;
 }
 

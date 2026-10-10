@@ -17,15 +17,21 @@ import {
   createVisitBook,
   dayBounds,
   finishVisit,
+  attachMusic,
+  blankMusic,
+  foldMusic,
   forgetSolo,
   kickSpan,
   kickUntil,
+  musicView,
   namedCount,
   onClientMessage,
   onLeave,
   pruneKicks,
   pruneSolo,
   rememberSolo,
+  restoreMusic,
+  syncMusic,
   shanghaiDay,
   visitLeftAt,
   visitView,
@@ -97,6 +103,8 @@ export class SitopiaLobby extends DurableObject {
     this.maxPeople = MAX_PEOPLE;
     this.arrange = cleanArrange(null);
     this.kicks = {};
+    this.music = blankMusic(Date.now());
+    this.musicSavedAt = 0;
     this.solo = new Map();
     this.visits = createVisitBook();
     this.visitPruned = 0;
@@ -123,12 +131,21 @@ export class SitopiaLobby extends DurableObject {
         };
         const y = cleanHeight(row.y);
         if (y != null) stored.y = y;
+        const x = Number(row.x);
+        const z = Number(row.z);
+        if (Number.isFinite(x) && Number.isFinite(z)) {
+          stored.x = x;
+          stored.z = z;
+        }
         this.solo.set(seat, stored);
       }
       this.ensureVisits();
       this.loadOpenVisits();
       const swept = this.sweepSolo(now);
       if (swept) await this.persistSolo();
+      this.music = restoreMusic(await ctx.storage.get("music"), now);
+      syncMusic(this.music, this.roster(), this.solo, now);
+      await this.persistMusic(now, true);
     });
   }
 
@@ -323,8 +340,31 @@ export class SitopiaLobby extends DurableObject {
       };
       const y = cleanHeight(row.y);
       if (y != null) saved[seat].y = y;
+      if (Number.isFinite(row.x) && Number.isFinite(row.z)) {
+        saved[seat].x = row.x;
+        saved[seat].z = row.z;
+      }
     }
     await this.ctx.storage.put("solo", saved);
+  }
+
+  async persistMusic(now, force) {
+    const at = now || Date.now();
+    if (!force && at - this.musicSavedAt < 15000) return;
+    foldMusic(this.music, at);
+    await this.ctx.storage.put("music", {
+      pos: this.music.pos,
+      at: this.music.at,
+      playing: !!this.music.playing,
+    });
+    this.musicSavedAt = at;
+  }
+
+  async noteMusic(people, now) {
+    const at = now || Date.now();
+    const ev = syncMusic(this.music, people, this.solo, at);
+    if (ev) await this.persistMusic(at, true);
+    return ev;
   }
 
   async beat(request) {
@@ -342,18 +382,25 @@ export class SitopiaLobby extends DurableObject {
       ip: result.row.ip,
       now,
     });
+    this.sweepSolo(now);
     await this.persistSolo();
-    return json({ ok: true }, 200, request);
+    const ev = await this.noteMusic(this.roster(), now);
+    if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
+    else if (this.music.playing) await this.persistMusic(now, false);
+    return json({ ok: true, music: musicView(this.music, now) }, 200, request);
   }
 
   async leave(request) {
     const msg = await readJson(request);
     if (!msg) return json({ error: "body" }, 400, request);
+    const now = Date.now();
     const seat = cleanSeat(msg.seat);
-    this.noteDeparture(seat, Date.now());
+    this.noteDeparture(seat, now);
     forgetSolo(this.solo, seat);
     await this.persistSolo();
-    return json({ ok: true }, 200, request);
+    const ev = await this.noteMusic(this.roster(), now);
+    if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
+    return json({ ok: true, music: musicView(this.music, now) }, 200, request);
   }
 
   seatById(id) {
@@ -473,6 +520,8 @@ export class SitopiaLobby extends DurableObject {
         this.noteDeparture(seat, now);
         forgetSolo(this.solo, seat);
         await this.persistSolo();
+        const ev = await this.noteMusic(this.roster(), now);
+        if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
       }
       this.kickSockets(seat, id, until);
       return json({ ok: true, until }, 200);
@@ -484,6 +533,14 @@ export class SitopiaLobby extends DurableObject {
     const url = new URL(request.url);
     if (url.pathname === "/lobby/arrange" && request.method === "GET") {
       return json(this.arrange, 200, request);
+    }
+    if (url.pathname === "/lobby/music" && request.method === "GET") {
+      const now = Date.now();
+      const swept = this.sweepSolo(now);
+      if (swept) await this.persistSolo();
+      const ev = await this.noteMusic(this.roster(), now);
+      if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
+      return json(musicView(this.music, now), 200, request);
     }
     if (url.pathname === "/lobby/beat") {
       if (request.method !== "POST") return new Response("method", { status: 405 });
@@ -545,6 +602,14 @@ export class SitopiaLobby extends DurableObject {
     const result = onClientMessage(people, this.log, person, msg, now, this.room());
     ws.serializeAttachment(person);
     if (person.seat) this.retireSameSeat(ws, person.seat);
+    if (msg.t === "hi" && !result.close && person.seat && this.solo.delete(person.seat)) {
+      await this.persistSolo();
+    }
+    if (!result.close) {
+      const ev = await this.noteMusic(people, now);
+      if (ev) result.out.push({ who: "all", obj: ev });
+      attachMusic(result.out, this.music, now);
+    }
     this.fanout(ws, result.out);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
       this.noteArrival({
@@ -554,9 +619,6 @@ export class SitopiaLobby extends DurableObject {
         ip: person.ip,
         now,
       });
-    }
-    if (msg.t === "hi" && !result.close && person.seat && this.solo.delete(person.seat)) {
-      await this.persistSolo();
     }
     if (msg.t === "say" && result.out.length) await this.ctx.storage.put("log", this.log);
     if (result.close) {
@@ -578,7 +640,7 @@ export class SitopiaLobby extends DurableObject {
       }
       // 只有会回 ping 的页面才按静默掐线，免得旧页面在后台被当成掉线。
       if (person.pings && now - (person.seen || 0) > STALE_MS) {
-        this.forget(ws);
+        await this.forget(ws);
         try { ws.close(1001, "stale"); } catch { /* 已经在关。 */ }
         continue;
       }
@@ -595,23 +657,34 @@ export class SitopiaLobby extends DurableObject {
       try {
         ws.send(JSON.stringify({ t: "ping" }));
       } catch {
-        this.forget(ws);
+        await this.forget(ws);
         try { ws.close(1001, "stale"); } catch { /* 已经在关。 */ }
       }
     }
     this.reconcileVisits(now);
-    if (live) await this.ctx.storage.setAlarm(now + PING_MS);
+    const swept = this.sweepSolo(now);
+    if (swept) await this.persistSolo();
+    const ev = await this.noteMusic(this.roster(), now);
+    if (live || ev) await this.persistMusic(now, !!ev);
+    if (live) {
+      const view = JSON.stringify(musicView(this.music, now));
+      const open = this.ctx.getWebSockets();
+      for (let i = 0; i < open.length; i++) {
+        try { open[i].send(view); } catch { /* 这条连接已经断了。 */ }
+      }
+      await this.ctx.storage.setAlarm(now + PING_MS);
+    }
   }
 
   async webSocketClose(ws) {
-    this.forget(ws);
+    await this.forget(ws);
   }
 
   async webSocketError(ws) {
-    this.forget(ws);
+    await this.forget(ws);
   }
 
-  forget(ws) {
+  async forget(ws) {
     const person = ws.deserializeAttachment();
     if (!person || person.gone) return;
     const sockets = this.ctx.getWebSockets();
@@ -625,8 +698,11 @@ export class SitopiaLobby extends DurableObject {
     }
     const people = this.roster();
     people.set(person.id, person);
+    const now = Date.now();
     const out = onLeave(people, person);
-    if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, Date.now()));
+    if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, now));
+    const ev = await this.noteMusic(people, now);
+    if (ev) out.push({ who: "all", obj: ev });
     ws.serializeAttachment(person);
     this.fanout(ws, out);
   }
@@ -650,6 +726,12 @@ export default {
     const upgrade = request.headers.get("Upgrade");
     const websocket = upgrade && upgrade.toLowerCase() === "websocket";
     if (url.pathname === "/lobby/arrange") {
+      if (request.method !== "GET") return new Response("method", { status: 405 });
+      if (!allow(request.headers.get("Origin"))) return new Response("forbidden", { status: 403 });
+      const stub = env.LOBBY.get(env.LOBBY.idFromName("hall"));
+      return stub.fetch(request);
+    }
+    if (url.pathname === "/lobby/music") {
       if (request.method !== "GET") return new Response("method", { status: 405 });
       if (!allow(request.headers.get("Origin"))) return new Response("forbidden", { status: 403 });
       const stub = env.LOBBY.get(env.LOBBY.idFromName("hall"));

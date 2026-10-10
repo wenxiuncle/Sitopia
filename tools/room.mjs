@@ -2,6 +2,9 @@
 // 人数硬顶是 PEOPLE_CAP。后台可以把当前上限调低，不能再调高。
 // 来访表只给后台按天查看。PHP 那间房间不记这张表。
 // 画框排列存在这间房间里。PHP 那间不存，展厅读不到时用原来的顺序。
+// 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
+import { occupiesHall } from "../js/layout.js";
+import { wrapScore } from "../js/score.js";
 export { PIN_CAP, cleanArrange } from "../js/layout.js";
 export const PEOPLE_CAP = 24;
 export const MAX_PEOPLE = PEOPLE_CAP;
@@ -60,12 +63,21 @@ export function cleanText(value) {
   return String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 80);
 }
 
-// 单人心跳只上报高度。缺高度留空，后台楼层显示「—」，不要当成 1F。
+// 单人心跳上报高度和平面坐标。缺高度留空，后台楼层显示「—」，不要当成 1F。
 export function cleanHeight(value) {
   if (value == null || value === "") return null;
   const y = Number(value);
   if (!Number.isFinite(y) || y < -1 || y > 90) return null;
   return Math.round(y * 1000) / 1000;
+}
+
+export function cleanPlan(msg) {
+  if (!msg) return null;
+  const x = Number(msg.x);
+  const z = Number(msg.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  if (x < -40 || x > 40 || z < -50 || z > 40) return null;
+  return { x: Math.round(x * 1000) / 1000, z: Math.round(z * 1000) / 1000 };
 }
 
 export function cleanPose(msg) {
@@ -113,6 +125,80 @@ export function namedCount(people) {
   let n = 0;
   for (const person of people.values()) if (person.named && !person.away && !person.gone) n++;
   return n;
+}
+
+export function blankMusic(now) {
+  return { pos: 0, at: Number(now) || 0, playing: false };
+}
+
+export function musicPos(music, now) {
+  if (!music) return 0;
+  let pos = Number(music.pos) || 0;
+  if (music.playing) pos += (Number(now) || 0) - (Number(music.at) || 0);
+  return wrapScore(pos);
+}
+
+export function musicView(music, now) {
+  const at = Number(now) || Date.now();
+  return { t: "music", pos: Math.round(musicPos(music, at)), playing: !!music.playing, at };
+}
+
+export function foldMusic(music, now) {
+  const at = Number(now) || Date.now();
+  music.pos = musicPos(music, at);
+  music.at = at;
+  return music;
+}
+
+export function restoreMusic(saved, now) {
+  const at = Number(now) || Date.now();
+  const music = blankMusic(at);
+  if (!saved || typeof saved !== "object") return music;
+  const pos = Number(saved.pos);
+  const stamp = Number(saved.at);
+  if (Number.isFinite(pos)) music.pos = wrapScore(pos);
+  if (Number.isFinite(stamp) && stamp > 0) music.at = stamp;
+  music.playing = saved.playing === true;
+  return music;
+}
+
+function hallCrowd(people, solo) {
+  let n = 0;
+  if (people) {
+    for (const person of people.values()) {
+      if (!person || !person.named || person.away || person.gone) continue;
+      if (occupiesHall(person.x, person.z)) n++;
+    }
+  }
+  if (solo) {
+    for (const row of solo.values()) {
+      if (!row || row.away) continue;
+      if (occupiesHall(row.x, row.z)) n++;
+    }
+  }
+  return n;
+}
+
+// 有人在展厅里才播放。停的时候把进度折进 pos，再来的人从这里接着放。
+export function syncMusic(music, people, solo, now) {
+  if (!music) return null;
+  const at = Number(now) || Date.now();
+  if (!music.at) music.at = at;
+  const want = hallCrowd(people, solo) > 0;
+  if (want === !!music.playing) return null;
+  if (music.playing) music.pos = musicPos(music, at);
+  music.playing = want;
+  music.at = at;
+  return musicView(music, at);
+}
+
+export function attachMusic(events, music, now) {
+  if (!events || !music) return;
+  const view = musicView(music, now);
+  for (let i = 0; i < events.length; i++) {
+    const obj = events[i] && events[i].obj;
+    if (obj && obj.t === "welcome") obj.music = view;
+  }
 }
 
 function withSeat(item, person) {
@@ -238,6 +324,11 @@ export function rememberSolo(solo, msg, now, ip) {
   if (!row.entered) row.entered = now;
   const y = cleanHeight(msg.y);
   if (y != null) row.y = y;
+  const plan = cleanPlan(msg);
+  if (plan) {
+    row.x = plan.x;
+    row.z = plan.z;
+  }
   return { ok: true, row };
 }
 

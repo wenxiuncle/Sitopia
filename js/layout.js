@@ -28,7 +28,7 @@ const DOOR = 2.2;
 const DOOR_H = 2.88;
 const DOOR_D = 0.06;
 const DOOR_GAP = 0.002;
-const DOOR_SENSE = 8.2;
+const DOOR_SENSE = 4;
 const SOUTH = 4;
 // 自动门在南墙厚度正中，只沿 X 滑进两侧墙槽。靠室内另做门框会和内墙贴在同一张面上。
 const DOOR_Z = SOUTH + WALL_T / 2;
@@ -63,6 +63,7 @@ const F2_X1 = LAND_X1;
 const F2_Z1 = LAND_Z0;
 const F2_Z0 = F2_Z1 - RUN;
 // 东南内角：东墙内衬内侧和南墙内衬内侧。井的范围包住这两面整高墙，楼层交界的光只在这里滤开。
+// 井口这四条边是露在外面的天棚和楼板侧面。靠墙的两边埋进墙里，不在这里。
 export const STAIR_LIGHT = {
   minX: F1_X0 - 0.3,
   maxX: INNER + 0.5,
@@ -70,6 +71,26 @@ export const STAIR_LIGHT = {
   maxZ: SOUTH + 0.2,
   cornerX: INNER - 0.05,
   cornerZ: SOUTH - 0.052,
+  rim: 0.3,
+  lipX0: F1_X0,
+  lipX1: LAND_X0,
+  lipZ: LAND_Z0,
+  runX: LAND_X0,
+  runZ0: F2_Z0,
+  runZ1: LAND_Z0,
+  endX0: LAND_X0,
+  endX1: LAND_X1,
+  endZ: F2_Z0,
+  westX: F1_X0,
+  westZ0: LAND_Z0,
+  westZ1: LAND_Z1,
+  // 天花和楼板挖掉的那一圈。朝下的踏步底在洞里，天棚在洞外。
+  holeX0: F1_X0 + 0.12 - CEIL_STAIR_PAD,
+  holeX1: LAND_X0 - CEIL_STAIR_PAD,
+  holeEast: INNER + 0.2,
+  holeNorth: F2_Z0 - CEIL_STAIR_PAD,
+  holeLip: LAND_Z0 - CEIL_STAIR_PAD,
+  holeSouth: SOUTH + 0.2,
 };
 
 // 半圆直径贴在南墙外侧，圆心在大门中线上，弧朝广场（+Z）。
@@ -493,6 +514,13 @@ export function doorWantsOpen(x, z, held) {
   return dist < (held ? DOOR_SENSE + 1.4 : DOOR_SENSE);
 }
 
+// 自动门在大约四米外就开始动。衰减比轿厢缓，人走到门口才是满音量。
+export function hallDoorNear(x, y, z, floor) {
+  const base = (floor || 0) * STORY;
+  const dist = Math.hypot(x, z - DOOR_Z, y - base);
+  return Math.exp(-dist * 0.15);
+}
+
 function liftPair(x0, x1, open, floor) {
   const t = open < 0 ? 0 : open > 1 ? 1 : open;
   const slide = t * (LIFT.doorW / 2);
@@ -531,6 +559,18 @@ export function hallBlend(x, z, interior) {
   if (z >= enter) return 0;
   if (z <= full) return 1;
   return (enter - z) / (enter - full);
+}
+
+export function hallInterior() {
+  return { minX: -INNER + 0.02, maxX: INNER - 0.02, minZ: NORTH + 0.02, maxZ: SOUTH - 0.02 };
+}
+
+// 展厅和轿厢算有人。广场、观景台、门口外侧不算。坐标无效也不算。
+export function occupiesHall(x, z) {
+  const px = Number(x);
+  const pz = Number(z);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
+  return hallBlend(px, pz, hallInterior()) > 0;
 }
 
 export function nearLiftHall(x, z) {
@@ -697,15 +737,16 @@ function cutRects(outer, holes) {
 
 // 从上往下看，外轮廓逆时针，洞顺时针。靠大厅的边向外让开踏步和玻璃。
 // 靠墙的两边埋进墙厚中段，离开内外墙面，角上不留能看见的楼板，也不和墙面贴在一起抖。
-function stairHolePoly(pad) {
-  const bury = 0.2;
-  const A = F1_X0 + 0.12 - pad;
-  const B = LAND_X0 - pad;
-  const C = INNER + bury;
-  const P = F2_Z0 - pad;
-  const Q = LAND_Z0 - pad;
-  const R = SOUTH + bury;
-  return [[A, Q], [B, Q], [B, P], [C, P], [C, R], [A, R]];
+function stairHolePoly() {
+  const S = STAIR_LIGHT;
+  return [
+    [S.holeX0, S.holeLip],
+    [S.holeX1, S.holeLip],
+    [S.holeX1, S.holeNorth],
+    [S.holeEast, S.holeNorth],
+    [S.holeEast, S.holeSouth],
+    [S.holeX0, S.holeSouth],
+  ];
 }
 
 // 西边沿墙走，到电梯井改向内拐。楼板停在门厅一侧的墙面，不穿进门扇，窗洞里也不留隔板。
@@ -1032,20 +1073,21 @@ function addLobbyDress(blocks, floors) {
 }
 
 // 圆桌靠南墙。壁灯在厅内侧，灯罩中心在原高度上再抬半米。
-// 楼梯拐在东南角。同款壁灯挂在这块南墙内衬上，灯在拐角中心以西 1.2 米。
-// 朝南墙看时左手朝东（+X）。灯具和照亮用的灯心在同一高度：下层升进楼梯井，顶层天花封死就停在天花下面。
+// 楼梯拐在东南角。同款壁灯挂在这块南墙内衬上。
+// 朝南墙看时左手朝东（+X），向右就是往西。灯在拐角中心以西 0.7 米。
+// 灯具和照亮用的灯心在同一高度，升进上一层楼梯井。顶层天花已经封死，不再另挂一盏，
+// 否则井里那盏和顶层这盏会在东南角叠成上下两盏。
 // 光池跟到灯心所在的那一层。灯正下方的楼板是洞，亮斑落在楼梯内角外侧的实心地面上。
 function addRoomLights(floors) {
   const leds = [];
   const sconces = [];
   const tableX = (-INNER - DOOR) / 2;
   const wallZ = SOUTH - 0.052;
-  const turnX = (LAND_X0 + LAND_X1) / 2 - 1.2;
-  const poolX = LAND_X0 - 0.7;
+  const turnX = (LAND_X0 + LAND_X1) / 2 - 0.7;
+  const poolX = LAND_X0 - 1.2;
   const poolZ = LAND_Z0 - 0.7;
   for (let f = 0; f < floors; f++) {
     const y = f * STORY;
-    const capped = f === floors - 1;
     sconces.push({
       role: "sconce",
       place: "table",
@@ -1058,17 +1100,18 @@ function addRoomLights(floors) {
       poolZ: wallZ - 1.15,
       poolY: y + 0.058,
     });
+    if (f === floors - 1) continue;
     sconces.push({
       role: "sconce",
       place: "stair",
       x: turnX,
       z: wallZ - 0.14,
       y,
-      lift: capped ? 4.76 : 6.28,
+      lift: 6.28,
       mountZ: wallZ,
       poolX,
       poolZ,
-      poolY: y + (capped ? 0 : STORY) + 0.058,
+      poolY: y + STORY + 0.058,
     });
   }
   return { leds, sconces };
@@ -1357,8 +1400,8 @@ export function buildMuseum(sites, arrange) {
     outer: floorOuterPoly(PLAZA.minZ),
     holes: [],
   });
-  const stairCut = stairHolePoly(0.03);
-  const stairWide = stairHolePoly(CEIL_STAIR_PAD);
+  // 天花和楼板用同一个楼梯孔。孔边上下两截侧面才在同一张面上，不会一深一浅错开一刀。
+  const stairCut = stairHolePoly();
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
     if (f < floorCount - 1) {
@@ -1367,9 +1410,9 @@ export function buildMuseum(sites, arrange) {
       const y1 = base + STORY + 0.04;
       ceilPlates.push({
         minY: y0,
-        maxY: mid - 0.006,
+        maxY: mid - 0.001,
         outer: roomOuterPoly(true),
-        holes: [stairWide],
+        holes: [stairCut],
       });
       floorPlates.push({
         minY: mid,
@@ -1539,8 +1582,16 @@ export function buildMuseum(sites, arrange) {
     hangCat,
     legend,
     signs,
+    // 楼体落影贴外墙，不贴挑出去的屋檐盒子。屋檐另当一层薄板。
+    shell: {
+      minX: -INNER - T,
+      maxX: INNER + T,
+      minZ: NORTH - T,
+      maxZ: SOUTH + T,
+      top: shellH,
+    },
     bounds: { minX, maxX, minZ, maxZ },
-    interior: { minX: -INNER + 0.02, maxX: INNER - 0.02, minZ: NORTH + 0.02, maxZ: SOUTH - 0.02 },
+    interior: hallInterior(),
     spawn: { x: 0, z: PLAZA_CROSS_Z + 2.8 },
     stair: {
       f1x0: F1_X0,

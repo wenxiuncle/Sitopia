@@ -55,6 +55,10 @@ export function handleLocalAdmin(req, res, lobby) {
     send(res, 200, lobby.arrange());
     return true;
   }
+  if (path === "/lobby/music" && req.method === "GET") {
+    send(res, 200, lobby.music());
+    return true;
+  }
   if (path === "/lobby/beat" || path === "/lobby/leave") {
     if (req.method !== "POST") {
       res.writeHead(405);
