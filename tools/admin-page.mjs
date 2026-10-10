@@ -133,7 +133,6 @@ export const adminHtml = `<!DOCTYPE html>
     .hint { color: #6f6a64; }
     #status { min-height: 1.4em; color: #6f6a64; }
     table { width: 100%; border-collapse: collapse; background: rgba(255, 252, 248, 0.94); }
-    #visit-table { width: auto; table-layout: auto; }
     #visit-table .nick { text-align: center; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(44, 41, 38, 0.08); vertical-align: top; }
     th { font-size: 13px; color: #6f6a64; font-weight: 650; }
