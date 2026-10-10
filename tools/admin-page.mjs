@@ -133,9 +133,8 @@ export const adminHtml = `<!DOCTYPE html>
     .hint { color: #6f6a64; }
     #status { min-height: 1.4em; color: #6f6a64; }
     table { width: 100%; border-collapse: collapse; background: rgba(255, 252, 248, 0.94); }
-    #visit-table { table-layout: fixed; }
+    #visit-table { width: auto; table-layout: auto; }
     #visit-table .nick { text-align: center; }
-    #visit-table .ip { overflow-wrap: anywhere; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(44, 41, 38, 0.08); vertical-align: top; }
     th { font-size: 13px; color: #6f6a64; font-weight: 650; }
     td button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; }
@@ -200,14 +199,6 @@ export const adminHtml = `<!DOCTYPE html>
     </form>
     <p id="visit-status">正在读取…</p>
     <table id="visit-table">
-      <colgroup>
-        <col id="visit-nick-col">
-        <col>
-        <col>
-        <col>
-        <col>
-        <col>
-      </colgroup>
       <thead>
         <tr>
           <th class="nick">昵称</th>
@@ -215,7 +206,7 @@ export const adminHtml = `<!DOCTYPE html>
           <th>入馆</th>
           <th>离开</th>
           <th>停留</th>
-          <th class="ip">IP</th>
+          <th>IP</th>
         </tr>
       </thead>
       <tbody id="visit-rows"></tbody>
@@ -522,56 +513,6 @@ export const adminHtml = `<!DOCTYPE html>
       }
     }
 
-    function widenVisitNick() {
-      const table = document.getElementById("visit-table");
-      const cols = table.querySelectorAll("colgroup col");
-      const width = table.clientWidth;
-      if (!width || cols.length < 6) return;
-      const holder = document.createElement("div");
-      holder.style.cssText = "position:absolute;left:-9999px;top:0;visibility:hidden;";
-      const probe = document.createElement("table");
-      probe.style.width = "auto";
-      const head = document.createElement("tr");
-      const labels = ["昵称", "模式", "入馆", "离开", "停留", "IP"];
-      for (let i = 0; i < labels.length; i++) {
-        const th = document.createElement("th");
-        th.textContent = labels[i];
-        head.appendChild(th);
-      }
-      probe.appendChild(head);
-      const rows = visitRows.rows;
-      for (let r = 0; r < rows.length; r++) {
-        const tr = document.createElement("tr");
-        const cells = rows[r].cells;
-        for (let c = 0; c < cells.length; c++) {
-          const td = document.createElement("td");
-          td.textContent = cells[c].textContent;
-          tr.appendChild(td);
-        }
-        probe.appendChild(tr);
-      }
-      holder.appendChild(probe);
-      document.body.appendChild(holder);
-      const content = [];
-      for (let i = 0; i < 6; i++) content.push(head.cells[i].getBoundingClientRect().width);
-      holder.remove();
-      if (!(content[0] > 0)) return;
-      let nickW = content[0] * 2;
-      let fixedSum = 0;
-      for (let i = 1; i < 5; i++) fixedSum += content[i];
-      let ipW = content[5];
-      const over = nickW + fixedSum + ipW - width;
-      if (over > 0) nickW -= Math.min(nickW - content[0], over);
-      const widths = [nickW, content[1], content[2], content[3], content[4]];
-      let used = 0;
-      for (let i = 0; i < 5; i++) {
-        widths[i] = Math.max(1, Math.round(widths[i]));
-        used += widths[i];
-      }
-      widths.push(Math.max(1, width - used));
-      for (let i = 0; i < 6; i++) cols[i].style.width = widths[i] + "px";
-    }
-
     function paintVisitRows() {
       const data = visitCache || { visits: [] };
       const list = data.visits || [];
@@ -597,13 +538,11 @@ export const adminHtml = `<!DOCTYPE html>
         for (let c = 0; c < cells.length; c++) {
           const td = document.createElement("td");
           if (c === 0) td.className = "nick";
-          if (c === 5) td.className = "ip";
           td.textContent = cells[c];
           tr.appendChild(td);
         }
         visitRows.appendChild(tr);
       }
-      widenVisitNick();
       visitPager.replaceChildren();
       visitPager.hidden = list.length <= VISIT_PAGE;
       for (let p = 1; p <= pages && !visitPager.hidden; p++) {
