@@ -102,14 +102,22 @@ export const adminHtml = `<!DOCTYPE html>
     }
     #frame-status, #arrange-status { min-height: 1.4em; color: #6f6a64; }
     #visit-status { min-height: 1.4em; color: #6f6a64; }
-    #visit-pager {
+    #visit-pager, #chat-pager, #note-pager {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
       margin: 12px 0 0;
     }
-    #visit-pager button { padding: 4px 10px; min-width: 2.4em; }
-    #visit-pager button:disabled { cursor: default; }
+    #visit-pager button, #chat-pager button, #note-pager button { padding: 4px 10px; min-width: 2.4em; }
+    #visit-pager button:disabled, #chat-pager button:disabled, #note-pager button:disabled { cursor: default; }
+    #board-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 28px 0 0;
+    }
+    #board-tabs button { font-size: 16px; font-weight: 650; }
+    #panel-chat .hint, #panel-note .hint { margin: 12px 0 0; }
     #visit-trend {
       margin: 18px 0;
       padding: 12px 14px 8px;
@@ -188,36 +196,6 @@ export const adminHtml = `<!DOCTYPE html>
       <tbody id="rows"></tbody>
     </table>
     <p id="empty" hidden>现在没有人。</p>
-    <h2>聊天记录</h2>
-    <p class="hint">馆里还留着的最近聊天。删掉后，正在逛的人那边也会消失。</p>
-    <p id="chat-status">正在读取…</p>
-    <table>
-      <thead>
-        <tr>
-          <th>时间</th>
-          <th>昵称</th>
-          <th>内容</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="chat-rows"></tbody>
-    </table>
-    <p id="chat-empty" hidden>没有聊天记录。</p>
-    <h2>访客留言</h2>
-    <p class="hint">留言簿上大家都能看见的话。删掉后，展厅里也会拿掉这一条。</p>
-    <p id="note-status">正在读取…</p>
-    <table>
-      <thead>
-        <tr>
-          <th>时间</th>
-          <th>昵称</th>
-          <th>内容</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="note-rows"></tbody>
-    </table>
-    <p id="note-empty" hidden>没有留言。</p>
     <h2>来访记录</h2>
     <figure id="visit-trend">
       <figcaption>近 30 天 <span class="hint">按入馆的北京时间，含今天。停在某一天看当天访问量。</span></figcaption>
@@ -244,6 +222,44 @@ export const adminHtml = `<!DOCTYPE html>
     </table>
     <nav id="visit-pager" hidden></nav>
     <p id="visit-empty" hidden>这一天没有来访。</p>
+    <div id="board-tabs" role="tablist">
+      <button type="button" id="tab-chat" class="solid" role="tab" aria-selected="true" aria-controls="panel-chat" data-kind="chat">聊天记录</button>
+      <button type="button" id="tab-note" class="line" role="tab" aria-selected="false" aria-controls="panel-note" data-kind="note">访客留言</button>
+    </div>
+    <section id="panel-chat" role="tabpanel" aria-labelledby="tab-chat">
+      <p class="hint">馆里还留着的最近聊天。删掉后，正在逛的人那边也会消失。</p>
+      <p id="chat-status">正在读取…</p>
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>昵称</th>
+            <th>内容</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="chat-rows"></tbody>
+      </table>
+      <nav id="chat-pager" hidden></nav>
+      <p id="chat-empty" hidden>没有聊天记录。</p>
+    </section>
+    <section id="panel-note" role="tabpanel" aria-labelledby="tab-note" hidden>
+      <p class="hint">留言簿上大家都能看见的话。删掉后，展厅里也会拿掉这一条。</p>
+      <p id="note-status">正在读取…</p>
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>昵称</th>
+            <th>内容</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="note-rows"></tbody>
+      </table>
+      <nav id="note-pager" hidden></nav>
+      <p id="note-empty" hidden>没有留言。</p>
+    </section>
     <h2>画框</h2>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
@@ -282,9 +298,16 @@ export const adminHtml = `<!DOCTYPE html>
     const chatRows = document.getElementById("chat-rows");
     const chatEmpty = document.getElementById("chat-empty");
     const chatStatus = document.getElementById("chat-status");
+    const chatPager = document.getElementById("chat-pager");
     const noteRows = document.getElementById("note-rows");
     const noteEmpty = document.getElementById("note-empty");
     const noteStatus = document.getElementById("note-status");
+    const notePager = document.getElementById("note-pager");
+    const BOARD_PAGE = 10;
+    let chatPage = 1;
+    let notePage = 1;
+    let chatList = [];
+    let noteList = [];
     const maxInput = document.getElementById("max");
     const visitDay = document.getElementById("visit-day");
     const visitRows = document.getElementById("visit-rows");
@@ -303,6 +326,7 @@ export const adminHtml = `<!DOCTYPE html>
     let timer = 0;
     let shownVisitDay = "";
     let deskLoaded = false;
+    let boardLoaded = false;
     let hallIds = HALL_LIST.map((hall) => hall.id);
 
     function shanghaiToday() {
@@ -337,6 +361,9 @@ export const adminHtml = `<!DOCTYPE html>
 
     function showLogin(message) {
       window.clearInterval(timer);
+      boardLoaded = false;
+      chatPage = 1;
+      notePage = 1;
       app.hidden = true;
       login.hidden = false;
       loginError.textContent = message || "";
@@ -407,7 +434,10 @@ export const adminHtml = `<!DOCTYPE html>
       }
       showApp();
       paint(data);
-      refreshBoard();
+      if (!boardLoaded) {
+        boardLoaded = true;
+        refreshBoard();
+      }
       if (!visitDay.value) visitDay.value = shanghaiToday();
       if (visitDay.value === shanghaiToday() || visitDay.value !== shownVisitDay) refreshVisits();
       if (!deskLoaded) {
@@ -417,48 +447,106 @@ export const adminHtml = `<!DOCTYPE html>
       }
     }
 
-    function paintBoardRows(body, empty, statusEl, rows, kind) {
+    function boardPage(kind) {
+      return kind === "chat" ? chatPage : notePage;
+    }
+
+    function setBoardPage(kind, page) {
+      if (kind === "chat") chatPage = page;
+      else notePage = page;
+    }
+
+    function paintBoardRows(body, emptyEl, statusEl, pager, rows, kind) {
+      const pages = Math.max(1, Math.ceil(rows.length / BOARD_PAGE));
+      let page = boardPage(kind);
+      if (page > pages) page = pages;
+      if (page < 1) page = 1;
+      setBoardPage(kind, page);
+      const start = (page - 1) * BOARD_PAGE;
+      const slice = rows.slice(start, start + BOARD_PAGE);
       body.replaceChildren();
-      empty.hidden = rows.length > 0;
-      statusEl.textContent = "共 " + rows.length + " 条 · 每 5 秒刷新";
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
+      emptyEl.hidden = rows.length > 0;
+      let text = "共 " + rows.length + " 条";
+      if (rows.length > BOARD_PAGE) text += " · 每页 " + BOARD_PAGE + " 条";
+      statusEl.textContent = text;
+      for (let i = 0; i < slice.length; i++) {
+        const row = slice[i];
         const tr = document.createElement("tr");
         const when = document.createElement("td");
         when.textContent = row.at ? clock(row.at) : "—";
         const who = document.createElement("td");
         who.textContent = row.name || "访客";
-        const text = document.createElement("td");
-        text.className = "board-text";
-        text.textContent = row.text || "";
+        const textCell = document.createElement("td");
+        textCell.className = "board-text";
+        textCell.textContent = row.text || "";
         const op = document.createElement("td");
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = "删除";
         button.addEventListener("click", () => dropBoard(kind, row, button));
         op.appendChild(button);
-        tr.append(when, who, text, op);
+        tr.append(when, who, textCell, op);
         body.appendChild(tr);
       }
+      pager.replaceChildren();
+      pager.hidden = rows.length <= BOARD_PAGE;
+      for (let p = 1; p <= pages && !pager.hidden; p++) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = String(p);
+        button.dataset.page = String(p);
+        button.dataset.kind = kind;
+        button.className = p === page ? "solid" : "line";
+        if (p === page) {
+          button.disabled = true;
+          button.setAttribute("aria-current", "page");
+        }
+        pager.appendChild(button);
+      }
+    }
+
+    function paintOneBoard(kind) {
+      if (kind === "chat") paintBoardRows(chatRows, chatEmpty, chatStatus, chatPager, chatList, "chat");
+      else paintBoardRows(noteRows, noteEmpty, noteStatus, notePager, noteList, "note");
     }
 
     function paintBoard(data) {
-      paintBoardRows(chatRows, chatEmpty, chatStatus, data.chat || [], "chat");
-      paintBoardRows(noteRows, noteEmpty, noteStatus, data.notes || [], "note");
+      chatList = data.chat || [];
+      noteList = data.notes || [];
+      paintOneBoard("chat");
+      paintOneBoard("note");
+    }
+
+    function showBoardTab(kind) {
+      const chatOn = kind !== "note";
+      document.getElementById("panel-chat").hidden = !chatOn;
+      document.getElementById("panel-note").hidden = chatOn;
+      const chatBtn = document.getElementById("tab-chat");
+      const noteBtn = document.getElementById("tab-note");
+      chatBtn.className = chatOn ? "solid" : "line";
+      noteBtn.className = chatOn ? "line" : "solid";
+      chatBtn.setAttribute("aria-selected", chatOn ? "true" : "false");
+      noteBtn.setAttribute("aria-selected", chatOn ? "false" : "true");
     }
 
     async function refreshBoard() {
-      const res = await fetch("/admin/api/board", { cache: "no-store", credentials: "same-origin" });
-      if (res.status === 401) {
-        showLogin("");
-        return;
-      }
-      const data = await readJson(res);
-      if (!res.ok || !data) {
+      try {
+        const res = await fetch("/admin/api/board", { cache: "no-store", credentials: "same-origin" });
+        if (res.status === 401) {
+          showLogin("");
+          return;
+        }
+        const data = await readJson(res);
+        if (!res.ok || !data) {
+          chatStatus.textContent = "没有读到聊天和留言";
+          noteStatus.textContent = "没有读到聊天和留言";
+          return;
+        }
+        paintBoard(data);
+      } catch {
         chatStatus.textContent = "没有读到聊天和留言";
-        return;
+        noteStatus.textContent = "没有读到聊天和留言";
       }
-      paintBoard(data);
     }
 
     async function dropBoard(kind, row, button) {
@@ -947,6 +1035,24 @@ export const adminHtml = `<!DOCTYPE html>
       visitPage = page;
       paintVisitRows();
     });
+
+    document.getElementById("board-tabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || !button.dataset.kind) return;
+      showBoardTab(button.dataset.kind);
+    });
+
+    function onBoardPager(event) {
+      const button = event.target.closest("button");
+      if (!button || button.disabled) return;
+      const page = Number(button.dataset.page);
+      const kind = button.dataset.kind;
+      if (!page || (kind !== "chat" && kind !== "note") || page === boardPage(kind)) return;
+      setBoardPage(kind, page);
+      paintOneBoard(kind);
+    }
+    chatPager.addEventListener("click", onBoardPager);
+    notePager.addEventListener("click", onBoardPager);
 
     async function queueFrames(full) {
       frameStatus.textContent = "正在排队…";
