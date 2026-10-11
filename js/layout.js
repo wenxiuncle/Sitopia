@@ -38,6 +38,40 @@ const BAY = 12;
 const HALL_B = HALL_A - BAY;
 const NORTH = HALL_B - BAY;
 
+// 一楼进门后的两根柱。内侧夹出的走廊是接待机器人的东西范围。
+const COL_IN = 8.2;
+const COL_OUT = 8.95;
+const COL_Z0 = -3.55;
+const COL_Z1 = -2.8;
+const COL_EXT = 8.04;
+// 南北从南墙内侧面到进门后第一道墙朝门厅的那一面。人走不到墙外面。
+export const RECEPTION = {
+  minX: -COL_IN,
+  maxX: COL_IN,
+  minZ: HALL_A + WALL_T / 2,
+  maxZ: SOUTH,
+};
+
+export function receptionHome() {
+  return {
+    x: (RECEPTION.minX + RECEPTION.maxX) / 2,
+    z: (RECEPTION.minZ + RECEPTION.maxZ) / 2,
+    yaw: Math.PI,
+  };
+}
+
+export function receptionObstacles() {
+  const z = (COL_Z0 + COL_Z1) / 2;
+  const r = 0.16;
+  const xs = [COL_EXT, -COL_EXT];
+  const out = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    out.push({ minX: x - r, maxX: x + r, minZ: z - r, maxZ: z + r });
+  }
+  return out;
+}
+
 const HALF = STORY / 2;
 // 天花上的楼梯孔用这个外扩，孔边不留一圈楼板。
 const CEIL_STAIR_PAD = 0.05;
@@ -311,17 +345,28 @@ function orderGroup(indexes, sites, order) {
   });
 }
 
-function pickOrdered(sites, arrange) {
+function pickOrdered(sites, arrange, sortMode) {
   const plan = hangPlan(arrange);
   const list = sites || [];
   const hangCat = new Array(list.length);
+  for (let i = 0; i < list.length; i++) hangCat[i] = assignedCat(list[i], plan.halls);
+  const groups = new Map();
+  for (let h = 0; h < plan.halls.length; h++) groups.set(plan.halls[h].cat, []);
+  // 时间排序只影响这一台浏览器。置顶让位，整馆按发布时间排，方向仍跟房间的厅内顺序。
+  if (sortMode === "time") {
+    const all = [];
+    for (let i = 0; i < list.length; i++) {
+      if (groups.has(hangCat[i])) all.push(i);
+    }
+    orderGroup(all, list, plan.order);
+    return { chosen: all, hangCat, halls: plan.halls };
+  }
   const used = new Uint8Array(list.length);
   const chosen = [];
   const byId = new Map();
   for (let i = 0; i < list.length; i++) {
     const id = list[i] && list[i].id;
     if (id != null && !byId.has(id)) byId.set(id, i);
-    hangCat[i] = assignedCat(list[i], plan.halls);
   }
   for (let p = 0; p < plan.pins.length; p++) {
     const index = byId.get(plan.pins[p]);
@@ -329,8 +374,6 @@ function pickOrdered(sites, arrange) {
     used[index] = 1;
     chosen.push(index);
   }
-  const groups = new Map();
-  for (let h = 0; h < plan.halls.length; h++) groups.set(plan.halls[h].cat, []);
   for (let i = 0; i < list.length; i++) {
     if (used[i]) continue;
     const group = groups.get(hangCat[i]);
@@ -343,6 +386,94 @@ function pickOrdered(sites, arrange) {
     for (let n = 0; n < group.length; n++) chosen.push(group[n]);
   }
   return { chosen, hangCat, halls: plan.halls };
+}
+
+export function hangOrder(sites, arrange, sortMode) {
+  return pickOrdered(sites, arrange, sortMode);
+}
+
+function floorTitles(frames, hangCat, floorCount) {
+  const hallByCat = new Map();
+  for (let i = 0; i < HALLS.length; i++) hallByCat.set(HALLS[i].cat, HALLS[i]);
+  const floorNames = [];
+  for (let f = 0; f < floorCount; f++) floorNames.push([]);
+  for (let i = 0; i < frames.length; i++) {
+    const cat = hangCat[frames[i].siteIndex];
+    const hall = hallByCat.get(cat);
+    const name = hall ? hall.name : "";
+    if (name && floorNames[frames[i].floor].indexOf(name) < 0) floorNames[frames[i].floor].push(name);
+  }
+  return floorNames;
+}
+
+function siteYear(site) {
+  const date = site && site.date;
+  if (typeof date !== "string") return 0;
+  const match = /^(\d{4})-/.exec(date);
+  if (!match) return 0;
+  const year = Number(match[1]);
+  if (year < 1990 || year > 2100) return 0;
+  return year;
+}
+
+function yearSpan(minYear, maxYear) {
+  if (!minYear || !maxYear) return "";
+  if (minYear === maxYear) return minYear + "年";
+  return minYear + "年 - " + maxYear + "年";
+}
+
+function floorYearSpans(frames, sites, floorCount) {
+  const minY = new Array(floorCount);
+  const maxY = new Array(floorCount);
+  for (let i = 0; i < frames.length; i++) {
+    const floor = frames[i].floor;
+    if (floor < 0 || floor >= floorCount) continue;
+    const site = sites && sites[frames[i].siteIndex];
+    const year = siteYear(site);
+    if (!year) continue;
+    if (minY[floor] == null || year < minY[floor]) minY[floor] = year;
+    if (maxY[floor] == null || year > maxY[floor]) maxY[floor] = year;
+  }
+  const spans = [];
+  for (let f = 0; f < floorCount; f++) spans.push(yearSpan(minY[f], maxY[f]));
+  return spans;
+}
+
+function floorLabel(names, floor, sortMode, span) {
+  const level = (floor + 1) + "楼";
+  // 时间排序按发布时间铺开。层名用这一层最早到最晚的年份，不挂分类。
+  if (sortMode === "time") return span ? span + " · " + level : level;
+  return (names.length ? names.join("、") : "展厅") + " · " + level;
+}
+
+// 分类排序时电梯按钮在数字和「楼」之间多一个空格。时间排序是「6楼 · 2016年 - 2017年」。
+export function liftFloorLabel(names, floor, sortMode, span) {
+  if (sortMode === "time") {
+    const level = (floor + 1) + "楼";
+    return span ? level + " · " + span : level;
+  }
+  const level = (floor + 1) + " 楼";
+  if (!names || !names.length) return level;
+  return level + " · " + names.join("、");
+}
+
+export function retitleFloors(built, sortMode, sites) {
+  if (!built || !built.frames || !built.hangCat) return;
+  const floorNames = floorTitles(built.frames, built.hangCat, built.floors);
+  const floorSpans = floorYearSpans(built.frames, sites, built.floors);
+  built.floorNames = floorNames;
+  built.floorSpans = floorSpans;
+  const zones = built.zones || [];
+  for (let i = 0; i < zones.length; i++) {
+    const zone = zones[i];
+    if (!zone || zone.rank === 1 || zone.name === "广场") continue;
+    const floor = Math.round((zone.minY + 0.35) / STORY);
+    if (floor < 0 || floor >= floorNames.length) continue;
+    const names = floorNames[floor];
+    zone.legend = names;
+    if (zone.rank === 4) zone.name = "观景台 · " + (floor + 1) + "楼";
+    else if (zone.rank === 3) zone.name = floorLabel(names, floor, sortMode, floorSpans[floor]);
+  }
 }
 
 function placeFace(frames, sites, cursor, minX, maxX, cz, nz, cones, sideCols, baseY, floor) {
@@ -1037,15 +1168,15 @@ function addPlazaDress(blocks, yard) {
 function addLobbyDress(blocks, floors) {
   const extinguishers = [];
   const tables = [];
-  const colZ = (-3.55 + -2.8) / 2;
+  const colZ = (COL_Z0 + COL_Z1) / 2;
   const tableX = (-INNER - DOOR) / 2;
   const tableR = 0.8;
   const tableZ = SOUTH - tableR - 0.28;
   for (let f = 0; f < floors; f++) {
     const y = f * STORY;
     const spots = [
-      { x: 8.04, z: colZ },
-      { x: -8.04, z: colZ },
+      { x: COL_EXT, z: colZ },
+      { x: -COL_EXT, z: colZ },
     ];
     for (let i = 0; i < spots.length; i++) {
       const spot = spots[i];
@@ -1141,8 +1272,8 @@ function addPlants(plants, floors) {
   }
 }
 
-export function buildMuseum(sites, arrange) {
-  const ordered = pickOrdered(sites || [], arrange);
+export function buildMuseum(sites, arrange, sortMode) {
+  const ordered = pickOrdered(sites || [], arrange, sortMode);
   const chosen = ordered.chosen;
   const hangCat = ordered.hangCat;
   const stone = [];
@@ -1219,8 +1350,8 @@ export function buildMuseum(sites, arrange) {
     pushBox(white, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
     pushBox(white, -INNER, -DOOR, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
     pushBox(white, DOOR, INNER, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
-    pushBox(white, 8.2, 8.95, -3.55, -2.8, WALL_H, "white", base);
-    pushBox(white, -8.95, -8.2, -3.55, -2.8, WALL_H, "white", base);
+    pushBox(white, COL_IN, COL_OUT, COL_Z0, COL_Z1, WALL_H, "white", base);
+    pushBox(white, -COL_OUT, -COL_IN, COL_Z0, COL_Z1, WALL_H, "white", base);
     pushBox(white, 10.1, 10.85, NORTH + 5.6, NORTH + 6.35, WALL_H, "white", base);
     pushBox(white, -10.85, -10.1, NORTH + 5.6, NORTH + 6.35, WALL_H, "white", base);
   }
@@ -1439,21 +1570,13 @@ export function buildMuseum(sites, arrange) {
   const yard = [];
   addPlazaDress(blocks, yard);
 
-  const hallByCat = new Map();
-  for (let i = 0; i < HALLS.length; i++) hallByCat.set(HALLS[i].cat, HALLS[i]);
-  const floorNames = [];
-  for (let f = 0; f < floorCount; f++) floorNames.push([]);
-  for (let i = 0; i < frames.length; i++) {
-    const cat = hangCat[frames[i].siteIndex];
-    const hall = hallByCat.get(cat);
-    const name = hall ? hall.name : "";
-    if (name && floorNames[frames[i].floor].indexOf(name) < 0) floorNames[frames[i].floor].push(name);
-  }
+  const floorNames = floorTitles(frames, hangCat, floorCount);
+  const floorSpans = floorYearSpans(frames, sites, floorCount);
 
   const zones = [];
   for (let f = 0; f < floorCount; f++) {
     const names = floorNames[f];
-    const label = (names.length ? names.join("、") : "展厅") + " · " + (f + 1) + "楼";
+    const label = floorLabel(names, f, sortMode, floorSpans[f]);
     zones.push({
       name: label,
       legend: names,
@@ -1579,6 +1702,7 @@ export function buildMuseum(sites, arrange) {
     zones,
     floors: floorCount,
     floorNames,
+    floorSpans,
     hangCat,
     legend,
     signs,

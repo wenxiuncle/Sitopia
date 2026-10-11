@@ -156,6 +156,28 @@ async function route(req, res, lobby, path, url) {
     send(res, 200, { max: n, cap: lobby.state().cap });
     return;
   }
+  if (path === "/admin/api/board" && req.method === "GET") {
+    send(res, 200, lobby.desk());
+    return;
+  }
+  if (path === "/admin/api/board" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body) {
+      send(res, 400, { error: "body" });
+      return;
+    }
+    if (body.kind !== "chat" && body.kind !== "note") {
+      send(res, 400, { error: "kind" });
+      return;
+    }
+    const gone = lobby.dropDesk(body);
+    if (!gone) {
+      send(res, 404, { error: "missing" });
+      return;
+    }
+    send(res, 200, { ok: true });
+    return;
+  }
   if (path === "/admin/api/kick" && req.method === "POST") {
     const body = await readBody(req);
     const until = lobby.kick(body || {});

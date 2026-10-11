@@ -90,10 +90,22 @@
               单人模式
             </label>
           </div>
+          <p class="drawer-label" id="sort-label">展厅趣站排序</p>
+          <div id="sort-switch" role="radiogroup" aria-labelledby="sort-label">
+            <label>
+              <input id="sort-cat" type="radio" name="hang-sort" value="cat" checked>
+              分类排序
+            </label>
+            <label>
+              <input id="sort-time" type="radio" name="hang-sort" value="time">
+              时间排序
+            </label>
+          </div>
           <p class="menu-head">操作说明</p>
           <ul id="help-keys">
             <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> 走动</li>
             <li>按住 <kbd>Shift</kbd> 加快</li>
+            <li><kbd>空格</kbd> 跳跃</li>
             <li><kbd>回车</kbd> 聊天</li>
             <li><kbd>E</kbd> 叫电梯、开门</li>
             <li><kbd>F</kbd> 在电梯里选层，点好就继续走</li>
@@ -131,6 +143,22 @@
       <a id="panel-article" target="_blank" rel="noopener noreferrer">看原文</a>
     </div>
     <button id="panel-close" type="button">关闭</button>
+  </aside>
+  <aside id="guestbook" hidden>
+    <p id="guestbook-kicker">一楼门厅</p>
+    <h2>访客留言簿</h2>
+    <p id="guestbook-hint"></p>
+    <form id="guestbook-form">
+      <textarea id="guestbook-text" maxlength="120" rows="4"></textarea>
+      <button id="guestbook-send" type="submit">留下这句话</button>
+    </form>
+    <ol id="guestbook-list"></ol>
+    <div id="guestbook-pages">
+      <button id="guestbook-prev" type="button">上一页</button>
+      <span id="guestbook-page"></span>
+      <button id="guestbook-next" type="button">下一页</button>
+    </div>
+    <button id="guestbook-close" type="button">关闭</button>
   </aside>
   <script type="module" src="js/museum.js"></script>
 </body>

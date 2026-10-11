@@ -5,6 +5,8 @@
 // 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
 import { occupiesHall } from "../js/layout.js";
 import { wrapScore } from "../js/score.js";
+import { RECEPTION, receptionHome } from "../js/layout.js";
+
 export { PIN_CAP, cleanArrange } from "../js/layout.js";
 export const PEOPLE_CAP = 24;
 export const MAX_PEOPLE = PEOPLE_CAP;
@@ -116,6 +118,8 @@ export function blankPerson(id, now) {
     lastMove: 0,
     lastSay: 0,
     lastName: 0,
+    lastNote: 0,
+    lastRobot: 0,
     entered: 0,
     gone: false,
   };
@@ -293,6 +297,190 @@ export function onLeave(people, person) {
     return [{ who: "all", obj: { t: "bye", id: person.id, name: person.name, n: namedCount(people) } }];
   }
   return [];
+}
+
+export const NOTE_MAX = 200;
+
+export function cleanNote(value) {
+  return String(value || "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 120);
+}
+
+export function blankRobot() {
+  const home = receptionHome();
+  return { x: home.x, z: home.z, yaw: home.yaw, driver: "", moving: false, poseAt: 0 };
+}
+
+export function cleanRobotPose(msg) {
+  if (!msg) return null;
+  const x = Number(msg.x);
+  const z = Number(msg.z);
+  let yaw = Number(msg.yaw);
+  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return null;
+  if (x < RECEPTION.minX + 0.2 || x > RECEPTION.maxX - 0.2) return null;
+  if (z < RECEPTION.minZ + 0.2 || z > RECEPTION.maxZ - 0.2) return null;
+  yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+  return {
+    x: Math.round(x * 1000) / 1000,
+    z: Math.round(z * 1000) / 1000,
+    yaw: Math.round(yaw * 1000) / 1000,
+  };
+}
+
+export function restoreRobot(saved) {
+  const robot = blankRobot();
+  const pose = cleanRobotPose(saved);
+  if (!pose) return robot;
+  robot.x = pose.x;
+  robot.z = pose.z;
+  robot.yaw = pose.yaw;
+  return robot;
+}
+
+export function robotView(robot) {
+  return {
+    t: "robot",
+    x: robot.x,
+    z: robot.z,
+    yaw: robot.yaw,
+    driver: robot.driver || "",
+    moving: !!robot.moving,
+  };
+}
+
+export function electDriver(people) {
+  let best = null;
+  for (const person of people.values()) {
+    if (!person || !person.named || person.away || person.gone) continue;
+    const earlier = !best || (person.entered || 0) < (best.entered || 0);
+    const tie = best && (person.entered || 0) === (best.entered || 0) && String(person.id) < String(best.id);
+    if (earlier || tie) best = person;
+  }
+  return best ? best.id : "";
+}
+
+// 有人在线才走。司机是最早进来、还没离开页面的那一位。位置只留这一份。
+export function syncRobot(robot, people) {
+  if (!robot) return null;
+  const driver = electDriver(people);
+  const moving = driver !== "";
+  if (robot.driver === driver && !!robot.moving === moving) return null;
+  robot.driver = driver;
+  robot.moving = moving;
+  return robotView(robot);
+}
+
+export function takeRobotPose(robot, person, msg, now) {
+  if (!robot || !person || person.id !== robot.driver || !robot.moving) return null;
+  if (now - (person.lastRobot || 0) < 80) return null;
+  const pose = cleanRobotPose(msg);
+  if (!pose) return null;
+  person.lastRobot = now;
+  robot.x = pose.x;
+  robot.z = pose.z;
+  robot.yaw = pose.yaw;
+  robot.poseAt = now;
+  return { who: "others", obj: robotView(robot) };
+}
+
+export function restoreNotes(saved) {
+  const out = [];
+  const raw = Array.isArray(saved) ? saved : [];
+  for (let i = 0; i < raw.length && out.length < NOTE_MAX; i++) {
+    const row = raw[i];
+    if (!row) continue;
+    const text = cleanNote(row.text);
+    const at = Number(row.at);
+    if (!text || !Number.isFinite(at)) continue;
+    out.push({
+      id: String(row.id || at).slice(0, 48),
+      name: cleanName(row.name),
+      text,
+      at,
+    });
+  }
+  return out;
+}
+
+export function addNote(notes, person, text, now) {
+  if (!notes || !person || person.away) return null;
+  if (now - (person.lastNote || 0) < 2500) return null;
+  const clean = cleanNote(text);
+  if (!clean) return null;
+  person.lastNote = now;
+  const note = {
+    id: String(person.id) + "-" + now,
+    name: person.name,
+    text: clean,
+    at: now,
+  };
+  notes.push(note);
+  while (notes.length > NOTE_MAX) notes.shift();
+  return { t: "note", id: note.id, name: note.name, text: note.text, at: note.at };
+}
+
+export function deskView(log, notes) {
+  const chat = [];
+  const lines = Array.isArray(log) ? log : [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line || line.t !== "say" || !line.text) continue;
+    chat.push({
+      id: String(line.id || ""),
+      name: line.name || "",
+      text: line.text || "",
+      at: Number(line.at) || 0,
+    });
+  }
+  const board = [];
+  const rows = Array.isArray(notes) ? notes : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const note = rows[i];
+    if (!note || !note.text) continue;
+    board.push({
+      id: String(note.id || ""),
+      name: note.name || "",
+      text: note.text || "",
+      at: Number(note.at) || 0,
+    });
+  }
+  return { chat, notes: board };
+}
+
+export function dropSay(log, spec) {
+  if (!Array.isArray(log) || !spec) return null;
+  const id = typeof spec.id === "string" ? spec.id.slice(0, 16) : "";
+  const at = Number(spec.at);
+  if (!id || !Number.isFinite(at)) return null;
+  for (let i = 0; i < log.length; i++) {
+    const line = log[i];
+    if (!line || String(line.id || "") !== id || Number(line.at) !== at) continue;
+    log.splice(i, 1);
+    return { t: "say-drop", id, at };
+  }
+  return null;
+}
+
+export function dropNote(notes, spec) {
+  if (!Array.isArray(notes) || !spec) return null;
+  const id = typeof spec.id === "string" ? spec.id.slice(0, 48) : "";
+  if (!id) return null;
+  for (let i = 0; i < notes.length; i++) {
+    const note = notes[i];
+    if (!note || String(note.id || "") !== id) continue;
+    notes.splice(i, 1);
+    return { t: "note-drop", id };
+  }
+  return null;
+}
+
+export function attachDesk(events, robot, notes) {
+  if (!events) return;
+  for (let i = 0; i < events.length; i++) {
+    const obj = events[i] && events[i].obj;
+    if (!obj || obj.t !== "welcome") continue;
+    if (robot) obj.robot = robotView(robot);
+    if (notes) obj.notes = notes.slice();
+  }
 }
 
 function welcome(person, people, log, resume) {
@@ -648,6 +836,17 @@ export function onClientMessage(people, log, person, msg, now, room) {
     log.push(line);
     if (log.length > LOG_MAX) log.shift();
     out.push({ who: "all", obj: line });
+    return { close: false, out };
+  }
+  if (msg.t === "robot") {
+    const ev = room && room.robot ? takeRobotPose(room.robot, person, msg, now) : null;
+    if (ev) out.push(ev);
+    return { close: false, out };
+  }
+  if (msg.t === "note") {
+    const note = room && room.notes ? addNote(room.notes, person, msg.text, now) : null;
+    if (note) out.push({ who: "all", obj: note });
+    return { close: false, out };
   }
   return { close: false, out };
 }

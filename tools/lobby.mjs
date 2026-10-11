@@ -17,7 +17,9 @@ import {
   kickUntil,
   namedCount,
   attachMusic,
+  attachDesk,
   blankMusic,
+  blankRobot,
   musicView,
   onClientMessage,
   onLeave,
@@ -27,9 +29,13 @@ import {
   rememberSolo,
   shanghaiDay,
   syncMusic,
+  syncRobot,
   visitLeftAt,
   visitTrend,
   visitsOnDay,
+  deskView,
+  dropNote,
+  dropSay,
 } from "./room.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -78,7 +84,7 @@ export function attachLobby(server) {
   const solo = new Map();
   const visits = createVisitBook();
   let arrange = cleanArrange(null);
-  const room = { maxPeople: MAX_PEOPLE, kicks: {}, music: blankMusic(Date.now()) };
+  const room = { maxPeople: MAX_PEOPLE, kicks: {}, music: blankMusic(Date.now()), robot: blankRobot(), notes: [] };
 
   function touchMusic(now) {
     const at = now || Date.now();
@@ -162,6 +168,8 @@ export function attachLobby(server) {
       return;
     }
     const out = onLeave(people, person);
+    const turned = syncRobot(room.robot, people);
+    if (turned) out.push({ who: "all", obj: turned });
     if (person.named && person.seat) depart(person.seat, person.seen, Date.now());
     const at = Date.now();
     const music = syncMusic(room.music, people, solo, at);
@@ -180,10 +188,13 @@ export function attachLobby(server) {
     if (!msg || typeof msg.t !== "string") return;
     const now = Date.now();
     const result = onClientMessage(people, log, person, msg, now, room);
+    const turned = syncRobot(room.robot, people);
+    if (turned) result.out.push({ who: "all", obj: turned });
     if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
     const music = syncMusic(room.music, people, solo, now);
     if (music) result.out.push({ who: "all", obj: music });
     attachMusic(result.out, room.music, now);
+    attachDesk(result.out, room.robot, room.notes);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
       arrive(person, "online", now);
     }
@@ -353,6 +364,16 @@ export function attachLobby(server) {
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
       return musicView(room.music, now);
+    },
+    desk() {
+      return deskView(log, room.notes);
+    },
+    dropDesk(body) {
+      const kind = body && body.kind;
+      const gone = kind === "chat" ? dropSay(log, body) : kind === "note" ? dropNote(room.notes, body) : null;
+      if (!gone) return null;
+      broadcast(gone);
+      return gone;
     },
     state() {
       const now = Date.now();

@@ -2,31 +2,37 @@ import * as THREE from "../vendor/three.module.js";
 import { createAmbience } from "./ambience.js";
 import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
-import { DAYS, dayIndex, nightSpillQuads, openingQuads, sunVector } from "./day.js";
+import { CITY_SHADOW_MAX, DAYS, dayIndex, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
 import {
   EYE,
   FRAME,
   HALLS,
   LIFT,
-  PLAZA,
   PLAYER_RADIUS,
   STORY,
   WALL_H,
   buildMuseum,
+  hangOrder,
+  liftFloorLabel,
+  retitleFloors,
   doorBoxes,
   doorWantsOpen,
   groundAt,
   hallDoorNear,
+  receptionHome,
   hallBlend,
   inLiftCar,
   liftDoorBoxes,
+  blocked,
   movePlayer,
   nearLiftHall,
   pullCamera,
   zoneAt,
 } from "./layout.js";
-import { mountPresence } from "./presence.js";
+import { mountPresence, readSortMode } from "./presence.js";
+import { createReceptionState, receptionBody, stepReception } from "./reception.js";
+import { createReception } from "./robot.js";
 import {
   attachFramePicture,
   attachSun,
@@ -54,7 +60,6 @@ import {
   paneMesh,
   plateMesh,
   setFacadeSignNight,
-  castShadowMaterial,
   deckShadowPolys,
   dropShadowMesh,
   placeDropShadows,
@@ -75,6 +80,8 @@ import {
 
 const WALK = 6.2;
 const SPRINT = 11.2;
+const JUMP_V = 5.4;
+const GRAVITY = 18;
 const MAX_STEP = 0.05;
 const params = new URLSearchParams(location.search);
 
@@ -94,6 +101,30 @@ const panelDown = document.getElementById("panel-down");
 const panelPortal = document.getElementById("panel-portal");
 const panelArticle = document.getElementById("panel-article");
 const panelClose = document.getElementById("panel-close");
+const guestbook = document.getElementById("guestbook");
+const guestbookHint = document.getElementById("guestbook-hint");
+const guestbookForm = document.getElementById("guestbook-form");
+const guestbookText = document.getElementById("guestbook-text");
+const guestbookList = document.getElementById("guestbook-list");
+const guestbookPage = document.getElementById("guestbook-page");
+const guestbookPrev = document.getElementById("guestbook-prev");
+const guestbookNext = document.getElementById("guestbook-next");
+const guestbookClose = document.getElementById("guestbook-close");
+const NOTE_PAGE = 10;
+const NOTES_KEY = "quzhan-museum-notes";
+const receptionHomePose = receptionHome();
+const receptionState = createReceptionState(receptionHomePose);
+const receptionFollow = { x: receptionHomePose.x, z: receptionHomePose.z, yaw: receptionHomePose.yaw };
+const receptionRender = { x: receptionHomePose.x, z: receptionHomePose.z, yaw: receptionHomePose.yaw };
+let reception = null;
+let receptionDriver = "";
+let sharedNotes = [];
+let localNotes = readLocalNotes();
+let notesShared = false;
+let notePage = 0;
+let noteWait = 0;
+let hoverRobot = false;
+let framePickDist = Infinity;
 const dayNav = document.getElementById("day");
 const corner = document.getElementById("corner");
 const liftToggle = document.getElementById("lift-toggle");
@@ -105,16 +136,21 @@ const fwd = new THREE.Vector3();
 const right = new THREE.Vector3();
 let sites = [];
 let built = null;
+let hangArrange = null;
+let hangSort = "cat";
 let mats = null;
 let baseColors = [];
 let hoverColors = [];
 let hoverIndex = -1;
 let ignoreUntil = 0;
 let vx = 0;
+let vy = 0;
 let vz = 0;
 let px = 0;
 let py = 0;
 let pz = 0;
+let airborne = false;
+let takeoffY = 0;
 let ambience = null;
 let heardGesture = false;
 let dayCursor = dayIndex(params.get("time"));
@@ -129,7 +165,7 @@ let dayIsNight = false;
 let shadowMesh = null;
 let coneMat = null;
 let discMat = null;
-let shadowMat = null;
+
 let shapeMat = null;
 let shapeMesh = null;
 let bodyRoom = null;
@@ -181,8 +217,7 @@ const atlasReady = new Map();
 let shownAtlas = -1;
 let buildSerial = 0;
 let horizon = null;
-let dropMesh = null;
-let dropItems = null;
+
 const WINDOW_GLOW = {
   dawn: 0xd2c2a6,
   morning: 0xb7c3c8,
@@ -300,14 +335,14 @@ function lookSource() {
 
 function closePanel(relock) {
   panel.hidden = true;
-  document.body.classList.remove("reading");
+  if (guestbook.hidden) document.body.classList.remove("reading");
   if (!relock || corner.classList.contains("nav-open")) return;
   requestWalk();
 }
 
 function interactiveTarget(target) {
   return !!(target && target.closest && target.closest(
-    "#panel, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
+    "#panel, #guestbook, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
   ));
 }
 
@@ -315,6 +350,7 @@ function enterWalk() {
   hideEscCard();
   if (presence) presence.dismiss(true);
   closePanel(false);
+  closeGuestbook(false);
   requestWalk();
 }
 
@@ -327,7 +363,247 @@ function parkFocus() {
   view.focus({ preventScroll: true });
 }
 
+function readLocalNotes() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NOTES_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (let i = 0; i < raw.length && out.length < 200; i++) {
+      const row = raw[i];
+      if (!row || !row.text) continue;
+      out.push({
+        id: String(row.id || i),
+        name: String(row.name || "访客").slice(0, 12),
+        text: String(row.text).slice(0, 120),
+        at: Number(row.at) || 0,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function noteWhen(at) {
+  const date = new Date(at || 0);
+  if (!Number.isFinite(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return (date.getMonth() + 1) + "-" + date.getDate() + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+}
+
+function noteList() {
+  return (notesShared ? sharedNotes : localNotes).slice().reverse();
+}
+
+function renderGuestbook() {
+  guestbookHint.textContent = notesShared
+    ? "在趣站博物馆的体验您满意吗？"
+    : "还没连上展厅。这些话先记在这台浏览器上。";
+  const ordered = noteList();
+  const pages = Math.max(1, Math.ceil(ordered.length / NOTE_PAGE));
+  if (notePage > pages - 1) notePage = pages - 1;
+  if (notePage < 0) notePage = 0;
+  const slice = ordered.slice(notePage * NOTE_PAGE, notePage * NOTE_PAGE + NOTE_PAGE);
+  guestbookList.replaceChildren();
+  if (!slice.length) {
+    const empty = document.createElement("li");
+    empty.className = "note-empty";
+    empty.textContent = "还没有留言。";
+    guestbookList.appendChild(empty);
+  }
+  for (let i = 0; i < slice.length; i++) {
+    const note = slice[i];
+    const li = document.createElement("li");
+    const meta = document.createElement("p");
+    meta.className = "note-meta";
+    meta.textContent = (note.name || "访客") + " · " + noteWhen(note.at);
+    const body = document.createElement("p");
+    body.className = "note-text";
+    body.textContent = note.text || "";
+    li.append(meta, body);
+    guestbookList.appendChild(li);
+  }
+  guestbookPage.textContent = (notePage + 1) + " / " + pages;
+  guestbookPrev.disabled = notePage <= 0;
+  guestbookNext.disabled = notePage >= pages - 1;
+}
+
+function closeGuestbook(relock) {
+  guestbook.hidden = true;
+  if (panel.hidden) document.body.classList.remove("reading");
+  if (!relock || corner.classList.contains("nav-open")) return;
+  requestWalk();
+}
+
+function openGuestbook() {
+  if (!panel.hidden) closePanel(false);
+  renderGuestbook();
+  guestbook.hidden = false;
+  document.body.classList.add("reading");
+  guestbook.style.pointerEvents = "none";
+  ignoreUntil = performance.now() + 420;
+  window.setTimeout(() => {
+    guestbook.style.pointerEvents = "auto";
+  }, 420);
+  releaseLook();
+}
+
+function submitNote(event) {
+  event.preventDefault();
+  const text = guestbookText.value.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 120);
+  if (!text) return;
+  const now = Date.now();
+  if (now < noteWait) return;
+  noteWait = now + 2500;
+  if (presence && presence.postNote(text)) {
+    guestbookText.value = "";
+    return;
+  }
+  localNotes.push({
+    id: "local-" + now,
+    name: (presence && presence.name()) || "访客",
+    text,
+    at: now,
+  });
+  while (localNotes.length > 200) localNotes.shift();
+  try {
+    localStorage.setItem(NOTES_KEY, JSON.stringify(localNotes));
+  } catch {
+    /* 记不住就只留在这一页。 */
+  }
+  guestbookText.value = "";
+  notePage = 0;
+  renderGuestbook();
+}
+
+function onRobotMessage(view) {
+  if (!view) return;
+  const was = receptionDriver;
+  receptionDriver = view.driver || "";
+  const mine = presence && presence.myId();
+  const linked = presence && presence.linked();
+  const driving = !linked || !receptionDriver || mine === receptionDriver;
+  if (!driving || was !== receptionDriver) {
+    receptionState.x = view.x;
+    receptionState.z = view.z;
+    receptionState.yaw = view.yaw;
+    receptionState.face = view.yaw;
+    receptionState.hold = 0;
+    if (driving) {
+      receptionRender.x = view.x;
+      receptionRender.z = view.z;
+      receptionRender.yaw = view.yaw;
+    } else {
+      receptionFollow.x = view.x;
+      receptionFollow.z = view.z;
+      receptionFollow.yaw = view.yaw;
+    }
+  }
+}
+
+function onNotesMessage(payload) {
+  if (payload && payload.t === "note-drop") {
+    const id = payload.id;
+    sharedNotes = sharedNotes.filter((note) => note.id !== id);
+    if (!guestbook.hidden) renderGuestbook();
+    return;
+  }
+  notesShared = true;
+  if (Array.isArray(payload)) {
+    sharedNotes = payload.slice();
+    notePage = 0;
+  } else if (payload && payload.text) {
+    sharedNotes.push({
+      id: payload.id,
+      name: payload.name,
+      text: payload.text,
+      at: payload.at,
+    });
+    if (sharedNotes.length > 200) sharedNotes.shift();
+    notePage = 0;
+  }
+  if (!guestbook.hidden) renderGuestbook();
+}
+
+function onDeskUnlink() {
+  receptionDriver = "";
+  notesShared = false;
+  if (!guestbook.hidden) renderGuestbook();
+}
+
+function lookMin() {
+  let minT = 0.15;
+  if (thirdPerson) {
+    const gap = Math.hypot(camera.position.x - px, camera.position.y - (py + EYE), camera.position.z - pz);
+    if (gap > minT) minT = gap - 0.25;
+  }
+  return minT;
+}
+
+function aimHover() {
+  const index = pickFrame();
+  const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
+  const onRobot = robotDist >= 0 && robotDist < framePickDist;
+  if (onRobot) {
+    if (hoverIndex >= 0) setHover(-1);
+    hoverEl.textContent = "倔强小趣";
+    hoverEl.hidden = false;
+    hoverRobot = true;
+    return;
+  }
+  if (hoverRobot) {
+    hoverRobot = false;
+    hoverEl.hidden = true;
+  }
+  setHover(index);
+}
+
+function crowdHere() {
+  const people = [{ x: px, z: pz, y: py }];
+  if (presence) {
+    const others = presence.others();
+    for (let i = 0; i < others.length; i++) people.push(others[i]);
+  }
+  return people;
+}
+
+function approachYaw(from, to, k) {
+  const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
+  return from + delta * k;
+}
+
+function updateReception(dt, now) {
+  if (!reception) return;
+  const card = !guestbook.hidden;
+  const linked = presence && presence.linked();
+  const mine = presence && presence.myId();
+  // 没连上、房间还没指定司机、或司机就是这一页，才由这里往前走。
+  const driving = !visitorOut && !document.hidden && (!linked || !receptionDriver || mine === receptionDriver);
+  // 留言板开着就停在原地。司机这边计时也不走，关上以后从原来的动作接着来。
+  if (!card && driving) {
+    stepReception(receptionState, dt, crowdHere());
+    receptionRender.x = receptionState.x;
+    receptionRender.z = receptionState.z;
+    receptionRender.yaw = receptionState.yaw;
+    if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
+  } else if (!card) {
+    const gap = Math.hypot(receptionFollow.x - receptionRender.x, receptionFollow.z - receptionRender.z);
+    if (gap > 1.6) {
+      receptionRender.x = receptionFollow.x;
+      receptionRender.z = receptionFollow.z;
+      receptionRender.yaw = receptionFollow.yaw;
+    } else {
+      const k = 1 - Math.exp(-Math.min(dt, 0.05) * 8);
+      receptionRender.x += (receptionFollow.x - receptionRender.x) * k;
+      receptionRender.z += (receptionFollow.z - receptionRender.z) * k;
+      receptionRender.yaw = approachYaw(receptionRender.yaw, receptionFollow.yaw, k);
+    }
+  }
+  reception.place(receptionRender, now, card);
+}
+
 function openFrame(index) {
+  if (!guestbook.hidden) closeGuestbook(false);
   const siteIndex = built.frames[index].siteIndex;
   const site = sites[siteIndex];
   const cat = built.hangCat ? built.hangCat[siteIndex] : site.cat;
@@ -356,16 +632,15 @@ function openFrame(index) {
 }
 
 function pickFrame() {
-  if (!built) return -1;
+  if (!built) {
+    framePickDist = Infinity;
+    return -1;
+  }
   camera.getWorldDirection(lookDir);
   const ox = camera.position.x;
   const oy = camera.position.y;
   const oz = camera.position.z;
-  let minT = 0.15;
-  if (thirdPerson) {
-    const gap = Math.hypot(ox - px, oy - (py + EYE), oz - pz);
-    if (gap > minT) minT = gap - 0.25;
-  }
+  const minT = lookMin();
   const floor = playerFloor();
   let best = -1;
   let bestT = 7;
@@ -386,6 +661,7 @@ function pickFrame() {
     best = i;
     bestT = t;
   }
+  framePickDist = best >= 0 ? bestT : Infinity;
   return best;
 }
 
@@ -394,7 +670,10 @@ function resetPose() {
   pz = built.spawn.z;
   py = 0;
   vx = 0;
+  vy = 0;
   vz = 0;
+  airborne = false;
+  takeoffY = 0;
   camera.rotation.set(0, 0, 0);
   camera.position.set(px, py + EYE, pz);
   closePanel();
@@ -463,6 +742,10 @@ function collide() {
     const shut = liftDoorBoxes(liftOpenSolid(f), f);
     for (let i = 0; i < shut.length; i++) solidList.push(shut[i]);
   }
+  if (reception) {
+    const body = receptionBody(receptionRender.x, receptionRender.z);
+    if (!blocked(px, pz, PLAYER_RADIUS, [body], py)) solidList.push(body);
+  }
   return solidList;
 }
 
@@ -498,9 +781,68 @@ function holdingLiftDoor() {
   return px > LIFT.xDoor - 0.55 && px < LIFT.xDoor + 1.5;
 }
 
+function feetOn() {
+  if (lift && inLiftCar(px, pz) && Math.abs(py - lift.y) < 0.2) return lift.y;
+  const support = built ? groundAt(px, pz, py, built.floors) : null;
+  if (support == null) return py <= 0.04 ? 0 : null;
+  return support;
+}
+
+function tryJump() {
+  if (airborne || !built) return;
+  if (lift && inLiftCar(px, pz) && lift.phase === "moving") return;
+  const feet = feetOn();
+  if (feet == null || Math.abs(py - feet) > 0.12) return;
+  airborne = true;
+  takeoffY = feet;
+  vy = JUMP_V;
+}
+
+// 地面查询只认脚附近约一米的楼板。sample 高出落点就不算，免得把人吸到头顶那一层。
+function surfaceBelow(sample) {
+  if (!built) return null;
+  let land = groundAt(px, pz, sample, built.floors);
+  if (lift && inLiftCar(px, pz)) {
+    const cab = lift.y;
+    if (land == null || (cab <= sample + 0.08 && cab >= land - 0.05)) land = cab;
+  }
+  if (land != null && land > sample + 0.08) return null;
+  return land;
+}
+
 function settleFeet(dt) {
-  if (lift && inLiftCar(px, pz) && (Math.abs(py - lift.y) < 1.15 || lift.phase === "moving")) {
+  const inCar = lift && inLiftCar(px, pz);
+  const riding = inCar && (Math.abs(py - lift.y) < 1.15 || lift.phase === "moving");
+  if (inCar && lift.phase === "moving") {
+    airborne = false;
+    vy = 0;
     py = lift.y;
+    return;
+  }
+  if (!airborne && riding) {
+    py = lift.y;
+    vy = 0;
+    return;
+  }
+  if (airborne) {
+    vy -= GRAVITY * dt;
+    if (vy < -12) vy = -12;
+    const prev = py;
+    py += vy * dt;
+    let land = surfaceBelow(prev);
+    if (land == null) land = surfaceBelow(py);
+    if (land == null && takeoffY != null) land = surfaceBelow(takeoffY);
+    if (land != null && vy <= 0 && prev >= land - 0.02 && py <= land) {
+      py = land;
+      vy = 0;
+      airborne = false;
+      return;
+    }
+    if (py <= 0) {
+      py = 0;
+      vy = 0;
+      airborne = false;
+    }
     return;
   }
   const support = groundAt(px, pz, py, built.floors);
@@ -544,7 +886,7 @@ function fillLiftPad() {
     const names = built.floorNames[f];
     button.dataset.floor = String(f);
     button.setAttribute("aria-pressed", "false");
-    button.textContent = (f + 1) + " 楼" + (names && names.length ? " · " + names.join("、") : "");
+    button.textContent = liftFloorLabel(names, f, hangSort, built.floorSpans && built.floorSpans[f]);
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       if (!lift) return;
@@ -647,11 +989,24 @@ function poseSelf(pulled) {
   selfVisitor.group.visible = pulled.dist > 0.9;
   selfVisitor.group.position.set(px, py, pz);
   planarBasis(lookSource(), fwd, right);
-  selfVisitor.group.rotation.y = yawFacing(fwd);
-  placeBodyShadow(selfVisitor, px, py, pz, yawFacing(fwd));
+  const yaw = yawFacing(fwd);
+  selfVisitor.group.rotation.y = yaw;
+  placeBodyShadow(selfVisitor, px, py, pz, yaw);
+  if (airborne && selfVisitor.shadow) {
+    const ground = built ? groundAt(px, pz, takeoffY, built.floors) : null;
+    const feet = ground == null ? takeoffY : ground;
+    selfVisitor.shadow.position.y = feet - py + 0.035;
+  }
   const speed = Math.hypot(vx, vz);
-  if (speed > 0.2) walkPhase += speed * 0.02;
-  poseVisitor(selfVisitor.parts, walkPhase, speed > 0.2 ? 1 : 0);
+  if (!airborne && speed > 0.2) walkPhase += speed * 0.02;
+  poseVisitor(selfVisitor.parts, walkPhase, !airborne && speed > 0.2 ? 1 : 0);
+  if (airborne) {
+    const rise = Math.min(1, Math.max(0, py - takeoffY) / 0.35);
+    selfVisitor.parts.legL.rotation.x = 0.45 * rise;
+    selfVisitor.parts.legR.rotation.x = 0.45 * rise;
+    selfVisitor.parts.armL.rotation.x = -0.35 * rise;
+    selfVisitor.parts.armR.rotation.x = -0.35 * rise;
+  }
 }
 
 function placeCamera() {
@@ -728,6 +1083,10 @@ function step(dt, now) {
     vx = 0;
     vz = 0;
     if (hoverIndex >= 0) setHover(-1);
+    if (hoverRobot) {
+      hoverRobot = false;
+      hoverEl.hidden = true;
+    }
   } else {
     planarBasis(lookSource(), fwd, right);
     let ix = 0;
@@ -742,12 +1101,13 @@ function step(dt, now) {
     const rate = 1 - Math.exp(-dt * 12);
     vx += (ix * speed - vx) * rate;
     vz += (iz * speed - vz) * rate;
-    const moved = movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), py);
+    const foot = airborne ? takeoffY : py;
+    const moved = movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), foot);
     px = moved.x;
     pz = moved.z;
     if (now >= hoverClock) {
       hoverClock = now + 120;
-      setHover(pickFrame());
+      aimHover();
     }
   }
   settleFeet(dt);
@@ -756,6 +1116,7 @@ function step(dt, now) {
   syncLiftHud();
   syncLiftHint();
   trackPictures();
+  updateReception(dt, now);
   if (presence) presence.update(dt, now);
   if (ambience && built) {
     const indoors = hallBlend(px, pz, built.interior);
@@ -763,7 +1124,7 @@ function step(dt, now) {
     ambience.place({
       outdoor: 1 - indoors,
       surface: footSurface(),
-      speed: Math.hypot(vx, vz),
+      speed: airborne ? 0 : Math.hypot(vx, vz),
       day: DAYS[dayCursor].id,
       dt,
       liftY: lift ? lift.y : 0,
@@ -932,7 +1293,9 @@ function bind() {
     if (performance.now() < ignoreUntil) return;
     if (document.pointerLockElement !== view) return;
     const index = pickFrame();
-    if (index >= 0) openFrame(index);
+    const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
+    if (robotDist >= 0 && robotDist < framePickDist) openGuestbook();
+    else if (index >= 0) openFrame(index);
   });
   document.addEventListener("click", (event) => {
     noteGesture();
@@ -985,6 +1348,14 @@ function bind() {
       }
       return;
     }
+    if (event.code === "Space") {
+      const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !visitorOut;
+      if (!locked) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      tryJump();
+      return;
+    }
     if (event.code === "KeyE") {
       if (event.repeat) return;
       event.preventDefault();
@@ -1025,6 +1396,7 @@ function bind() {
       if (event.repeat) return;
       escWantsCard = true;
       if (!panel.hidden) closePanel(false);
+      if (!guestbook.hidden) closeGuestbook(false);
       if (document.pointerLockElement !== view) showEscCard();
       return;
     }
@@ -1064,6 +1436,24 @@ function bind() {
     event.preventDefault();
     event.stopPropagation();
     closePanel(true);
+  });
+  guestbookClose.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeGuestbook(true);
+  });
+  guestbookForm.addEventListener("submit", submitNote);
+  guestbookPrev.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    notePage -= 1;
+    renderGuestbook();
+  });
+  guestbookNext.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    notePage += 1;
+    renderGuestbook();
   });
   window.addEventListener("resize", resize);
 }
@@ -1119,7 +1509,8 @@ function writeNightSpill(day) {
   const col = nightSpillMesh.geometry.attributes.color;
   const quads = day.id === "night" ? nightSpillQuads(built.openings, built.dress) : [null, null];
   const color = new THREE.Color(0xd5e6f6);
-  for (let i = 0; i < quads.length; i++) writeQuad(pos, col, i, quads[i], 0.05, color);
+  // 高出楼板顶一截。再低时，门口路面往镜头偏，会把这层光盖住。
+  for (let i = 0; i < quads.length; i++) writeQuad(pos, col, i, quads[i], 0.06, color);
   pos.needsUpdate = true;
   col.needsUpdate = true;
 }
@@ -1152,9 +1543,38 @@ function writePatches(day, sun) {
   col.needsUpdate = true;
 }
 
+function fillCityShadows(blocks) {
+  const boxes = sunShared.city.value;
+  const heights = sunShared.cityH.value;
+  const n = Math.min(blocks ? blocks.length : 0, boxes.length);
+  for (let i = 0; i < boxes.length; i++) {
+    if (i < n) {
+      const block = blocks[i];
+      boxes[i].set(block.minX, block.maxX, block.minZ, block.maxZ);
+      heights[i] = block.top;
+    } else {
+      boxes[i].set(0, 0, 0, 0);
+      heights[i] = 0;
+    }
+  }
+}
+
+function castBlockers() {
+  const list = [];
+  if (built && built.shell) {
+    const shell = built.shell;
+    list.push({ minX: shell.minX, maxX: shell.maxX, minZ: shell.minZ, maxZ: shell.maxZ, top: shell.top });
+  }
+  const blocks = horizon && horizon.blocks;
+  if (blocks) {
+    for (let i = 0; i < blocks.length; i++) list.push(blocks[i]);
+  }
+  return list;
+}
+
 function placeShapeShadows(sun) {
   if (!shapeMat || !built) return;
-  const polys = yardShadowPolys(built.yard, sun).concat(deckShadowPolys(built.lobes, sun));
+  const polys = yardShadowPolys(built.yard, sun, castBlockers()).concat(deckShadowPolys(built.lobes, sun));
   const next = shapeShadowMesh(polys, shapeMat);
   if (shapeMesh) {
     scene.remove(shapeMesh);
@@ -1196,13 +1616,11 @@ function applyDay(day) {
   if (nightCeilMat) nightCeilMat.color.setHex(0x2c2c31);
   if (nightCeilPlateMat) nightCeilPlateMat.color.setHex(0x2c2c31);
   if (nightBeamMat) nightBeamMat.color.setHex(0x1c1c20);
-  if (shadowMat) shadowMat.opacity = 1 - day.shade;
-  if (shapeMat) shapeMat.opacity = 1 - day.shade;
+  if (shapeMat) shapeMat.opacity = shapeShadowOpacity(day, sun);
   placeShapeShadows(sun);
   if (horizon && horizon.glow) horizon.glow.color.set(WINDOW_GLOW[day.id] || WINDOW_GLOW.noon);
   // 门口光斑是室外太阳投进来的。馆内改由天花灯照，地面不再铺这条亮带。
   writePatches({ streak: 0x000000, streakGain: 0 }, sun);
-  if (dropMesh && dropItems) placeDropShadows(dropMesh, dropItems, sun);
   if (bodyRoom) setBodyLight(sun, bodyRoom);
 }
 
@@ -1238,9 +1656,48 @@ function warmPrograms() {
   }
 }
 
+function refreshLiftNames() {
+  const list = document.getElementById("lift-list");
+  if (!list || !built) return;
+  const buttons = list.children;
+  for (let i = 0; i < buttons.length; i++) {
+    const button = buttons[i];
+    if (!button.dataset || button.dataset.floor == null || button.dataset.floor === "") continue;
+    const f = Number(button.dataset.floor);
+    const names = built.floorNames[f];
+    button.textContent = liftFloorLabel(names, f, hangSort, built.floorSpans && built.floorSpans[f]);
+  }
+}
+
+function rehangFrames() {
+  if (!built || !sites || !mats) {
+    location.reload();
+    return;
+  }
+  const ordered = hangOrder(sites, hangArrange, hangSort);
+  if (!ordered || ordered.chosen.length !== built.frames.length) {
+    location.reload();
+    return;
+  }
+  for (let i = 0; i < ordered.chosen.length; i++) built.frames[i].siteIndex = ordered.chosen[i];
+  built.hangCat = ordered.hangCat;
+  retitleFloors(built, hangSort, sites);
+  if (!panel.hidden) closePanel(false);
+  if (hoverIndex >= 0) setHover(-1);
+  refreshLiftNames();
+  atlasReady.clear();
+  prefetchFloor = -2;
+  pictureAim = -1;
+  revealFloor = -1;
+  place.textContent = "";
+  trackPictures();
+}
+
 function buildScene(data, arrange) {
   sites = data.sites;
-  built = buildMuseum(sites, arrange);
+  hangArrange = arrange;
+  hangSort = readSortMode();
+  built = buildMuseum(sites, hangArrange, hangSort);
   const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
   bodyRoom = {
     minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
@@ -1253,8 +1710,9 @@ function buildScene(data, arrange) {
     dir: { value: new THREE.Vector3(0, 1, 0) },
     tint: { value: new THREE.Color(0xffffff) },
     block: { value: new THREE.Vector4() },
-    front: { value: PLAZA.minZ },
     roof: { value: 6.5 },
+    city: { value: Array.from({ length: CITY_SHADOW_MAX }, () => new THREE.Vector4()) },
+    cityH: { value: new Float32Array(CITY_SHADOW_MAX) },
     shade: { value: 0.42 },
     slab: { value: new THREE.Vector4() },
     slabY: { value: 0 },
@@ -1403,6 +1861,7 @@ function buildScene(data, arrange) {
     cloud: lit(0xf7f4ee, "open", { transparent: true, opacity: 0.78, depthWrite: false }),
   });
   scene.add(horizon.root);
+  fillCityShadows(horizon.blocks);
   const yard = yardMeshes(
     built.yard,
     lit(0x6b5142, "open"),
@@ -1523,16 +1982,15 @@ function buildScene(data, arrange) {
     placeDropShadows(indoorDropMesh, indoorDrops, null);
     scene.add(indoorDropMesh);
   }
-  dropItems = horizon && horizon.shadows ? horizon.shadows.slice() : [];
-  shapeMat = shapeShadowMaterial(1 - DAYS[dayCursor].shade);
-  if (dropItems.length) {
-    shadowMat = castShadowMaterial(1 - DAYS[dayCursor].shade);
-    dropMesh = dropShadowMesh(dropItems.length, shadowMat);
-    if (dropMesh) scene.add(dropMesh);
-  }
+  shapeMat = shapeShadowMaterial(shapeShadowOpacity(DAYS[dayCursor], sunVector(DAYS[dayCursor])));
   patchMesh = sunPatchMesh(built.openings.length);
   scene.add(patchMesh);
   nightSpillMesh = sunPatchMesh(2);
+  // 观景台影子和门口路面都往镜头偏。光画在它们之后，并再偏一档，才留在最上面。
+  nightSpillMesh.renderOrder = 2;
+  nightSpillMesh.material.polygonOffset = true;
+  nightSpillMesh.material.polygonOffsetFactor = -5;
+  nightSpillMesh.material.polygonOffsetUnits = -8;
   scene.add(nightSpillMesh);
   beacons = makeBeacons(built.dress.find((item) => item.kind === "roof"));
   if (beacons) scene.add(beacons.group);
@@ -1622,6 +2080,8 @@ function buildScene(data, arrange) {
   selfVisitor = createVisitor(visitorMat, visitorShadow);
   selfVisitor.group.visible = false;
   scene.add(selfVisitor.group);
+  reception = createReception(scene, sunShared, sunRoles.body);
+  reception.place(receptionRender, performance.now());
   presence = mountPresence({
     scene,
     material: visitorMat,
@@ -1648,8 +2108,17 @@ function buildScene(data, arrange) {
     onMusic: (view) => {
       if (ambience) ambience.follow(view);
     },
+    onRobot: onRobotMessage,
+    onNotes: onNotesMessage,
+    onUnlink: onDeskUnlink,
     onExclusive: (which) => {
       if (which === "roster") closeLiftPad();
+    },
+    onSort: (mode) => {
+      if (mode !== "cat" && mode !== "time") return;
+      if (mode === hangSort) return;
+      hangSort = mode;
+      rehangFrames();
     },
     onNav: (open) => {
       parkFocus();

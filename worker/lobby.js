@@ -18,7 +18,9 @@ import {
   dayBounds,
   finishVisit,
   attachMusic,
+  attachDesk,
   blankMusic,
+  blankRobot,
   foldMusic,
   forgetSolo,
   kickSpan,
@@ -31,7 +33,13 @@ import {
   pruneSolo,
   rememberSolo,
   restoreMusic,
+  restoreNotes,
+  restoreRobot,
+  deskView,
+  dropNote,
+  dropSay,
   syncMusic,
+  syncRobot,
   shanghaiDay,
   visitLeftAt,
   visitView,
@@ -105,6 +113,9 @@ export class SitopiaLobby extends DurableObject {
     this.kicks = {};
     this.music = blankMusic(Date.now());
     this.musicSavedAt = 0;
+    this.robot = blankRobot();
+    this.robotSavedAt = 0;
+    this.notes = [];
     this.solo = new Map();
     this.visits = createVisitBook();
     this.visitPruned = 0;
@@ -146,6 +157,8 @@ export class SitopiaLobby extends DurableObject {
       this.music = restoreMusic(await ctx.storage.get("music"), now);
       syncMusic(this.music, this.roster(), this.solo, now);
       await this.persistMusic(now, true);
+      this.robot = restoreRobot(await ctx.storage.get("robot"));
+      this.notes = restoreNotes(await ctx.storage.get("notes"));
     });
   }
 
@@ -294,7 +307,18 @@ export class SitopiaLobby extends DurableObject {
   }
 
   room() {
-    return { maxPeople: this.maxPeople, kicks: this.kicks };
+    return { maxPeople: this.maxPeople, kicks: this.kicks, robot: this.robot, notes: this.notes };
+  }
+
+  async persistRobot(now, force) {
+    const at = now || Date.now();
+    if (!force && at - this.robotSavedAt < 5000) return;
+    await this.ctx.storage.put("robot", {
+      x: this.robot.x,
+      z: this.robot.z,
+      yaw: this.robot.yaw,
+    });
+    this.robotSavedAt = at;
   }
 
   roster() {
@@ -504,6 +528,20 @@ export class SitopiaLobby extends DurableObject {
       await this.ctx.storage.put("maxPeople", n);
       return json({ max: n, cap: PEOPLE_CAP }, 200);
     }
+    if (url.pathname === "/admin/api/board" && request.method === "GET") {
+      return json(deskView(this.log, this.notes), 200);
+    }
+    if (url.pathname === "/admin/api/board" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body) return json({ error: "body" }, 400);
+      const kind = body.kind;
+      const gone = kind === "chat" ? dropSay(this.log, body) : kind === "note" ? dropNote(this.notes, body) : null;
+      if (kind !== "chat" && kind !== "note") return json({ error: "kind" }, 400);
+      if (!gone) return json({ error: "missing" }, 404);
+      await this.ctx.storage.put(kind === "chat" ? "log" : "notes", kind === "chat" ? this.log : this.notes);
+      this.fanout(null, [{ who: "all", obj: gone }]);
+      return json({ ok: true }, 200);
+    }
     if (url.pathname === "/admin/api/kick" && request.method === "POST") {
       const body = await readJson(request);
       if (!body) return json({ error: "body" }, 400);
@@ -600,6 +638,8 @@ export class SitopiaLobby extends DurableObject {
     people.set(person.id, person);
     const now = Date.now();
     const result = onClientMessage(people, this.log, person, msg, now, this.room());
+    const turned = syncRobot(this.robot, people);
+    if (turned) result.out.push({ who: "all", obj: turned });
     ws.serializeAttachment(person);
     if (person.seat) this.retireSameSeat(ws, person.seat);
     if (msg.t === "hi" && !result.close && person.seat && this.solo.delete(person.seat)) {
@@ -609,6 +649,7 @@ export class SitopiaLobby extends DurableObject {
       const ev = await this.noteMusic(people, now);
       if (ev) result.out.push({ who: "all", obj: ev });
       attachMusic(result.out, this.music, now);
+      attachDesk(result.out, this.robot, this.notes);
     }
     this.fanout(ws, result.out);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
@@ -621,6 +662,8 @@ export class SitopiaLobby extends DurableObject {
       });
     }
     if (msg.t === "say" && result.out.length) await this.ctx.storage.put("log", this.log);
+    if (msg.t === "note" && result.out.length) await this.ctx.storage.put("notes", this.notes);
+    if (msg.t === "robot" || turned) await this.persistRobot(now, turned ? !this.robot.moving : false);
     if (result.close) {
       const kick = result.out.some((ev) => ev.obj && ev.obj.t === "kick");
       ws.close(kick ? 4001 : 1000, kick ? "kicked" : "full");
@@ -700,11 +743,14 @@ export class SitopiaLobby extends DurableObject {
     people.set(person.id, person);
     const now = Date.now();
     const out = onLeave(people, person);
+    const turned = syncRobot(this.robot, people);
+    if (turned) out.push({ who: "all", obj: turned });
     if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, now));
     const ev = await this.noteMusic(people, now);
     if (ev) out.push({ who: "all", obj: ev });
     ws.serializeAttachment(person);
     this.fanout(ws, out);
+    if (turned) await this.persistRobot(now, true);
   }
 }
 

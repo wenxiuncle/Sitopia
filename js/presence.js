@@ -10,6 +10,24 @@ const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
 const ONLINE_KEY = "quzhan-museum-online";
 const SOLO_KEY = "quzhan-museum-solo";
+const SORT_KEY = "quzhan-museum-sort";
+
+export function readSortMode() {
+  try {
+    return localStorage.getItem(SORT_KEY) === "time" ? "time" : "cat";
+  } catch {
+    return "cat";
+  }
+}
+
+function writeSortMode(mode) {
+  try {
+    localStorage.setItem(SORT_KEY, mode === "time" ? "time" : "cat");
+  } catch {
+    /* 记不住就这次先按选中的来。 */
+  }
+}
+
 const KICK_KEY = "quzhan-museum-kicked";
 const BEAT_MS = 30000;
 const BUBBLE_LIFE = 6000;
@@ -70,6 +88,10 @@ export function mountPresence(options) {
     onGate,
     onKick,
     onMusic,
+    onRobot,
+    onNotes,
+    onUnlink,
+    onSort,
   } = options;
   const corner = document.getElementById("corner");
   const mapCard = document.getElementById("map-card");
@@ -95,6 +117,18 @@ export function mountPresence(options) {
   const nameInput = document.getElementById("name-input");
   const nameForm = document.getElementById("name-form");
   const navName = document.getElementById("nav-name");
+  const sortCat = document.getElementById("sort-cat");
+  const sortTime = document.getElementById("sort-time");
+  if (sortCat && sortTime) {
+    const savedSort = readSortMode();
+    sortCat.checked = savedSort !== "time";
+    sortTime.checked = savedSort === "time";
+  }
+  // Tab 只开关汉堡菜单。浮层里的输入、按钮和链接不进 Tab 序，点过排序后也不会落到「项目」。
+  if (drawer) {
+    const skip = drawer.querySelectorAll("a, button, input, textarea, select");
+    for (let i = 0; i < skip.length; i++) skip[i].tabIndex = -1;
+  }
 
   const crowd = createCrowd(scene, material, shadowMaterial);
   const roster = new Map();
@@ -387,12 +421,33 @@ export function mountPresence(options) {
     logEl.scrollTop = 0;
   }
 
-  function pushChatter(msg) {
+  function stampSay(li, msg, stamp) {
+    li.dataset.sayId = msg.id || "";
+    li.dataset.sayAt = String(stamp);
+  }
+
+  function pushChatter(msg, stamp) {
     if (!chatterEl || !msg || !msg.text) return;
     const li = document.createElement("li");
     li.textContent = msg.name + "：" + msg.text;
+    stampSay(li, msg, stamp);
     chatterEl.prepend(li);
     while (chatterEl.children.length > 5) chatterEl.lastChild.remove();
+  }
+
+  function removeSay(msg) {
+    const id = msg.id || "";
+    const at = String(msg.at);
+    const roots = [logEl, chatterEl];
+    for (let r = 0; r < roots.length; r++) {
+      const root = roots[r];
+      if (!root) continue;
+      const items = root.children;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const li = items[i];
+        if (li.dataset.sayId === id && li.dataset.sayAt === at) li.remove();
+      }
+    }
   }
 
   function appendSay(msg) {
@@ -411,8 +466,9 @@ export function mountPresence(options) {
     body.className = "chat-text";
     body.textContent = msg.text || "";
     li.append(meta, body);
+    stampSay(li, msg, stamp);
     appendLine(li);
-    pushChatter(msg);
+    pushChatter(msg, stamp);
   }
 
   function appendSys(text) {
@@ -463,6 +519,8 @@ export function mountPresence(options) {
       if (document.hidden) send({ t: "away" });
       else if (msg.away) send({ t: "back" });
       if (msg.music && onMusic) onMusic(msg.music);
+      if (msg.robot && onRobot) onRobot(msg.robot);
+      if (msg.notes && onNotes) onNotes(msg.notes);
       publishAt = 0;
       sentX = NaN;
       sentY = NaN;
@@ -518,6 +576,18 @@ export function mountPresence(options) {
         z: msg.z,
         yaw: msg.yaw,
       }, false);
+      return;
+    }
+    if (msg.t === "robot") {
+      if (onRobot) onRobot(msg);
+      return;
+    }
+    if (msg.t === "note" || msg.t === "note-drop") {
+      if (onNotes) onNotes(msg);
+      return;
+    }
+    if (msg.t === "say-drop") {
+      removeSay(msg);
       return;
     }
     if (msg.t === "say") {
@@ -859,6 +929,7 @@ export function mountPresence(options) {
     roster.clear();
     crowd.clear();
     renderPeople();
+    if (onUnlink) onUnlink();
   }
 
   function applySolo(on) {
@@ -936,6 +1007,15 @@ export function mountPresence(options) {
       applySolo(soloToggle.checked);
     });
   }
+  if (sortCat && sortTime) {
+    const pickSort = () => {
+      const mode = sortTime.checked ? "time" : "cat";
+      writeSortMode(mode);
+      if (onSort) onSort(mode);
+    };
+    sortCat.addEventListener("change", pickSort);
+    sortTime.addEventListener("change", pickSort);
+  }
 
   nameGate.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -982,10 +1062,12 @@ export function mountPresence(options) {
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Tab" || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return;
     if (!nameGate.hidden || (kickGate && !kickGate.hidden) || event.repeat) return;
     const el = event.target;
-    if (el && el.closest && el.closest("input, textarea")) return;
+    const inDrawer = !!(el && drawer && drawer.contains(el));
+    if (event.shiftKey && !inDrawer) return;
+    if (!inDrawer && el && el.closest && el.closest("input, textarea")) return;
     event.preventDefault();
     event.stopPropagation();
     setDrawer(!corner.classList.contains("nav-open"));
@@ -1173,8 +1255,26 @@ export function mountPresence(options) {
 
   musicTimer = window.setInterval(pollMusic, 4000);
 
+  let robotSentAt = 0;
+
   return {
     others() { return crowd.list(); },
+    linked() { return linked; },
+    solo() { return solo; },
+    myId() { return me ? me.id : ""; },
+    name() { return myName || ""; },
+    sendRobot(pose) {
+      if (!linked || !pose) return;
+      const now = performance.now();
+      if (now < robotSentAt) return;
+      robotSentAt = now + 100;
+      send({ t: "robot", x: pose.x, z: pose.z, yaw: pose.yaw });
+    },
+    postNote(text) {
+      if (!linked) return false;
+      send({ t: "note", text });
+      return true;
+    },
     closeRoster() { setRoster(false); },
     dismiss(keepRoster) {
       if (!keepRoster) setRoster(false);

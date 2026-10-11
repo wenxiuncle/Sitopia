@@ -7,10 +7,8 @@ import { STAIR_LIGHT, WALL_H } from "./layout.js";
 // 实影贴着遮挡物的轮廓，再往外淡一截。偏进轮廓里面，墙根会留一条亮缝，影子就像错了位。
 export const SHADOW_IN = -0.2;
 export const SHADOW_OUT = 0.7;
-// 南墙外皮再往外这一点仍算门口。只留这一小段不吃楼体落影，避免屋檐正下方变成一条死影。
-// 再往外的广场跟太阳走，低角度的光会把楼影投到门前。
-export const FRONT_SHADOW_SLACK = 0.05;
-export const APRON_KEEP = 0.85;
+// 远处楼和主楼走同一条体积投影。着色器按这个上限展开，空位高度是 0。
+export const CITY_SHADOW_MAX = 64;
 
 export const LAMPS_PER_FLOOR = 13;
 export const LAMP_FILL = 0.54;
@@ -74,7 +72,7 @@ export const DAYS = [
     gainRoom: 0.38,
     fillGlass: 0.9,
     gainGlass: 0.12,
-    shade: 0.36,
+    shade: 0.48,
     sun: 0xffc896,
     disc: 16,
     cone: 0xffe3c6,
@@ -101,7 +99,7 @@ export const DAYS = [
     gainRoom: 0.3,
     fillGlass: 0.92,
     gainGlass: 0.1,
-    shade: 0.4,
+    shade: 0.51,
     sun: 0xffe0b0,
     disc: 12,
     cone: 0xfff1dc,
@@ -128,7 +126,7 @@ export const DAYS = [
     gainRoom: 0.22,
     fillGlass: 0.94,
     gainGlass: 0.08,
-    shade: 0.42,
+    shade: 0.52,
     sun: 0xfff6d8,
     disc: 10,
     cone: 0xfff1dc,
@@ -155,7 +153,7 @@ export const DAYS = [
     gainRoom: 0.32,
     fillGlass: 0.9,
     gainGlass: 0.1,
-    shade: 0.38,
+    shade: 0.49,
     sun: 0xffcc96,
     disc: 13,
     cone: 0xffe7c8,
@@ -182,7 +180,7 @@ export const DAYS = [
     gainRoom: 0.34,
     fillGlass: 0.72,
     gainGlass: 0.16,
-    shade: 0.3,
+    shade: 0.43,
     sun: 0xff9a62,
     disc: 18,
     cone: 0xffd2a4,
@@ -209,7 +207,7 @@ export const DAYS = [
     gainRoom: 0.3,
     fillGlass: 0.92,
     gainGlass: 0.1,
-    shade: 0.5,
+    shade: 0.59,
     sun: 0xe4eef8,
     disc: 6,
     cone: 0xe4eef8,
@@ -287,12 +285,6 @@ function underHall(x, z, block) {
   return x > block.minX && x < block.maxX && z > block.minZ && z < block.maxZ;
 }
 
-// 屋檐盖住的那一圈，以及门口这一小段，不铺楼体落影。再外面的地面按光线是否碰到楼体来定。
-function apronLit(x, z, block, frontZ) {
-  if (frontZ == null || !block) return false;
-  return z > frontZ - FRONT_SHADOW_SLACK && z < frontZ + APRON_KEEP && x > block.minX && x < block.maxX;
-}
-
 function slabMask(x, z, sun, slab) {
   if (!slab || !(slab.y > 1)) return 0;
   const t = slab.y / Math.max(sun.y, 0.05);
@@ -305,10 +297,13 @@ function slabMask(x, z, sun, slab) {
 }
 
 // 与 meshes.js 同一公式。block 是外墙实体，高度用女儿墙顶。
+// 楼影从墙根连到地面。门口不再挖一条亮缝，否则黄昏和夜晚影子会和楼体断开。
 // slab 是薄屋檐，只在光线真正穿到那一层时才补一圈，不把挑檐当成落到地面的实心柱。
+// frontZ 仍留在参数里，调用处不用改。它不再挖掉门前的落影。
 export function groundShadow(x, z, sun, block, roofY, frontZ, slab) {
   if (!sun || !block) return 0;
-  if (underHall(x, z, block) || apronLit(x, z, block, frontZ)) return 0;
+  if (underHall(x, z, block)) return 0;
+  void frontZ;
   let mask = 0;
   const enter = rayEnter(x, z, sun.x, sun.z, block.minX, block.maxX, block.minZ, block.maxZ);
   if (enter != null) {
@@ -320,10 +315,74 @@ export function groundShadow(x, z, sun, block, roofY, frontZ, slab) {
   return extra > mask ? extra : mask;
 }
 
+// 树、篱、长椅在黄昏按真实高度会拉出十几米的硬块。方向仍是太阳的反方向，只把用来拉伸的仰角托住。
+export function softenCastSun(sun) {
+  const floorY = 0.32;
+  if (!sun || sun.y >= floorY) return sun;
+  const horiz = Math.hypot(sun.x, sun.z) || 1e-4;
+  const y = floorY;
+  const flat = Math.sqrt(Math.max(0, 1 - y * y));
+  return { x: (sun.x / horiz) * flat, y, z: (sun.z / horiz) * flat };
+}
+
+function pointInBlock(x, z, block) {
+  return x > block.minX && x < block.maxX && z > block.minZ && z < block.maxZ;
+}
+
+// 朝太阳看去，楼体先挡住了这一点。被挡住的物体不再另铺影子。
+export function lightBlocked(x, y, z, sun, blockers) {
+  if (!sun || !blockers) return false;
+  for (let i = 0; i < blockers.length; i++) {
+    const block = blockers[i];
+    if (!block || !(block.top > 0)) continue;
+    if (pointInBlock(x, z, block) && y < block.top) return true;
+    const enter = rayEnter(x, z, sun.x, sun.z, block.minX, block.maxX, block.minZ, block.maxZ);
+    if (enter == null || enter <= 0.02) continue;
+    if (y + sun.y * enter < block.top) return true;
+  }
+  return false;
+}
+
+function groundShaded(x, z, sun, blockers) {
+  for (let i = 0; i < blockers.length; i++) {
+    const block = blockers[i];
+    if (!block || !(block.top > 0)) continue;
+    if (pointInBlock(x, z, block)) return true;
+    const enter = rayEnter(x, z, sun.x, sun.z, block.minX, block.maxX, block.minZ, block.maxZ);
+    if (enter == null) continue;
+    const yHit = sun.y * (enter > 0 ? enter : 0);
+    if (yHit < block.top) return true;
+  }
+  return false;
+}
+
 // 阳光从点上射下来，落在 y = 0 的地面。返回 [x, z]。
-export function projectShadowXZ(x, y, z, sun) {
-  const t = y / Math.max(sun.y, 0.08);
+// 落点若已经在楼影里，就收到楼影边缘为止，不再穿楼铺到另一侧。
+export function projectShadowXZ(x, y, z, sun, blockers, blockSun) {
+  const sy = Math.max(sun.y, 0.08);
+  let t = y / sy;
+  if (blockers && blockers.length && t > 0) {
+    const shadeSun = blockSun || sun;
+    if (groundShaded(x - sun.x * t, z - sun.z * t, shadeSun, blockers)) {
+      let lo = 0;
+      let hi = t;
+      for (let k = 0; k < 8; k++) {
+        const mid = (lo + hi) * 0.5;
+        if (groundShaded(x - sun.x * mid, z - sun.z * mid, shadeSun, blockers)) hi = mid;
+        else lo = mid;
+      }
+      if (lo < 0.2) return null;
+      t = lo;
+    }
+  }
   return [x - sun.x * t, z - sun.z * t];
+}
+
+// 广场上的树、篱、长椅。低太阳再收一档，避免黄昏铺成一块死影。
+export function shapeShadowOpacity(day, sun) {
+  let opacity = 1 - day.shade;
+  if (sun && sun.y < 0.22) opacity *= 0.75;
+  return opacity;
 }
 
 function hullCross(o, a, b) {
@@ -365,13 +424,13 @@ export function shadowHull(points) {
   return hull.length >= 3 ? hull : [];
 }
 
-function pushProjected(out, x, y, z, sun) {
-  out.push(projectShadowXZ(x, y, z, sun));
+function pushProjected(out, x, y, z, sun, blockers, blockSun) {
+  const point = projectShadowXZ(x, y, z, sun, blockers, blockSun);
+  if (point) out.push(point);
 }
 
 // 椭球沿太阳投到地面，是一圈椭圆。采样顺序交给凸包，树冠用这个。
-export function castEllipsoid(cx, cy, cz, rx, ry, rz, sun, steps) {
-  const sy = Math.max(sun.y, 0.08);
+export function castEllipsoid(cx, cy, cz, rx, ry, rz, sun, steps, blockers, blockSun) {
   const ix = sun.x / rx;
   const iy = sun.y / ry;
   const iz = sun.z / rz;
@@ -396,9 +455,6 @@ export function castEllipsoid(cx, cy, cz, rx, ry, rz, sun, steps) {
   const e2x = ny * e1z - nz * e1y;
   const e2y = nz * e1x - nx * e1z;
   const e2z = nx * e1y - ny * e1x;
-  const tC = cy / sy;
-  const gx = cx - sun.x * tC;
-  const gz = cz - sun.z * tC;
   const n = steps || 18;
   const pts = [];
   for (let i = 0; i < n; i++) {
@@ -408,26 +464,26 @@ export function castEllipsoid(cx, cy, cz, rx, ry, rz, sun, steps) {
     const wx = rx * (e1x * ct + e2x * st);
     const wy = ry * (e1y * ct + e2y * st);
     const wz = rz * (e1z * ct + e2z * st);
-    const ty = wy / sy;
-    pts.push([gx + wx - sun.x * ty, gz + wz - sun.z * ty]);
+    const point = projectShadowXZ(cx + wx, cy + wy, cz + wz, sun, blockers, blockSun);
+    if (point) pts.push(point);
   }
   return shadowHull(pts);
 }
 
-export function castCylinder(cx, z, y0, y1, r0, r1, sun, steps) {
+export function castCylinder(cx, z, y0, y1, r0, r1, sun, steps, blockers, blockSun) {
   const n = steps || 6;
   const pts = [];
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
     const c = Math.cos(a);
     const s = Math.sin(a);
-    pushProjected(pts, cx + c * r0, y0, z + s * r0, sun);
-    pushProjected(pts, cx + c * r1, y1, z + s * r1, sun);
+    pushProjected(pts, cx + c * r0, y0, z + s * r0, sun, blockers, blockSun);
+    pushProjected(pts, cx + c * r1, y1, z + s * r1, sun, blockers, blockSun);
   }
   return shadowHull(pts);
 }
 
-export function castBox(cx, cy, cz, hx, hy, hz, yaw, sun) {
+export function castBox(cx, cy, cz, hx, hy, hz, yaw, sun, blockers, blockSun) {
   const c = Math.cos(yaw || 0);
   const s = Math.sin(yaw || 0);
   const pts = [];
@@ -439,7 +495,7 @@ export function castBox(cx, cy, cz, hx, hy, hz, yaw, sun) {
       for (let iz = 0; iz < 2; iz++) {
         const x = lx[ix];
         const z = lz[iz];
-        pushProjected(pts, cx + x * c + z * s, cy + ly[iy], cz - x * s + z * c, sun);
+        pushProjected(pts, cx + x * c + z * s, cy + ly[iy], cz - x * s + z * c, sun, blockers, blockSun);
       }
     }
   }

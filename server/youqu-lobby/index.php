@@ -10,6 +10,11 @@ const LOG_MAX = 40;
 const STALE_MS = 90000;
 // 与 js/score.js 的 SCORE_MS 相同。曲目或时长变了要一起改。
 const SCORE_MS = 1622062;
+// 和 js/layout.js 的 RECEPTION 同一块：南墙到第一道墙，两根柱子内侧。
+const RECEPTION_MIN_X = -8.2;
+const RECEPTION_MAX_X = 8.2;
+const RECEPTION_MIN_Z = -9.8;
+const RECEPTION_MAX_Z = 4.0;
 
 header("X-Robots-Tag: noindex");
 header("X-Content-Type-Options: nosniff");
@@ -80,6 +85,9 @@ if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
 }
 
 $data = loadState($statePath);
+if (!isset($data["robot"]) || !is_array($data["robot"])) $data["robot"] = blankRobot();
+else $data["robot"] = normalizeRobot($data["robot"]);
+if (!isset($data["notes"]) || !is_array($data["notes"])) $data["notes"] = [];
 $now = (int) round(microtime(true) * 1000);
 $ip = clientIp();
 if (!rateOk($data, $ip, $now)) {
@@ -148,10 +156,13 @@ foreach ($msgs as $msg) {
         break;
     }
     $result = onClientMessage($data["people"], $data["log"], $data["people"][$id], $msg, $now, $data);
+    $turned = syncRobot($data);
+    if ($turned) $result["out"][] = ["who" => "all", "obj" => $turned];
     if (!$result["close"]) {
         $ev = syncMusic($data, $now);
         if ($ev) $result["out"][] = ["who" => "all", "obj" => $ev];
         stampMusic($result["out"], $data, $now);
+        attachDesk($result["out"], $data);
     }
     deliver($data, $id, $result["out"]);
     if ($result["close"]) {
@@ -270,6 +281,8 @@ function blankPerson(string $id, int $now): array {
         "lastMove" => 0,
         "lastSay" => 0,
         "lastName" => 0,
+        "lastNote" => 0,
+        "lastRobot" => 0,
         "gone" => false,
     ];
 }
@@ -478,11 +491,129 @@ function onLeave(array &$data, string $id): array {
     $announce = !empty($person["named"]) && empty($person["away"]);
     $name = (string) ($person["name"] ?? "");
     unset($data["people"][$id]);
-    if (!$announce) return [];
-    return [[
-        "who" => "all",
-        "obj" => ["t" => "bye", "id" => $id, "name" => $name, "n" => namedCount($data["people"])],
-    ]];
+    $out = [];
+    if ($announce) {
+        $out[] = [
+            "who" => "all",
+            "obj" => ["t" => "bye", "id" => $id, "name" => $name, "n" => namedCount($data["people"])],
+        ];
+    }
+    $turned = syncRobot($data);
+    if ($turned) $out[] = ["who" => "all", "obj" => $turned];
+    return $out;
+}
+
+function blankRobot(): array {
+    return ["x" => 0.0, "z" => -2.9, "yaw" => M_PI, "driver" => "", "moving" => false, "poseAt" => 0];
+}
+
+function cleanRobotPose(array $msg): ?array {
+    $x = isset($msg["x"]) ? (float) $msg["x"] : NAN;
+    $z = isset($msg["z"]) ? (float) $msg["z"] : NAN;
+    $yaw = isset($msg["yaw"]) ? (float) $msg["yaw"] : NAN;
+    if (!is_finite($x) || !is_finite($z) || !is_finite($yaw)) return null;
+    if ($x < RECEPTION_MIN_X + 0.2 || $x > RECEPTION_MAX_X - 0.2) return null;
+    if ($z < RECEPTION_MIN_Z + 0.2 || $z > RECEPTION_MAX_Z - 0.2) return null;
+    $yaw = atan2(sin($yaw), cos($yaw));
+    return ["x" => round($x, 3), "z" => round($z, 3), "yaw" => round($yaw, 3)];
+}
+
+function normalizeRobot(array $saved): array {
+    $robot = blankRobot();
+    $pose = cleanRobotPose($saved);
+    if ($pose) {
+        $robot["x"] = $pose["x"];
+        $robot["z"] = $pose["z"];
+        $robot["yaw"] = $pose["yaw"];
+    }
+    return $robot;
+}
+
+function robotView(array $robot): array {
+    return [
+        "t" => "robot",
+        "x" => $robot["x"],
+        "z" => $robot["z"],
+        "yaw" => $robot["yaw"],
+        "driver" => (string) ($robot["driver"] ?? ""),
+        "moving" => !empty($robot["moving"]),
+    ];
+}
+
+function electDriver(array $people): string {
+    $best = null;
+    foreach ($people as $person) {
+        if (empty($person["named"]) || !empty($person["away"]) || !empty($person["gone"])) continue;
+        if ($best === null) {
+            $best = $person;
+            continue;
+        }
+        $entered = (int) ($person["entered"] ?? 0);
+        $bestEntered = (int) ($best["entered"] ?? 0);
+        $earlier = $entered < $bestEntered;
+        $tie = $entered === $bestEntered && strcmp((string) $person["id"], (string) $best["id"]) < 0;
+        if ($earlier || $tie) $best = $person;
+    }
+    return $best ? (string) $best["id"] : "";
+}
+
+function syncRobot(array &$data): ?array {
+    if (!isset($data["robot"]) || !is_array($data["robot"])) $data["robot"] = blankRobot();
+    $driver = electDriver($data["people"] ?? []);
+    $moving = $driver !== "";
+    $same = ($data["robot"]["driver"] ?? "") === $driver && !empty($data["robot"]["moving"]) === $moving;
+    if ($same) return null;
+    $data["robot"]["driver"] = $driver;
+    $data["robot"]["moving"] = $moving;
+    return robotView($data["robot"]);
+}
+
+function takeRobotPose(array &$data, array &$person, array $msg, int $now): ?array {
+    if (empty($data["robot"]["moving"])) return null;
+    if ((string) ($person["id"] ?? "") !== (string) ($data["robot"]["driver"] ?? "")) return null;
+    if ($now - (int) ($person["lastRobot"] ?? 0) < 80) return null;
+    $pose = cleanRobotPose($msg);
+    if ($pose === null) return null;
+    $person["lastRobot"] = $now;
+    $data["robot"]["x"] = $pose["x"];
+    $data["robot"]["z"] = $pose["z"];
+    $data["robot"]["yaw"] = $pose["yaw"];
+    $data["robot"]["poseAt"] = $now;
+    return ["who" => "others", "obj" => robotView($data["robot"])];
+}
+
+function cleanNoteText($value): string {
+    $text = str_replace(["\r", "\n", "\t"], " ", (string) $value);
+    $text = preg_replace('/[\x00-\x1f]/u', "", $text);
+    if (!is_string($text)) $text = "";
+    $text = trim($text);
+    return uSlice($text, 120);
+}
+
+function addNote(array &$data, array &$person, $text, int $now): ?array {
+    if (!empty($person["away"])) return null;
+    if ($now - (int) ($person["lastNote"] ?? 0) < 2500) return null;
+    $clean = cleanNoteText($text);
+    if ($clean === "") return null;
+    $person["lastNote"] = $now;
+    $note = [
+        "id" => (string) $person["id"] . "-" . $now,
+        "name" => (string) ($person["name"] ?? "访客"),
+        "text" => $clean,
+        "at" => $now,
+    ];
+    $data["notes"][] = $note;
+    if (count($data["notes"]) > 200) $data["notes"] = array_slice($data["notes"], -200);
+    return ["t" => "note", "id" => $note["id"], "name" => $note["name"], "text" => $note["text"], "at" => $note["at"]];
+}
+
+function attachDesk(array &$events, array $data): void {
+    foreach ($events as &$ev) {
+        if (!isset($ev["obj"]) || !is_array($ev["obj"])) continue;
+        if (($ev["obj"]["t"] ?? "") !== "welcome") continue;
+        $ev["obj"]["robot"] = robotView($data["robot"]);
+        $ev["obj"]["notes"] = array_values($data["notes"]);
+    }
 }
 
 function deliver(array &$data, string $selfId, array $events): void {
@@ -508,7 +639,7 @@ function sweep(array &$data, int $now): void {
     }
 }
 
-function onClientMessage(array &$people, array &$log, array &$person, array $msg, int $now, ?array $room = null): array {
+function onClientMessage(array &$people, array &$log, array &$person, array $msg, int $now, array &$room): array {
     $out = [];
     if (($msg["t"] ?? "") === "pong") {
         if (!empty($person["named"])) {
@@ -615,6 +746,17 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
         $log[] = $line;
         if (count($log) > LOG_MAX) array_shift($log);
         $out[] = ["who" => "all", "obj" => $line];
+        return ["close" => false, "out" => $out];
+    }
+    if ($msg["t"] === "robot") {
+        $ev = takeRobotPose($room, $person, $msg, $now);
+        if ($ev) $out[] = $ev;
+        return ["close" => false, "out" => $out];
+    }
+    if ($msg["t"] === "note") {
+        $note = addNote($room, $person, $msg["text"] ?? "", $now);
+        if ($note) $out[] = ["who" => "all", "obj" => $note];
+        return ["close" => false, "out" => $out];
     }
     return ["close" => false, "out" => $out];
 }

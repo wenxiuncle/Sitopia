@@ -26,9 +26,8 @@ import {
   LAMP_PACK_XZ,
   LAMP_PACK_Y,
   LAMPS_PER_FLOOR,
-  APRON_KEEP,
   CAST_EDGE,
-  FRONT_SHADOW_SLACK,
+  CITY_SHADOW_MAX,
   SHADOW_IN,
   SHADOW_OUT,
   castBox,
@@ -36,9 +35,11 @@ import {
   castEllipsoid,
   dropShadowPose,
   floorLamps,
+  lightBlocked,
   packLamp,
   projectShadowXZ,
   shadowHull,
+  softenCastSun,
 } from "./day.js";
 import { CEIL_TILT, FLOOR_TILT, FRAME, FRAME_WALL_GAP, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, STAIR_LAMP_H, STAIR_LAMP_R, STAIR_LIGHT, STORY, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
 
@@ -537,13 +538,25 @@ function lampSamples(acc) {
   return parts.join("\n");
 }
 
+// 下标必须是常量。片元着色器里用循环去取 uniform 数组，部分显卡编不过。
+function cityMaskLines() {
+  const lines = [];
+  for (let i = 0; i < CITY_SHADOW_MAX; i++) {
+    lines.push(
+      `mask = max(mask, volumeMask(p, dir, vec2(uCity[${i}].x, uCity[${i}].z), vec2(uCity[${i}].y, uCity[${i}].w), uCityH[${i}]));`,
+    );
+  }
+  return lines.join("\n");
+}
+
 // 顶点前缀里已经声明了 normal，这里不再声明。
 function patchSunShader(shader, shared, role) {
   shader.uniforms.uSunDir = role.dir || shared.dir;
   shader.uniforms.uSunTint = role.tint || shared.tint;
   shader.uniforms.uBlock = shared.block;
-  shader.uniforms.uFront = shared.front;
   shader.uniforms.uRoof = shared.roof;
+  shader.uniforms.uCity = shared.city;
+  shader.uniforms.uCityH = shared.cityH;
   shader.uniforms.uSlab = shared.slab;
   shader.uniforms.uSlabY = shared.slabY;
   shader.uniforms.uShade = shared.shade;
@@ -642,45 +655,16 @@ function patchSunShader(shader, shared, role) {
         vec2 dir = uSunDir.xz;
         vec2 lo = vec2(uBlock.x, uBlock.z);
         vec2 hi = vec2(uBlock.y, uBlock.w);
-        float t0 = 0.0;
-        float t1 = 1e6;
-        bool miss = false;
-        if (abs(dir.x) < 1e-5) {
-          if (p.x < lo.x || p.x > hi.x) miss = true;
-        } else {
-          float a = (lo.x - p.x) / dir.x;
-          float b = (hi.x - p.x) / dir.x;
-          if (a > b) { float s = a; a = b; b = s; }
-          t0 = max(t0, a);
-          t1 = min(t1, b);
-        }
-        if (abs(dir.y) < 1e-5) {
-          if (p.y < lo.y || p.y > hi.y) miss = true;
-        } else {
-          float a = (lo.y - p.y) / dir.y;
-          float b = (hi.y - p.y) / dir.y;
-          if (a > b) { float s = a; a = b; b = s; }
-          t0 = max(t0, a);
-          t1 = min(t1, b);
-        }
-        float mask = 0.0;
         bool under = p.x > lo.x && p.x < hi.x && p.y > lo.y && p.y < hi.y;
-        bool apron = p.y > uFront - ${glslNum(FRONT_SHADOW_SLACK)} && p.y < uFront + ${glslNum(APRON_KEEP)} && p.x > lo.x && p.x < hi.x;
-        if (!under && !apron) {
-          if (!miss && t1 >= max(t0, 0.0)) {
-            float enter = max(t0, 0.0);
-            float yHit = uSunDir.y * enter;
-            float slack = ((yHit - uRoof) / max(uSunDir.y, 0.05)) * length(dir);
-            mask = 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
-          }
-          if (uSlabY > 1.0) {
-            vec2 at = p + dir * (uSlabY / max(uSunDir.y, 0.05));
-            float ix = min(at.x - uSlab.x, uSlab.y - at.x);
-            float iz = min(at.y - uSlab.z, uSlab.w - at.y);
-            float slabSlack = -min(ix, iz);
-            mask = max(mask, 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slabSlack));
-          }
+        float mask = under ? 0.0 : volumeMask(p, dir, lo, hi, uRoof);
+        if (!under && uSlabY > 1.0) {
+          vec2 at = p + dir * (uSlabY / max(uSunDir.y, 0.05));
+          float ix = min(at.x - uSlab.x, uSlab.y - at.x);
+          float iz = min(at.y - uSlab.z, uSlab.w - at.y);
+          float slabSlack = -min(ix, iz);
+          mask = max(mask, 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slabSlack));
         }
+        ${cityMaskLines()}
         shade *= mix(1.0, uShade, mask);
       }
     }
@@ -690,8 +674,9 @@ function patchSunShader(shader, shared, role) {
   shader.fragmentShader = `uniform vec3 uSunDir;
 uniform vec3 uSunTint;
 uniform vec4 uBlock;
-uniform float uFront;
 uniform float uRoof;
+uniform vec4 uCity[${CITY_SHADOW_MAX}];
+uniform float uCityH[${CITY_SHADOW_MAX}];
 uniform vec4 uSlab;
 uniform float uSlabY;
 uniform float uShade;
@@ -727,12 +712,46 @@ float stairVoid(vec2 p) {
   bool east = p.x >= ${glslNum(STAIR_LIGHT.holeX1)} && p.x < ${glslNum(STAIR_LIGHT.holeEast)} && p.y > ${glslNum(STAIR_LIGHT.holeNorth)} && p.y < ${glslNum(STAIR_LIGHT.holeSouth)};
   return (west || east) ? 1.0 : 0.0;
 }
+float volumeMask(vec2 p, vec2 dir, vec2 lo, vec2 hi, float roof) {
+  if (roof < 1.0) return 0.0;
+  float reach = roof * length(dir) / max(uSunDir.y, 0.05) + ${glslNum(SHADOW_OUT)};
+  vec2 mid = (lo + hi) * 0.5;
+  vec2 ext = (hi - lo) * 0.5 + vec2(reach);
+  if (abs(p.x - mid.x) > ext.x || abs(p.y - mid.y) > ext.y) return 0.0;
+  if (p.x > lo.x && p.x < hi.x && p.y > lo.y && p.y < hi.y) return 0.0;
+  float t0 = 0.0;
+  float t1 = 1e6;
+  bool miss = false;
+  if (abs(dir.x) < 1e-5) {
+    if (p.x < lo.x || p.x > hi.x) miss = true;
+  } else {
+    float a = (lo.x - p.x) / dir.x;
+    float b = (hi.x - p.x) / dir.x;
+    if (a > b) { float s = a; a = b; b = s; }
+    t0 = max(t0, a);
+    t1 = min(t1, b);
+  }
+  if (abs(dir.y) < 1e-5) {
+    if (p.y < lo.y || p.y > hi.y) miss = true;
+  } else {
+    float a = (lo.y - p.y) / dir.y;
+    float b = (hi.y - p.y) / dir.y;
+    if (a > b) { float s = a; a = b; b = s; }
+    t0 = max(t0, a);
+    t1 = min(t1, b);
+  }
+  if (miss || t1 < max(t0, 0.0)) return 0.0;
+  float enter = max(t0, 0.0);
+  float yHit = uSunDir.y * enter;
+  float slack = ((yHit - roof) / max(uSunDir.y, 0.05)) * length(dir);
+  return 1.0 - smoothstep(${SHADOW_IN}, ${SHADOW_OUT}, slack);
+}
 ` + fragment;
 }
 
 export function attachSun(material, shared, role) {
   material.onBeforeCompile = (shader) => patchSunShader(shader, shared, role);
-  material.customProgramCacheKey = () => "museum-sun-18";
+  material.customProgramCacheKey = () => "museum-sun-19";
 }
 
 // 画芯共用一张图集。frameUv 是格子偏移和缩放。
@@ -748,7 +767,7 @@ export function attachFramePicture(material, shared, role) {
     if (next === shader.vertexShader) throw new Error("画框贴图坐标没有对上");
     shader.vertexShader = "attribute vec4 frameUv;\n" + next;
   };
-  material.customProgramCacheKey = () => "museum-sun-frame-18";
+  material.customProgramCacheKey = () => "museum-sun-frame-19";
 }
 
 export function sunPatchMesh(count) {
@@ -906,8 +925,8 @@ export function shapeShadowMaterial(opacity) {
     depthWrite: false,
     opacity,
     polygonOffset: true,
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -8,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
   });
 }
 
@@ -924,8 +943,8 @@ export function shapeShadowMesh(polys, material) {
   const pos = new Float32Array(tris * 9);
   const col = new Float32Array(tris * 12);
   let v = 0;
-  // 广场路面在 0.016 上下，一层楼板顶在 0.04。再低就会和这两张面抢深度。
-  const y = 0.06;
+  // 贴着广场路面。再高会切进树干、椅腿和矮篱。圆盘在 0.016，这里只高出几毫米。
+  const y = 0.02;
   const push = (x, z, a) => {
     pos[v * 3] = x;
     pos[v * 3 + 1] = y;
@@ -965,6 +984,8 @@ export function shapeShadowMesh(polys, material) {
       let oz = n0[1] + n1[1];
       const ol = Math.hypot(ox, oz) || 1;
       off[i] = [cur[0] + (ox / ol) * skirt, cur[1] + (oz / ol) * skirt];
+      // 贴楼的那条边不再往楼里扩。软边钻进楼板，墙根会留一条缝，影子就像没挨上楼。
+      if (poly.sealZ != null && off[i][1] < poly.sealZ) off[i][1] = poly.sealZ;
     }
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
@@ -1897,12 +1918,18 @@ function pushPoly(out, poly) {
   if (poly && poly.length >= 3) out.push(poly);
 }
 
-function benchPoly(x, z, yaw, part, sun) {
+function benchPoly(x, z, yaw, part, sun, blockers, blockSun) {
   const c = Math.cos(yaw);
   const s = Math.sin(yaw);
   const cx = x + part.lx * c + part.lz * s;
   const cz = z - part.lx * s + part.lz * c;
-  return castBox(cx, part.y, cz, part.hx, part.hy, part.hz, yaw, sun);
+  return castBox(cx, part.y, cz, part.hx, part.hy, part.hz, yaw, sun, blockers, blockSun);
+}
+
+function yardTop(item) {
+  if (item.kind === "tree") return YARD_CROWN_Y;
+  if (item.kind === "hedge") return YARD_HEDGE_H;
+  return BENCH_BACK.y + BENCH_BACK.hy;
 }
 
 // 树冠和树干、椅面和椅腿合成一块。分开铺在同一高度上会互相闪。
@@ -1916,46 +1943,112 @@ function unionHull(parts) {
   return shadowHull(pts);
 }
 
+function polyBox(poly) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minZ) minZ = p[1];
+    if (p[1] > maxZ) maxZ = p[1];
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+// 正门前这一段空地。清晨太阳低，东侧的树影会扫过门口，几块叠在亮地上显得乱。
+const DOOR_APRON = { minX: -3.4, maxX: 3.4, minZ: PLAZA.minZ, maxZ: 14 };
+
+function hitsDoorApron(poly) {
+  if (!poly || poly.length < 3) return false;
+  const box = polyBox(poly);
+  return box.maxX > DOOR_APRON.minX && box.minX < DOOR_APRON.maxX && box.maxZ > DOOR_APRON.minZ && box.minZ < DOOR_APRON.maxZ;
+}
+
+function liftCastSun(sun, y) {
+  const horiz = Math.hypot(sun.x, sun.z) || 1e-4;
+  const flat = Math.sqrt(Math.max(0, 1 - y * y));
+  return { x: (sun.x / horiz) * flat, y, z: (sun.z / horiz) * flat };
+}
+
+function yardItemPoly(item, castSun, blockers, sun) {
+  if (item.kind === "tree") {
+    return unionHull([
+      castEllipsoid(
+        item.x,
+        YARD_CROWN_Y,
+        item.z,
+        YARD_CROWN_R * YARD_CROWN_SX,
+        YARD_CROWN_R * YARD_CROWN_SY,
+        YARD_CROWN_R * YARD_CROWN_SZ,
+        castSun,
+        18,
+        blockers,
+        sun,
+      ),
+      castCylinder(
+        item.x,
+        item.z,
+        YARD_TRUNK_Y - YARD_TRUNK_H / 2,
+        YARD_TRUNK_Y + YARD_TRUNK_H / 2,
+        YARD_TRUNK_BOTTOM,
+        YARD_TRUNK_TOP,
+        castSun,
+        6,
+        blockers,
+        sun,
+      ),
+    ]);
+  }
+  if (item.kind === "hedge") {
+    return castBox(
+      item.x,
+      YARD_HEDGE_H / 2,
+      item.z,
+      item.w / 2,
+      YARD_HEDGE_H / 2,
+      item.d / 2,
+      0,
+      castSun,
+      blockers,
+      sun,
+    );
+  }
+  if (item.kind === "bench") {
+    const yaw = item.yaw || 0;
+    return unionHull([
+      benchPoly(item.x, item.z, yaw, BENCH_SEAT, castSun, blockers, sun),
+      benchPoly(item.x, item.z, yaw, BENCH_BACK, castSun, blockers, sun),
+      benchPoly(item.x, item.z, yaw, { ...BENCH_LEG, lx: -BENCH_LEG.lx }, castSun, blockers, sun),
+      benchPoly(item.x, item.z, yaw, BENCH_LEG, castSun, blockers, sun),
+    ]);
+  }
+  return null;
+}
+
 // 树冠、树干、矮篱、长椅各自按网格投到地面。长椅带朝向，不跟太阳转成一条椭圆。
-export function yardShadowPolys(items, sun) {
+// 黄昏把仰角托住，影子仍朝太阳的反方向，只是不再铺成一整条。被楼挡住的不再投影。
+// 影子若扫进正门前的空地，再把仰角抬高，收到物体旁边，不在门口叠成几块。
+export function yardShadowPolys(items, sun, blockers) {
   const polys = [];
   if (!items || !sun) return polys;
+  const castSun = softenCastSun(sun);
+  const lifts = [0.48, 0.62, 0.78];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    if (item.kind === "tree") {
-      pushPoly(polys, unionHull([
-        castEllipsoid(
-          item.x,
-          YARD_CROWN_Y,
-          item.z,
-          YARD_CROWN_R * YARD_CROWN_SX,
-          YARD_CROWN_R * YARD_CROWN_SY,
-          YARD_CROWN_R * YARD_CROWN_SZ,
-          sun,
-          18,
-        ),
-        castCylinder(
-          item.x,
-          item.z,
-          YARD_TRUNK_Y - YARD_TRUNK_H / 2,
-          YARD_TRUNK_Y + YARD_TRUNK_H / 2,
-          YARD_TRUNK_BOTTOM,
-          YARD_TRUNK_TOP,
-          sun,
-          6,
-        ),
-      ]));
-    } else if (item.kind === "hedge") {
-      pushPoly(polys, castBox(item.x, YARD_HEDGE_H / 2, item.z, item.w / 2, YARD_HEDGE_H / 2, item.d / 2, 0, sun));
-    } else if (item.kind === "bench") {
-      const yaw = item.yaw || 0;
-      pushPoly(polys, unionHull([
-        benchPoly(item.x, item.z, yaw, BENCH_SEAT, sun),
-        benchPoly(item.x, item.z, yaw, BENCH_BACK, sun),
-        benchPoly(item.x, item.z, yaw, { ...BENCH_LEG, lx: -BENCH_LEG.lx }, sun),
-        benchPoly(item.x, item.z, yaw, BENCH_LEG, sun),
-      ]));
+    if (lightBlocked(item.x, yardTop(item), item.z, sun, blockers)) continue;
+    let cast = castSun;
+    let poly = yardItemPoly(item, cast, blockers, sun);
+    if (hitsDoorApron(poly)) {
+      for (let s = 0; s < lifts.length; s++) {
+        cast = liftCastSun(sun, lifts[s]);
+        poly = yardItemPoly(item, cast, blockers, sun);
+        if (!hitsDoorApron(poly)) break;
+      }
     }
+    pushPoly(polys, poly);
   }
   return polys;
 }
@@ -1981,6 +2074,9 @@ function clipMinZ(poly, zMin) {
 
 // 观景台是朝广场的半圆板。只把最低一层投到板外的广场上。
 // 上面几层落在下一层台面上。都铺到地面会叠成一片，还压进一层楼板里，跟着走动闪。
+// 实边收到楼体外皮。软边不再往楼里扩，否则会钻进楼板，墙根反而留一条亮缝。
+// 太阳从楼后照来、投影整块离开墙根、又还在观景台正前方时，把门宽那条边留在墙上，影子才连着楼。
+// 低太阳扫到楼侧、只剩一条薄片、又不盖住观景台自己时，那条碎片不铺。
 export function deckShadowPolys(lobes, sun) {
   const polys = [];
   if (!lobes || !sun || !lobes.length) return polys;
@@ -1999,8 +2095,25 @@ export function deckShadowPolys(lobes, sun) {
     pts.push(projectShadowXZ(x, top, z, sun));
     pts.push(projectShadowXZ(x, bot, z, sun));
   }
-  // 软边还会再向外 0.16。切线留出这段，才不会搭上 y=0.04 的楼板顶。
-  pushPoly(polys, clipMinZ(shadowHull(pts), lobe.z + 0.22));
+  let hull = shadowHull(pts);
+  if (hull.length < 3) return polys;
+  const wallZ = lobe.z;
+  const deckX0 = lobe.x - lobe.r;
+  const deckX1 = lobe.x + lobe.r;
+  const thrown = polyBox(hull);
+  const overDeck = thrown.maxX > deckX0 && thrown.minX < deckX1;
+  if (overDeck && thrown.minZ > wallZ + 0.15) {
+    pts.push([deckX0, wallZ], [deckX1, wallZ]);
+    hull = shadowHull(pts);
+  }
+  const poly = clipMinZ(hull, wallZ);
+  if (poly.length < 3) return polys;
+  const kept = polyBox(poly);
+  const thin = kept.maxZ - kept.minZ < 0.9;
+  const onDeck = kept.maxX > deckX0 - 0.4 && kept.minX < deckX1 + 0.4;
+  if (thin && !onDeck) return polys;
+  poly.sealZ = wallZ;
+  pushPoly(polys, poly);
   return polys;
 }
 
@@ -2195,7 +2308,7 @@ export function horizonMeshes(mats) {
   const peaksRoof = [];
   const darkWins = [];
   const litWins = [];
-  const shadows = [];
+  const blocks = [];
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
     for (let i = 0; i < row.n; i++) {
@@ -2251,7 +2364,7 @@ export function horizonMeshes(mats) {
         }
         pushWindows(darkWins, litWins, mass, row.axis, row.face, seed + 11);
       }
-      shadows.push({ kind: "hall", x, z, rx: w * 0.52, rz: d * 0.52, h, y: 0.03 });
+      blocks.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, top: h });
     }
   }
   const shell = paintBoxes(bodies, mats.plaster);
@@ -2329,7 +2442,7 @@ export function horizonMeshes(mats) {
   return {
     root,
     glow: mats.glow,
-    shadows,
+    blocks,
     drift(now) {
       const shift = now * 0.00035;
       for (let i = 0; i < clouds.length; i++) {

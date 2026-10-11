@@ -137,7 +137,9 @@ export const adminHtml = `<!DOCTYPE html>
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(44, 41, 38, 0.08); vertical-align: top; }
     th { font-size: 13px; color: #6f6a64; font-weight: 650; }
     td button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; }
-    #empty { padding: 16px 10px; color: #6f6a64; }
+    #empty, #chat-empty, #note-empty { padding: 16px 10px; color: #6f6a64; }
+    #chat-status, #note-status { min-height: 1.4em; color: #6f6a64; }
+    td.board-text { word-break: break-word; }
   </style>
 </head>
 <body>
@@ -186,6 +188,36 @@ export const adminHtml = `<!DOCTYPE html>
       <tbody id="rows"></tbody>
     </table>
     <p id="empty" hidden>现在没有人。</p>
+    <h2>聊天记录</h2>
+    <p class="hint">馆里还留着的最近聊天。删掉后，正在逛的人那边也会消失。</p>
+    <p id="chat-status">正在读取…</p>
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>昵称</th>
+          <th>内容</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="chat-rows"></tbody>
+    </table>
+    <p id="chat-empty" hidden>没有聊天记录。</p>
+    <h2>访客留言</h2>
+    <p class="hint">留言簿上大家都能看见的话。删掉后，展厅里也会拿掉这一条。</p>
+    <p id="note-status">正在读取…</p>
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>昵称</th>
+          <th>内容</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="note-rows"></tbody>
+    </table>
+    <p id="note-empty" hidden>没有留言。</p>
     <h2>来访记录</h2>
     <figure id="visit-trend">
       <figcaption>近 30 天 <span class="hint">按入馆的北京时间，含今天。停在某一天看当天访问量。</span></figcaption>
@@ -247,6 +279,12 @@ export const adminHtml = `<!DOCTYPE html>
     const rows = document.getElementById("rows");
     const empty = document.getElementById("empty");
     const status = document.getElementById("status");
+    const chatRows = document.getElementById("chat-rows");
+    const chatEmpty = document.getElementById("chat-empty");
+    const chatStatus = document.getElementById("chat-status");
+    const noteRows = document.getElementById("note-rows");
+    const noteEmpty = document.getElementById("note-empty");
+    const noteStatus = document.getElementById("note-status");
     const maxInput = document.getElementById("max");
     const visitDay = document.getElementById("visit-day");
     const visitRows = document.getElementById("visit-rows");
@@ -369,6 +407,7 @@ export const adminHtml = `<!DOCTYPE html>
       }
       showApp();
       paint(data);
+      refreshBoard();
       if (!visitDay.value) visitDay.value = shanghaiToday();
       if (visitDay.value === shanghaiToday() || visitDay.value !== shownVisitDay) refreshVisits();
       if (!deskLoaded) {
@@ -376,6 +415,73 @@ export const adminHtml = `<!DOCTYPE html>
         refreshFrames();
         refreshArrange();
       }
+    }
+
+    function paintBoardRows(body, empty, statusEl, rows, kind) {
+      body.replaceChildren();
+      empty.hidden = rows.length > 0;
+      statusEl.textContent = "共 " + rows.length + " 条 · 每 5 秒刷新";
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const tr = document.createElement("tr");
+        const when = document.createElement("td");
+        when.textContent = row.at ? clock(row.at) : "—";
+        const who = document.createElement("td");
+        who.textContent = row.name || "访客";
+        const text = document.createElement("td");
+        text.className = "board-text";
+        text.textContent = row.text || "";
+        const op = document.createElement("td");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "删除";
+        button.addEventListener("click", () => dropBoard(kind, row, button));
+        op.appendChild(button);
+        tr.append(when, who, text, op);
+        body.appendChild(tr);
+      }
+    }
+
+    function paintBoard(data) {
+      paintBoardRows(chatRows, chatEmpty, chatStatus, data.chat || [], "chat");
+      paintBoardRows(noteRows, noteEmpty, noteStatus, data.notes || [], "note");
+    }
+
+    async function refreshBoard() {
+      const res = await fetch("/admin/api/board", { cache: "no-store", credentials: "same-origin" });
+      if (res.status === 401) {
+        showLogin("");
+        return;
+      }
+      const data = await readJson(res);
+      if (!res.ok || !data) {
+        chatStatus.textContent = "没有读到聊天和留言";
+        return;
+      }
+      paintBoard(data);
+    }
+
+    async function dropBoard(kind, row, button) {
+      const label = kind === "chat" ? "这条聊天" : "这条留言";
+      if (!window.confirm("删掉" + label + "？删掉后展厅里也看不到。")) return;
+      button.disabled = true;
+      const res = await fetch("/admin/api/board", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: kind, id: row.id, at: row.at }),
+      });
+      if (res.status === 401) {
+        showLogin("口令已失效");
+        return;
+      }
+      if (!res.ok && res.status !== 404) {
+        button.disabled = false;
+        const statusEl = kind === "chat" ? chatStatus : noteStatus;
+        statusEl.textContent = "没有删掉";
+        return;
+      }
+      refreshBoard();
     }
 
     function hallName(id) {

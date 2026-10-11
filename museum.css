@@ -51,7 +51,7 @@ html, body {
 
 #lower #boot { width: 100%; }
 
-#boot h1, #where strong, #panel h2 {
+#boot h1, #where strong, #panel h2, #guestbook h2 {
   font-family: "Palatino Linotype", "Songti SC", "SimSun", serif;
   font-weight: 500;
 }
@@ -275,6 +275,7 @@ body.dark-sky #chatter li {
   line-height: 1.45;
   padding: 6px 8px;
   color: #2c2926;
+  text-align: left;
   background: rgba(255, 252, 248, 0.94);
   border: 1px solid rgba(44, 41, 38, 0.14);
   cursor: pointer;
@@ -360,6 +361,94 @@ body.dark-sky #lift-hint {
 #panel-portal { background: #2c2926; color: #fffcf8; }
 #panel-close { margin-top: 16px; color: #6f6a64; border-color: transparent; padding-left: 0; }
 #panel a:focus, #panel button:focus { outline: 1px solid #2c2926; outline-offset: 2px; }
+
+#guestbook {
+  position: fixed;
+  top: 50%;
+  left: 28px;
+  transform: translateY(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(560px, calc(100% - 36px));
+  height: min(673px, calc(100% - 36px));
+  overflow: hidden;
+  padding: 28px 28px 22px;
+  background: #fffcf8;
+  border: 1px solid rgba(44, 41, 38, 0.1);
+  box-shadow: 0 18px 50px rgba(44, 41, 38, 0.08);
+}
+#guestbook[hidden] { display: none; }
+#guestbook p { margin: 0; }
+#guestbook-kicker { color: #8a847c; font-size: 12px; letter-spacing: 0.16em; }
+#guestbook h2 { margin: 10px 0 12px; font-size: 28px; line-height: 1.35; }
+#guestbook-hint { color: #8a847c; font-size: 13px; line-height: 1.6; }
+#guestbook-kicker,
+#guestbook h2,
+#guestbook-hint,
+#guestbook-form,
+#guestbook-pages,
+#guestbook-close { flex: none; }
+#guestbook-form { margin-top: 16px; }
+#guestbook textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: 96px;
+  min-height: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(44, 41, 38, 0.18);
+  background: #fff;
+  color: #2c2926;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.6;
+  resize: none;
+}
+#guestbook-send {
+  margin-top: 10px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid #2c2926;
+  padding: 8px 14px;
+  background: #2c2926;
+  color: #fffcf8;
+  cursor: pointer;
+}
+#guestbook-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+}
+#guestbook-list li {
+  padding: 12px 0;
+  border-top: 1px solid rgba(44, 41, 38, 0.08);
+}
+#guestbook-list .note-empty { color: #8a847c; font-size: 14px; }
+.note-meta { color: #8a847c; font-size: 12px; }
+.note-text { margin-top: 4px; color: #3d3935; font-size: 15px; line-height: 1.7; }
+#guestbook-pages {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+#guestbook-page { color: #6f6a64; font-size: 13px; }
+#guestbook-pages button,
+#guestbook-close {
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid transparent;
+  padding: 8px 0;
+  background: transparent;
+  color: #6f6a64;
+  cursor: pointer;
+}
+#guestbook-pages button:disabled { opacity: 0.35; cursor: default; }
+#guestbook button:focus, #guestbook textarea:focus { outline: 1px solid #2c2926; outline-offset: 2px; }
 
 #corner {
   --nav-w: 260px;
@@ -551,7 +640,8 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 #name-input:focus-visible,
 #nav-name:focus-visible,
 #name-form button:focus-visible,
-#name-gate button:focus-visible { outline: 1px solid #2c2926; outline-offset: 2px; }
+#name-gate button:focus-visible,
+#sort-switch input:focus-visible { outline: 1px solid #2c2926; outline-offset: 2px; }
 
 #drawer {
   display: flex;
@@ -650,7 +740,8 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 #map-switch,
 #online-switch,
 #music-switch,
-#solo-switch {
+#solo-switch,
+#sort-switch label {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -658,6 +749,15 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   font-size: 13px;
   color: #3d3935;
   cursor: pointer;
+}
+
+#sort-switch {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 2px 0 4px;
 }
 
 #project-line { margin: 0 0 8px; }
@@ -913,6 +1013,15 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 
 @media (max-width: 720px) {
   #panel { right: 12px; top: auto; bottom: 12px; transform: none; }
+  #guestbook {
+    left: 12px;
+    right: 12px;
+    top: auto;
+    bottom: 12px;
+    width: auto;
+    height: min(673px, calc(100% - 24px));
+    transform: none;
+  }
   #corner { --nav-w: 260px; --map-w: 168px; top: 12px; right: 12px; bottom: 12px; }
   .toast { white-space: normal; }
 }
