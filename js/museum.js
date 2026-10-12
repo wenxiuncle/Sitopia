@@ -2555,6 +2555,7 @@ async function buildScene(data, arrange) {
       if (input) input.focus();
     }
     if (heardGesture && ambience) ambience.unlock();
+    if (presence && presence.syncTabHint) presence.syncTabHint();
   }
 
   function presentPlayer() {

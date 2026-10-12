@@ -1,4 +1,5 @@
 html, body {
+  --plate: rgba(255, 252, 248, 0.94);
   height: 100%;
   margin: 0;
   overflow: hidden;
@@ -22,7 +23,7 @@ html, body {
   box-sizing: border-box;
   width: min(440px, calc(100% - 32px));
   padding: 18px 20px 16px;
-  background: rgba(255, 252, 248, 0.92);
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.08);
   pointer-events: none;
 }
@@ -39,7 +40,8 @@ body.opening #lower,
 body.opening #hover,
 body.opening #panel,
 body.opening #guestbook,
-body.opening #chat-bar {
+body.opening #chat-bar,
+body.opening #tab-hint {
   display: none;
 }
 
@@ -377,7 +379,7 @@ body.dark-sky #chatter li {
   padding: 6px 8px;
   color: #2c2926;
   text-align: left;
-  background: rgba(255, 252, 248, 0.94);
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.14);
   cursor: pointer;
 }
@@ -402,7 +404,7 @@ body.dark-sky #chatter li {
   top: calc(50% + 36px);
   transform: translateX(-50%);
   padding: 4px 8px;
-  background: rgba(255, 252, 248, 0.88);
+  background: var(--plate);
   color: #2c2926;
   font-size: 14px;
   line-height: 1.45;
@@ -411,10 +413,7 @@ body.dark-sky #chatter li {
   pointer-events: none;
 }
 
-body.dark-sky #lift-hint {
-  background: rgba(28, 32, 38, 0.88);
-  color: #f6f1ea;
-}
+
 
 #hover {
   position: fixed;
@@ -423,7 +422,7 @@ body.dark-sky #lift-hint {
   transform: translateX(-50%);
   max-width: min(520px, calc(100% - 40px));
   padding: 4px 8px;
-  background: rgba(255, 252, 248, 0.88);
+  background: var(--plate);
   font-size: 14px;
   pointer-events: none;
   white-space: nowrap;
@@ -438,9 +437,16 @@ body.dark-sky #lift-hint {
   transform: translateY(-50%);
   width: min(380px, calc(100% - 36px));
   padding: 26px 26px 20px;
-  background: #fffcf8;
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.1);
   box-shadow: 0 18px 50px rgba(44, 41, 38, 0.08);
+  transition: right 0.32s ease, width 0.32s ease;
+}
+
+/* 抽屉从右边展开时，画框卡跟地图一样让出菜单的宽度。 */
+body:has(#corner.nav-open) #panel {
+  right: calc(28px + 260px + 8px);
+  width: min(380px, calc(100vw - 28px - 260px - 8px - 22px));
 }
 
 #panel p { margin: 0; }
@@ -476,7 +482,7 @@ body.dark-sky #lift-hint {
   height: min(673px, calc(100% - 36px));
   overflow: hidden;
   padding: 28px 28px 22px;
-  background: #fffcf8;
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.1);
   box-shadow: 0 18px 50px rgba(44, 41, 38, 0.08);
 }
@@ -555,7 +561,6 @@ body.dark-sky #lift-hint {
 #corner {
   --nav-w: 260px;
   --map-w: 214px;
-  --plate: rgba(255, 252, 248, 0.94);
   position: fixed;
   top: 18px;
   right: 18px;
@@ -719,7 +724,7 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 #self-bubble,
 #chat-input,
 #name-gate {
-  background: rgba(255, 252, 248, 0.94);
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.1);
   color: #2c2926;
 }
@@ -892,7 +897,8 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   line-height: 1.75;
 }
 
-#help-keys kbd {
+#help-keys kbd,
+#tab-hint kbd {
   display: inline-block;
   box-sizing: border-box;
   min-width: 1.55em;
@@ -911,6 +917,41 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   text-align: center;
   vertical-align: 1px;
   white-space: nowrap;
+}
+
+#tab-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 52px;
+  z-index: 4;
+  width: max-content;
+  max-width: calc(100vw - 44px);
+  margin: 0;
+  transform: translateX(-50%);
+  color: #2c2926;
+  font-size: 18px;
+  line-height: 1.75;
+  text-align: center;
+  pointer-events: none;
+  text-shadow:
+    0 0 2px rgba(255, 252, 248, 1),
+    0 0 8px rgba(255, 252, 248, 0.98),
+    0 0 16px rgba(255, 252, 248, 0.92);
+  animation: tab-hint-pulse 2.8s ease-in-out infinite;
+}
+
+#tab-hint kbd {
+  font-size: 15px;
+}
+
+@keyframes tab-hint-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.28; }
+}
+
+body.dark-sky #tab-hint {
+  color: #f6f1ea;
+  text-shadow: 0 1px 2px rgba(8, 16, 28, 0.85), 0 0 8px rgba(8, 16, 28, 0.55);
 }
 
 .drawer-label {
@@ -1023,7 +1064,7 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   bottom: -7px;
   transform: translateX(-50%);
   border: 7px solid transparent;
-  border-top-color: rgba(255, 252, 248, 0.94);
+  border-top-color: var(--plate);
   border-bottom: 0;
 }
 
@@ -1092,7 +1133,7 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 #kick-card {
   width: min(360px, calc(100% - 32px));
   padding: 18px 20px 16px;
-  background: rgba(255, 252, 248, 0.94);
+  background: var(--plate);
   border: 1px solid rgba(44, 41, 38, 0.1);
   color: #2c2926;
 }
@@ -1118,6 +1159,10 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
   #loading-foot { padding: 72px 16px 28px; }
   #loading-label { font-size: 14px; letter-spacing: 0.28em; text-indent: 0.28em; }
   #panel { right: 12px; top: auto; bottom: 12px; transform: none; }
+  body:has(#corner.nav-open) #panel {
+    right: calc(12px + 260px + 8px);
+    width: min(380px, calc(100vw - 12px - 260px - 8px - 12px));
+  }
   #guestbook {
     left: 12px;
     right: 12px;
@@ -1132,5 +1177,6 @@ body.dark-sky #fps { color: rgba(246, 241, 234, 0.86); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #drawer { transition: none; }
+  #drawer, #panel { transition: none; }
+  #tab-hint { animation: none; }
 }

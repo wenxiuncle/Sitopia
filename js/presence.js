@@ -22,6 +22,17 @@ const MAP_KEY = "quzhan-museum-map";
 const ONLINE_KEY = "quzhan-museum-online";
 const SOLO_KEY = "quzhan-museum-solo";
 const SORT_KEY = "quzhan-museum-sort";
+const TAB_HINT_KEY = "quzhan-museum-tab-hint";
+
+function readToggle(key, fallback) {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved === null) return fallback;
+    return saved !== "0";
+  } catch {
+    return fallback;
+  }
+}
 
 export function readSortMode() {
   try {
@@ -132,6 +143,7 @@ export function mountPresence(options) {
   const nameInput = document.getElementById("name-input");
   const nameForm = document.getElementById("name-form");
   const navName = document.getElementById("nav-name");
+  const tabHint = document.getElementById("tab-hint");
   const sortCat = document.getElementById("sort-cat");
   const sortTime = document.getElementById("sort-time");
   if (sortCat && sortTime) {
@@ -165,8 +177,14 @@ export function mountPresence(options) {
   let sentYaw = NaN;
   let selfBubbleUntil = 0;
   let composing = false;
-  let showMap = true;
-  let showOnline = true;
+  let showMap = false;
+  let showOnline = false;
+  let freshHint = false;
+  try {
+    freshHint = !readConfirmed() && localStorage.getItem(TAB_HINT_KEY) !== "1";
+  } catch {
+    freshHint = !readConfirmed();
+  }
   let solo = false;
   let kickedUntil = 0;
   let beatTimer = 0;
@@ -848,6 +866,24 @@ export function mountPresence(options) {
     if (changed && onNav) onNav(open);
   }
 
+  function syncTabHint() {
+    if (!tabHint) return;
+    const opening = document.body.classList.contains("opening");
+    const gating = nameGate && !nameGate.hidden;
+    tabHint.hidden = !(freshHint && !opening && !gating);
+  }
+
+  function dismissTabHint() {
+    if (!freshHint) return;
+    freshHint = false;
+    if (tabHint) tabHint.hidden = true;
+    try {
+      localStorage.setItem(TAB_HINT_KEY, "1");
+    } catch {
+      /* 记不住就这次先收起。 */
+    }
+  }
+
   function setRoster(open) {
     rosterEl.hidden = !open;
     online.setAttribute("aria-expanded", open ? "true" : "false");
@@ -968,17 +1004,9 @@ export function mountPresence(options) {
     arm();
   }
 
-  try {
-    showMap = localStorage.getItem(MAP_KEY) !== "0";
-  } catch {
-    showMap = true;
-  }
+  showMap = readToggle(MAP_KEY, false);
   applyMap(showMap);
-  try {
-    showOnline = localStorage.getItem(ONLINE_KEY) !== "0";
-  } catch {
-    showOnline = true;
-  }
+  showOnline = readToggle(ONLINE_KEY, false);
   applyOnline(showOnline);
   try {
     solo = localStorage.getItem(SOLO_KEY) === "1";
@@ -1079,6 +1107,7 @@ export function mountPresence(options) {
     event.preventDefault();
     event.stopPropagation();
     setDrawer(!corner.classList.contains("nav-open"));
+    dismissTabHint();
   }, true);
 
   document.addEventListener("keydown", (event) => {
@@ -1284,6 +1313,7 @@ export function mountPresence(options) {
       return true;
     },
     closeRoster() { setRoster(false); },
+    syncTabHint,
     dismiss(keepRoster) {
       if (!keepRoster) setRoster(false);
       if (corner.classList.contains("nav-open")) setDrawer(false);
