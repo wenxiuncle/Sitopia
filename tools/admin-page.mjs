@@ -59,7 +59,7 @@ export const adminHtml = `<!DOCTYPE html>
       background: rgba(255, 252, 248, 0.94);
       border: 1px solid rgba(44, 41, 38, 0.1);
     }
-    #arrange-form {
+    #arrange-form, #music-form {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 12px;
@@ -71,8 +71,16 @@ export const adminHtml = `<!DOCTYPE html>
       background: rgba(255, 252, 248, 0.94);
       border: 1px solid rgba(44, 41, 38, 0.1);
     }
-    #arrange-order-card { display: flex; flex-direction: column; }
-    #arrange-order-card .hint { display: block; margin-top: auto; padding-top: 12px; }
+    #arrange-order-card, #music-order-card { display: flex; flex-direction: column; }
+    #arrange-order-card .hint, #music-order-card .hint { display: block; margin-top: auto; padding-top: 12px; }
+    #music-volume-card { display: flex; flex-direction: column; }
+    #music-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    #music-volume { width: 5em; }
+    #music-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    #music-list li { display: flex; align-items: center; gap: 8px; }
+    #music-list .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    #music-list .time { color: #6f6a64; flex: none; }
+    #music-list button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; flex: none; }
     #arrange-pin { display: flex; flex-direction: column; }
     #arrange-pin > label {
       flex: 1;
@@ -82,7 +90,7 @@ export const adminHtml = `<!DOCTYPE html>
     }
     #arrange-pin .solid { align-self: flex-start; margin-top: 12px; }
     @media (max-width: 720px) {
-      #arrange-form { grid-template-columns: 1fr; }
+      #arrange-form, #music-form { grid-template-columns: 1fr; }
     }
     #max { width: 5em; }
     #halls { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
@@ -100,7 +108,7 @@ export const adminHtml = `<!DOCTYPE html>
       background: #fff;
       resize: vertical;
     }
-    #frame-status, #arrange-status { min-height: 1.4em; color: #6f6a64; }
+    #frame-status, #arrange-status, #music-status { min-height: 1.4em; color: #6f6a64; }
     #visit-status { min-height: 1.4em; color: #6f6a64; }
     #visit-pager, #chat-pager, #note-pager {
       display: flex;
@@ -287,6 +295,24 @@ export const adminHtml = `<!DOCTYPE html>
       </div>
     </form>
     <p id="arrange-status"></p>
+    <h2>展厅音乐</h2>
+    <form id="music-form">
+      <div class="arrange-card" id="music-order-card">
+        <ol id="music-list"></ol>
+        <span class="hint">自动读 audio 文件夹里的曲子。上移、下移调整循环顺序。馆里有人时才放，没人就停在刚才的进度。广场和观景台仍会把声音放轻，菜单里的音乐开关也还在。</span>
+      </div>
+      <div class="arrange-card" id="music-volume-card">
+        <label>音量
+          <input id="music-volume" type="number" min="0" max="100" step="1" inputmode="numeric" autocomplete="off" value="100">
+        </label>
+        <span class="hint">填 0 到 100 的整数。100 和现在馆里一样响，数字越小越轻。</span>
+        <div id="music-actions">
+          <button class="line" id="music-rescan" type="button">重新识别</button>
+          <button class="solid" id="music-save" type="submit">保存音乐</button>
+        </div>
+      </div>
+    </form>
+    <p id="music-status"></p>
   </main>
   <script>
     const login = document.getElementById("login");
@@ -319,6 +345,10 @@ export const adminHtml = `<!DOCTYPE html>
     let visitCache = null;
     const frameStatus = document.getElementById("frame-status");
     const arrangeStatus = document.getElementById("arrange-status");
+    const musicStatus = document.getElementById("music-status");
+    const musicVolumeInput = document.getElementById("music-volume");
+    const musicSave = document.getElementById("music-save");
+    let musicOrder = [];
     const arrangeOrder = document.getElementById("arrange-order");
     const arrangePins = document.getElementById("arrange-pins");
     const HALL_LIST = ${hallBoot};
@@ -444,6 +474,7 @@ export const adminHtml = `<!DOCTYPE html>
         deskLoaded = true;
         refreshFrames();
         refreshArrange();
+        refreshMusic();
       }
     }
 
@@ -1095,6 +1126,134 @@ export const adminHtml = `<!DOCTYPE html>
       queueFrames(false);
     });
     document.getElementById("frame-full").addEventListener("click", () => queueFrames(true));
+
+    function durationLabel(ms) {
+      const s = Math.max(0, Math.round(Number(ms) / 1000));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return m + ":" + (r < 10 ? "0" : "") + r;
+    }
+
+    function paintMusicList() {
+      const list = document.getElementById("music-list");
+      list.replaceChildren();
+      for (let i = 0; i < musicOrder.length; i++) {
+        const row = musicOrder[i];
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = row.file;
+        const time = document.createElement("span");
+        time.className = "time";
+        time.textContent = durationLabel(row.ms);
+        const up = document.createElement("button");
+        up.type = "button";
+        up.textContent = "上移";
+        up.disabled = i === 0;
+        up.addEventListener("click", () => moveMusic(i, -1));
+        const down = document.createElement("button");
+        down.type = "button";
+        down.textContent = "下移";
+        down.disabled = i === musicOrder.length - 1;
+        down.addEventListener("click", () => moveMusic(i, 1));
+        li.append(name, time, up, down);
+        list.appendChild(li);
+      }
+      musicSave.disabled = musicOrder.length === 0;
+    }
+
+    function moveMusic(index, step) {
+      const next = index + step;
+      if (next < 0 || next >= musicOrder.length) return;
+      const swap = musicOrder[index];
+      musicOrder[index] = musicOrder[next];
+      musicOrder[next] = swap;
+      paintMusicList();
+    }
+
+    function paintMusic(data) {
+      const files = data && Array.isArray(data.files) ? data.files : [];
+      musicOrder = [];
+      for (let i = 0; i < files.length; i++) {
+        const row = files[i];
+        if (!row || !row.file) continue;
+        musicOrder.push({ file: row.file, ms: row.ms });
+      }
+      if (document.activeElement !== musicVolumeInput) {
+        const volume = data && Number.isInteger(data.volume) ? data.volume : 100;
+        musicVolumeInput.value = String(volume);
+      }
+      paintMusicList();
+      const notes = [];
+      const pending = data && Array.isArray(data.pending) ? data.pending : [];
+      const dropped = data && Array.isArray(data.dropped) ? data.dropped : [];
+      if (!musicOrder.length && !pending.length) notes.push("audio 文件夹里没有曲子");
+      if (pending.length) notes.push("这几首读不出时长，先不放进循环：" + pending.join("、"));
+      if (dropped.length) notes.push("这几首已经不在文件夹里，保存后会从循环拿掉：" + dropped.join("、"));
+      musicStatus.textContent = notes.join("。");
+    }
+
+    async function refreshMusic(done) {
+      try {
+        const res = await fetch("/admin/api/music", { cache: "no-store", credentials: "same-origin" });
+        if (res.status === 401) {
+          showLogin("口令已失效");
+          return;
+        }
+        const data = await readJson(res);
+        if (!res.ok || !data) {
+          musicStatus.textContent = data && data.error === "catalog" ? "没有读到 audio 文件夹" : "没有读到曲目";
+          return;
+        }
+        paintMusic(data);
+        if (done && !musicStatus.textContent) musicStatus.textContent = done;
+      } catch {
+        musicStatus.textContent = "没有读到曲目";
+      }
+    }
+
+    document.getElementById("music-rescan").addEventListener("click", () => {
+      refreshMusic("已重新读取文件夹");
+    });
+
+    document.getElementById("music-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const raw = musicVolumeInput.value.trim();
+      if (!/^\d{1,3}$/.test(raw) || Number(raw) > 100) {
+        musicStatus.textContent = "音量要填 0 到 100 的整数";
+        return;
+      }
+      const order = [];
+      for (let i = 0; i < musicOrder.length; i++) order.push(musicOrder[i].file);
+      musicSave.disabled = true;
+      try {
+        const res = await fetch("/admin/api/music", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order: order, volume: Number(raw) }),
+        });
+        if (res.status === 401) {
+          showLogin("口令已失效");
+          return;
+        }
+        const data = await readJson(res);
+        if (!res.ok || !data || !Array.isArray(data.files)) {
+          if (data && data.error === "volume") musicStatus.textContent = "音量要填 0 到 100 的整数";
+          else if (data && data.error === "catalog") musicStatus.textContent = "没有读到 audio 文件夹";
+          else if (data && data.error === "empty") musicStatus.textContent = "audio 文件夹里没有可以排进循环的曲子";
+          else musicStatus.textContent = "没有保存";
+          return;
+        }
+        paintMusic(data);
+        const note = musicStatus.textContent;
+        musicStatus.textContent = note ? "已保存。" + note : "已保存。正在馆里的人会按这个顺序和音量接着放";
+      } catch {
+        musicStatus.textContent = "没有保存";
+      } finally {
+        musicSave.disabled = musicOrder.length === 0;
+      }
+    });
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {
       event.preventDefault();

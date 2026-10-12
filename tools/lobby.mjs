@@ -16,10 +16,12 @@ import {
   kickSpan,
   kickUntil,
   namedCount,
+  applyMusicDesk,
   attachMusic,
   attachDesk,
   blankMusic,
   blankRobot,
+  musicDesk,
   musicView,
   onClientMessage,
   onLeave,
@@ -364,6 +366,15 @@ export function attachLobby(server) {
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
       return musicView(room.music, now);
+    },
+    musicSettings() {
+      return musicDesk(room.music);
+    },
+    setMusic(body) {
+      const view = applyMusicDesk(room.music, body, Date.now());
+      if (!view) return null;
+      broadcast(view);
+      return musicDesk(room.music);
     },
     desk() {
       return deskView(log, room.notes);

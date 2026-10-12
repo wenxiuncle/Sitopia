@@ -21,10 +21,12 @@ import {
   attachDesk,
   blankMusic,
   blankRobot,
+  applyMusicDesk,
   foldMusic,
   forgetSolo,
   kickSpan,
   kickUntil,
+  musicDesk,
   musicView,
   namedCount,
   onClientMessage,
@@ -92,9 +94,9 @@ function json(body, status, request) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
-async function readJson(request) {
+async function readJson(request, limit) {
   const text = await request.text();
-  if (text.length > 2048) return null;
+  if (text.length > (limit || 2048)) return null;
   try {
     const data = JSON.parse(text);
     return data && typeof data === "object" ? data : null;
@@ -376,10 +378,13 @@ export class SitopiaLobby extends DurableObject {
     const at = now || Date.now();
     if (!force && at - this.musicSavedAt < 15000) return;
     foldMusic(this.music, at);
+    const desk = musicDesk(this.music);
     await this.ctx.storage.put("music", {
       pos: this.music.pos,
       at: this.music.at,
       playing: !!this.music.playing,
+      volume: desk.volume,
+      tracks: desk.tracks,
     });
     this.musicSavedAt = at;
   }
@@ -509,6 +514,19 @@ export class SitopiaLobby extends DurableObject {
         visits,
         trend: trend.points,
       }, 200);
+    }
+    if (url.pathname === "/admin/api/music" && request.method === "GET") {
+      return json(musicDesk(this.music), 200);
+    }
+    if (url.pathname === "/admin/api/music" && request.method === "POST") {
+      const body = await readJson(request, 16384);
+      if (!body) return json({ error: "body" }, 400);
+      const now = Date.now();
+      const view = applyMusicDesk(this.music, body, now);
+      if (!view) return json({ error: "range" }, 400);
+      await this.persistMusic(now, true);
+      this.fanout(null, [{ who: "all", obj: view }]);
+      return json(musicDesk(this.music), 200);
     }
     if (url.pathname === "/admin/api/arrange" && request.method === "GET") {
       return json(this.arrange, 200);

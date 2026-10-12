@@ -2,7 +2,7 @@
 // 广场、脚步和电梯在 sounds.js，跟这里共用一个音频上下文和同一个开关。
 
 import { createSounds } from "./sounds.js";
-import { SCORE, scoreAt, wrapScore } from "./score.js";
+import { SCORE, asPlaylist, scoreAt, scoreTotal, wrapScore } from "./score.js";
 
 const irCache = new Map();
 
@@ -16,6 +16,7 @@ function cachedImpulse(rate) {
 }
 
 const MUSIC_KEY = "quzhan-museum-music";
+// 房间音量是 0 到 100，100 乘上 LEVEL，和原来一样响。没收到房间的数字时按 100。
 const LEVEL = 0.31;
 const DRY = 0.62;
 // 厅堂尾音叠在一起会抬上来，湿声收很多，空间听得见，琴还在前面。
@@ -164,6 +165,9 @@ export function createAmbience() {
   let clipIndex = -1;
   let gen = 0;
   let lastView = null;
+  let playlist = SCORE;
+  let playlistKey = "";
+  let volumePct = 100;
   const audio = new Audio();
   audio.preload = "auto";
   audio.loop = false;
@@ -180,7 +184,7 @@ export function createAmbience() {
 
   function target() {
     if (!enabled || document.hidden) return 0;
-    return LEVEL * blend;
+    return LEVEL * (volumePct / 100) * blend;
   }
 
   function applyGain() {
@@ -238,7 +242,17 @@ export function createAmbience() {
     if (!lastView) return 0;
     let pos = Number(lastView.pos) || 0;
     if (lastView.playing && lastView.receivedAt) pos += Date.now() - lastView.receivedAt;
-    return wrapScore(pos);
+    return wrapScore(pos, scoreTotal(playlist));
+  }
+
+  function usePlaylist(list) {
+    let key = "";
+    for (let i = 0; i < list.length; i++) key += list[i].file + "\n" + list[i].ms + "\n";
+    if (key === playlistKey) return;
+    playlistKey = key;
+    playlist = list;
+    clipIndex = -1;
+    audio.dataset.track = "";
   }
 
   function ensureMedia() {
@@ -261,6 +275,8 @@ export function createAmbience() {
   }
 
   function beginAt(index, into) {
+    const row = playlist[index];
+    if (!row) return;
     ensureMedia();
     if (!media) return;
     held = false;
@@ -284,7 +300,7 @@ export function createAmbience() {
     if (audio.dataset.track !== String(index)) {
       clipIndex = -1;
       audio.dataset.track = String(index);
-      audio.src = new URL("../audio/" + SCORE[index].file, import.meta.url).href;
+      audio.src = new URL("../audio/" + row.file, import.meta.url).href;
       const pending = audio.play();
       if (pending && pending.catch) pending.catch(() => {});
       audio.addEventListener("loadedmetadata", seekAndPlay, { once: true });
@@ -303,7 +319,7 @@ export function createAmbience() {
       quiet();
       return;
     }
-    const place = scoreAt(livePos());
+    const place = scoreAt(livePos(), playlist);
     if (audio.ended && Number(audio.dataset.track) === place.index) return;
     if (audio.dataset.track === String(place.index) && (audio.seeking || audio.readyState < 2)) return;
     if (clipIndex === place.index && !audio.paused && !audio.seeking && audio.readyState >= 2) {
@@ -366,7 +382,7 @@ export function createAmbience() {
     ensureMedia();
     if (!audio.src) {
       audio.dataset.track = "0";
-      audio.src = new URL("../audio/" + SCORE[0].file, import.meta.url).href;
+      audio.src = new URL("../audio/" + playlist[0].file, import.meta.url).href;
     }
     const pending = audio.play();
     if (pending && pending.then) pending.then(() => align()).catch(() => align());
@@ -377,6 +393,14 @@ export function createAmbience() {
     unlock,
     follow(view) {
       if (!view || !Number.isFinite(Number(view.pos))) return;
+      const next = asPlaylist(view.tracks);
+      if (next) usePlaylist(next);
+      const level = Math.round(Number(view.volume));
+      if (Number.isInteger(level) && level >= 0 && level <= 100 && level !== volumePct) {
+        volumePct = level;
+        applied = -1;
+        applyGain();
+      }
       lastView = {
         pos: Number(view.pos) || 0,
         playing: view.playing === true,

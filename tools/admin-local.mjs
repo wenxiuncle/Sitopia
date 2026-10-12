@@ -1,5 +1,7 @@
 import { adminHtml } from "./admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "./admin-auth.mjs";
+import { musicForm, resolveOrder } from "./audio-catalog.mjs";
+import { scanAudioDir } from "./audio-scan.mjs";
 import { frameDispatch, frameStatus } from "./frames.mjs";
 
 const token = process.env.MUSEUM_ADMIN_TOKEN || "local-museum";
@@ -14,13 +16,14 @@ function send(res, status, body, extra) {
   res.end(JSON.stringify(body));
 }
 
-function readBody(req) {
+function readBody(req, max) {
+  const limit = max || 2048;
   return new Promise((resolve) => {
     const chunks = [];
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 2048) {
+      if (size > limit) {
         req.destroy();
         resolve(null);
         return;
@@ -123,6 +126,39 @@ async function route(req, res, lobby, path, url) {
   if (path === "/admin/api/frames" && req.method === "POST") {
     const body = await readBody(req);
     send(res, 200, await frameDispatch(process.env.GITHUB_DISPATCH_TOKEN || "", !!(body && body.full)));
+    return;
+  }
+  if (path === "/admin/api/music" && req.method === "GET") {
+    const catalog = scanAudioDir();
+    if (!catalog) {
+      send(res, 502, { error: "catalog" });
+      return;
+    }
+    send(res, 200, musicForm(catalog, lobby.musicSettings()));
+    return;
+  }
+  if (path === "/admin/api/music" && req.method === "POST") {
+    const body = await readBody(req, 16384);
+    if (!body) {
+      send(res, 400, { error: "body" });
+      return;
+    }
+    const catalog = scanAudioDir();
+    if (!catalog) {
+      send(res, 502, { error: "catalog" });
+      return;
+    }
+    const resolved = resolveOrder(catalog, body && body.order, body && body.volume);
+    if (resolved.error) {
+      send(res, 400, { error: resolved.error });
+      return;
+    }
+    const saved = lobby.setMusic(resolved);
+    if (!saved) {
+      send(res, 400, { error: "range" });
+      return;
+    }
+    send(res, 200, musicForm(catalog, saved));
     return;
   }
   if (path === "/admin/api/arrange" && req.method === "GET") {

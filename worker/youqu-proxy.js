@@ -5,6 +5,8 @@
 
 import { adminHtml } from "../tools/admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "../tools/admin-auth.mjs";
+import { musicForm, resolveOrder } from "../tools/audio-catalog.mjs";
+import { listRepoAudio } from "../tools/audio-remote.mjs";
 import { fetchedToday, frameDispatch, frameStatus } from "../tools/frames.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
@@ -31,6 +33,48 @@ async function forward(request, env) {
   if (ip) forwarded.headers.set("X-Sitopia-IP", ip.slice(0, 64));
   if (env && env.ADMIN_TOKEN) forwarded.headers.set("X-Sitopia-Proxy", env.ADMIN_TOKEN);
   return fetch(forwarded);
+}
+
+async function lobbyMusic(request, env, init) {
+  const headers = new Headers();
+  headers.set("X-Sitopia-Admin", env.ADMIN_TOKEN || "");
+  if (init && init.body) headers.set("content-type", "application/json");
+  const next = { method: init && init.method ? init.method : "GET", headers };
+  if (init && init.body) next.body = init.body;
+  const res = await fetch(new Request(upstream(request), next));
+  if (!res.ok) return null;
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function adminMusic(request, env) {
+  if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
+  if (request.method !== "GET" && request.method !== "POST") return new Response("method", { status: 405 });
+  const catalog = await listRepoAudio(env.GITHUB_DISPATCH_TOKEN || "");
+  if (!catalog) return json({ error: "catalog" }, 502);
+  if (request.method === "GET") {
+    const saved = await lobbyMusic(request, env);
+    if (!saved) return json({ error: "room" }, 502);
+    return json(musicForm(catalog, saved));
+  }
+  let body = null;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+  if (!body || typeof body !== "object") return json({ error: "body" }, 400);
+  const resolved = resolveOrder(catalog, body.order, body.volume);
+  if (resolved.error) return json({ error: resolved.error }, 400);
+  const saved = await lobbyMusic(request, env, {
+    method: "POST",
+    body: JSON.stringify({ tracks: resolved.tracks, volume: resolved.volume }),
+  });
+  if (!saved) return json({ error: "room" }, 502);
+  return json(musicForm(catalog, saved));
 }
 
 async function forwardAdmin(request, env) {
@@ -125,6 +169,7 @@ export default {
       }
       return new Response("method", { status: 405 });
     }
+    if (url.pathname === "/admin/api/music") return adminMusic(request, env);
     if (url.pathname.startsWith("/admin/api/")) {
       if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
       return forwardAdmin(request, env);

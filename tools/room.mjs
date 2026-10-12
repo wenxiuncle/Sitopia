@@ -3,8 +3,10 @@
 // 来访表只给后台按天查看。PHP 那间房间不记这张表。
 // 画框排列存在这间房间里。PHP 那间不存，展厅读不到时用原来的顺序。
 // 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
+// 顺序和音量也可以存在这里。没存过时，用 js/score.js 的默认曲目，音量按满。
 import { occupiesHall } from "../js/layout.js";
-import { wrapScore } from "../js/score.js";
+import { asPlaylist, scoreTotal, wrapScore } from "../js/score.js";
+import { readVolume } from "./audio-catalog.mjs";
 import { RECEPTION, receptionHome } from "../js/layout.js";
 
 export { PIN_CAP, cleanArrange } from "../js/layout.js";
@@ -132,19 +134,54 @@ export function namedCount(people) {
 }
 
 export function blankMusic(now) {
-  return { pos: 0, at: Number(now) || 0, playing: false };
+  return { pos: 0, at: Number(now) || 0, playing: false, volume: 100, tracks: null };
+}
+
+export function musicVolume(music) {
+  const n = readVolume(music && music.volume);
+  return n < 0 ? 100 : n;
 }
 
 export function musicPos(music, now) {
   if (!music) return 0;
   let pos = Number(music.pos) || 0;
   if (music.playing) pos += (Number(now) || 0) - (Number(music.at) || 0);
-  return wrapScore(pos);
+  return wrapScore(pos, scoreTotal(music.tracks));
 }
 
 export function musicView(music, now) {
   const at = Number(now) || Date.now();
-  return { t: "music", pos: Math.round(musicPos(music, at)), playing: !!music.playing, at };
+  const view = {
+    t: "music",
+    pos: Math.round(musicPos(music, at)),
+    playing: !!music.playing,
+    at,
+    volume: musicVolume(music),
+  };
+  if (music && music.tracks && music.tracks.length) view.tracks = music.tracks;
+  return view;
+}
+
+export function musicDesk(music) {
+  return {
+    volume: musicVolume(music),
+    tracks: music && music.tracks && music.tracks.length ? music.tracks : [],
+  };
+}
+
+// 先按旧曲目折住进度，再换成新顺序，避免保存时把时钟清零。
+export function applyMusicDesk(music, body, now) {
+  if (!music || !body || typeof body !== "object") return null;
+  const volume = readVolume(body.volume);
+  const tracks = asPlaylist(body.tracks);
+  if (volume < 0 || !tracks) return null;
+  const at = Number(now) || Date.now();
+  foldMusic(music, at);
+  music.volume = volume;
+  music.tracks = tracks;
+  music.pos = wrapScore(music.pos, scoreTotal(tracks));
+  music.at = at;
+  return musicView(music, at);
 }
 
 export function foldMusic(music, now) {
@@ -158,9 +195,13 @@ export function restoreMusic(saved, now) {
   const at = Number(now) || Date.now();
   const music = blankMusic(at);
   if (!saved || typeof saved !== "object") return music;
+  const tracks = asPlaylist(saved.tracks);
+  if (tracks) music.tracks = tracks;
+  const volume = readVolume(saved.volume);
+  if (volume >= 0) music.volume = volume;
   const pos = Number(saved.pos);
   const stamp = Number(saved.at);
-  if (Number.isFinite(pos)) music.pos = wrapScore(pos);
+  if (Number.isFinite(pos)) music.pos = wrapScore(pos, scoreTotal(music.tracks));
   if (Number.isFinite(stamp) && stamp > 0) music.at = stamp;
   music.playing = saved.playing === true;
   return music;

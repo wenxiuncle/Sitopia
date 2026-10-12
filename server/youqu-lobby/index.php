@@ -8,7 +8,7 @@ declare(strict_types=1);
 const MAX_PEOPLE = 24;
 const LOG_MAX = 40;
 const STALE_MS = 90000;
-// 与 js/score.js 的 SCORE_MS 相同。曲目或时长变了要一起改。
+// 与 js/score.js 的 SCORE_MS 相同。没另存曲目时用这份总长。曲目或时长变了要一起改。
 const SCORE_MS = 1622062;
 // 和 js/layout.js 的 RECEPTION 同一块：南墙到第一道墙，两根柱子内侧。
 const RECEPTION_MIN_X = -8.2;
@@ -399,25 +399,60 @@ function occupiesHall($x, $z): bool {
     return true;
 }
 
-function wrapScore(int $ms): int {
-    $n = $ms % SCORE_MS;
-    if ($n < 0) $n += SCORE_MS;
+function musicTracks(array $music): array {
+    if (empty($music["tracks"]) || !is_array($music["tracks"])) return [];
+    $out = [];
+    foreach ($music["tracks"] as $item) {
+        if (!is_array($item)) continue;
+        $file = isset($item["file"]) ? (string) $item["file"] : "";
+        $ms = isset($item["ms"]) ? (int) $item["ms"] : 0;
+        if ($file === "" || strpbrk($file, "/\\") !== false || strpos($file, "..") !== false) continue;
+        if ($ms < 1000 || $ms > 3600000) continue;
+        $out[] = ["file" => $file, "ms" => $ms];
+        if (count($out) >= 40) break;
+    }
+    return $out;
+}
+
+function musicTotal(array $music): int {
+    $tracks = musicTracks($music);
+    if (!$tracks) return SCORE_MS;
+    $n = 0;
+    foreach ($tracks as $item) $n += $item["ms"];
+    return $n > 0 ? $n : SCORE_MS;
+}
+
+function musicVolume(array $music): int {
+    if (!isset($music["volume"])) return 100;
+    $n = (int) $music["volume"];
+    if ((string) $n !== (string) $music["volume"] && !is_int($music["volume"])) return 100;
+    return $n >= 0 && $n <= 100 ? $n : 100;
+}
+
+function wrapScore(int $ms, int $total = SCORE_MS): int {
+    if ($total < 1) $total = SCORE_MS;
+    $n = $ms % $total;
+    if ($n < 0) $n += $total;
     return $n;
 }
 
 function musicPos(array $music, int $now): int {
     $pos = (int) ($music["pos"] ?? 0);
     if (!empty($music["playing"])) $pos += $now - (int) ($music["at"] ?? $now);
-    return wrapScore($pos);
+    return wrapScore($pos, musicTotal($music));
 }
 
 function musicView(array $music, int $now): array {
-    return [
+    $view = [
         "t" => "music",
         "pos" => musicPos($music, $now),
         "playing" => !empty($music["playing"]),
         "at" => $now,
+        "volume" => musicVolume($music),
     ];
+    $tracks = musicTracks($music);
+    if ($tracks) $view["tracks"] = $tracks;
+    return $view;
 }
 
 function hallOccupied(array $people): bool {
