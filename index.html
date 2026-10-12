@@ -6,9 +6,17 @@
   <title>趣站博物馆</title>
   <link rel="stylesheet" href="museum.css">
 </head>
-<body>
+<body class="opening">
   <canvas id="view" tabindex="-1"></canvas>
-  <div id="loading">正在布置展厅…</div>
+  <div id="loading" role="status">
+    <p id="loading-title">趣站博物馆</p>
+    <div id="loading-foot">
+      <p id="loading-label">正在布置展厅…</p>
+      <div id="loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="6" aria-label="布置进度">
+        <div id="loading-track"><span id="loading-bar"></span></div>
+      </div>
+    </div>
+  </div>
   <div id="crosshair" hidden><span></span><span></span><span></span><span></span></div>
   <div id="hover" hidden></div>
   <header id="where" hidden>

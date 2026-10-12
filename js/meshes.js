@@ -84,16 +84,23 @@ export function boxMesh(boxes, material) {
   return commit(mesh);
 }
 
-export function frameMeshes(frames, borderMat, matMat) {
+export function allocFrameMeshes(frames, borderMat, matMat) {
   const border = new THREE.InstancedMesh(new THREE.BoxGeometry(FRAME.w, FRAME.h, FRAME.d), borderMat, frames.length);
   const mat = new THREE.InstancedMesh(
     new THREE.PlaneGeometry(FRAME.w - 0.14, FRAME.h - 0.14),
     matMat,
     frames.length,
   );
+  return { border, mat };
+}
+
+export function writeFrameMeshes(frames, meshes, from, to) {
+  const border = meshes.border;
+  const mat = meshes.mat;
   const color = new THREE.Color();
   const stick = FRAME.d / 2 + 0.012;
-  for (let i = 0; i < frames.length; i++) {
+  const end = Math.min(frames.length, to);
+  for (let i = from; i < end; i++) {
     const f = frames[i];
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
@@ -107,10 +114,19 @@ export function frameMeshes(frames, borderMat, matMat) {
     color.set(f.color);
     mat.setColorAt(i, color);
   }
-  if (mat.instanceColor) mat.instanceColor.needsUpdate = true;
-  commit(border);
-  commit(mat);
-  return { border, mat };
+}
+
+export function finishFrameMeshes(meshes) {
+  if (meshes.mat.instanceColor) meshes.mat.instanceColor.needsUpdate = true;
+  commit(meshes.border);
+  commit(meshes.mat);
+  return meshes;
+}
+
+export function frameMeshes(frames, borderMat, matMat) {
+  const meshes = allocFrameMeshes(frames, borderMat, matMat);
+  writeFrameMeshes(frames, meshes, 0, frames.length);
+  return finishFrameMeshes(meshes);
 }
 
 // 宽图按画框高度放大，高图按画框宽度放大。多出来的在画框外，不拉变形。

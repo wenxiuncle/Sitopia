@@ -2,7 +2,7 @@ import * as THREE from "../vendor/three.module.js";
 import { createAmbience } from "./ambience.js";
 import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
-import { CITY_SHADOW_MAX, DAYS, dayIndex, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
+import { CITY_SHADOW_MAX, DAYS, dayIndex, findDay, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
 import {
   EYE,
@@ -30,7 +30,7 @@ import {
   pullCamera,
   zoneAt,
 } from "./layout.js";
-import { mountPresence, readSortMode } from "./presence.js";
+import { hasEnteredName, mountPresence, readSortMode } from "./presence.js";
 import { createReceptionState, receptionBody, stepReception } from "./reception.js";
 import { createReception } from "./robot.js";
 import {
@@ -47,7 +47,9 @@ import {
   floorAndCeiling,
   deckRailMesh,
   floorDiscMesh,
-  frameMeshes,
+  allocFrameMeshes,
+  writeFrameMeshes,
+  finishFrameMeshes,
   frameShadowMesh,
   handrailMesh,
   labelMeshes,
@@ -87,6 +89,9 @@ const params = new URLSearchParams(location.search);
 
 const view = document.getElementById("view");
 const loading = document.getElementById("loading");
+const loadingLabel = document.getElementById("loading-label");
+const loadingBar = document.getElementById("loading-bar");
+const loadingMeter = document.getElementById("loading-meter");
 const boot = document.getElementById("boot");
 const where = document.getElementById("where");
 const place = document.getElementById("place");
@@ -216,6 +221,9 @@ const atlasSlots = [];
 const atlasReady = new Map();
 let shownAtlas = -1;
 let buildSerial = 0;
+let pictureFloor = -2;
+let pictureToken = 0;
+let pictureDefer = null;
 let horizon = null;
 
 const WINDOW_GLOW = {
@@ -236,21 +244,80 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: "high-performance",
   alpha: false,
 });
-renderer.setClearColor(0x8ec8f2);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = false;
+document.body.classList.add("opening");
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8ec8f2);
-scene.fog = new THREE.Fog(0xb7d6ea, 60, 420);
+const bootNoon = findDay("noon");
+renderer.setClearColor(bootNoon.horizon);
+scene.background = new THREE.Color(bootNoon.horizon);
+scene.fog = new THREE.Fog(bootNoon.horizon, 60, 420);
+document.body.style.background = "#" + bootNoon.horizon.toString(16).padStart(6, "0");
 
 const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 900);
 camera.rotation.order = "YXZ";
 
-function showFatal(message) {
-  loading.hidden = false;
-  loading.textContent = message;
+let loadProgress = 0;
+let loadCreep = true;
+let hallReady = false;
+let nameCommitted = false;
+let vistaRun = false;
+let vistaBegun = false;
+let vistaNow = 0;
+let vistaStamp = 0;
+let vistaT0 = 0;
+let entryView = null;
+let parkFresh = null;
+const VISTA_LEG = 20000;
+const VISTA_STEP = 32;
+// 起名后从当前远景滑到出生点。二次缓出：开头快，收尾速度落到零，才接得上静止的出生画面。
+const ARRIVE_MS = 2400;
+const ARRIVE_STEP = 32;
+let arriveFromGate = false;
+let arrivalQueued = false;
+let arrivalRun = false;
+let arrivalStamp = 0;
+let arrivalNow = 0;
+let arrivalT0 = 0;
+const arrivalFromPos = new THREE.Vector3();
+const arrivalToPos = new THREE.Vector3();
+const arrivalFromQuat = new THREE.Quaternion();
+const arrivalToQuat = new THREE.Quaternion();
+
+function setLoadProgress(value) {
+  const next = Math.max(loadProgress, Math.min(1, value));
+  if (next === loadProgress) return;
+  loadProgress = next;
+  if (loadingBar) loadingBar.style.transform = "scaleX(" + loadProgress + ")";
+  if (loadingMeter) loadingMeter.setAttribute("aria-valuenow", String(Math.round(loadProgress * 100)));
 }
+
+function creepLoad() {
+  if (!loadCreep) return;
+  if (loadProgress < 0.22) setLoadProgress(loadProgress + 0.0035);
+  requestAnimationFrame(creepLoad);
+}
+
+function yieldPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0);
+    });
+  });
+}
+
+function showFatal(message) {
+  loadCreep = false;
+  loading.hidden = false;
+  if (loadingLabel) loadingLabel.textContent = message;
+  else loading.textContent = message;
+}
+
+resize();
+renderer.clear();
+setLoadProgress(0.06);
+requestAnimationFrame(creepLoad);
 
 function resize() {
   const w = window.innerWidth;
@@ -570,6 +637,12 @@ function crowdHere() {
 function approachYaw(from, to, k) {
   const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
   return from + delta * k;
+}
+
+function showReception(now) {
+  if (!reception) return;
+  reception.group.visible = true;
+  updateReception(0.016, now || performance.now());
 }
 
 function updateReception(dt, now) {
@@ -1136,9 +1209,13 @@ function step(dt, now) {
   }
 }
 
+function openingNow() {
+  return document.body.classList.contains("opening");
+}
+
 function noteGesture() {
   heardGesture = true;
-  if (ambience) ambience.unlock();
+  if (ambience && !openingNow()) ambience.unlock();
 }
 
 const fpsReadout = document.getElementById("fps");
@@ -1217,16 +1294,19 @@ function makeBeacons(roof) {
   return { group, mat, glow };
 }
 
+function paintBeacons(now) {
+  if (!beacons) return;
+  const phase = now % 1300;
+  const blink = dayIsNight && (phase < 120 || (phase > 240 && phase < 360));
+  beacons.group.visible = dayIsNight;
+  beacons.mat.color.setHex(blink ? 0xff2a18 : 0xc41410);
+  beacons.glow.opacity = blink ? 0.45 : 0.14;
+}
+
 function animate(now) {
   noteFps(now);
   noteLag(now);
-  if (beacons) {
-    const phase = now % 1300;
-    const blink = dayIsNight && (phase < 120 || (phase > 240 && phase < 360));
-    beacons.group.visible = dayIsNight;
-    beacons.mat.color.setHex(blink ? 0xff2a18 : 0xc41410);
-    beacons.glow.opacity = blink ? 0.45 : 0.14;
-  }
+  paintBeacons(now);
   const dt = Math.min(MAX_STEP, seconds(now));
   step(dt, now);
   if (horizon) horizon.drift(now);
@@ -1298,6 +1378,7 @@ function bind() {
     else if (index >= 0) openFrame(index);
   });
   document.addEventListener("click", (event) => {
+    if (openingNow()) return;
     noteGesture();
     const selecting = suppressWalkClick;
     if (selecting) suppressWalkClick = false;
@@ -1310,6 +1391,7 @@ function bind() {
     enterWalk();
   }, true);
   document.addEventListener("mousemove", (event) => {
+    if (openingNow()) return;
     if (draggingField) return;
     if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
@@ -1333,6 +1415,12 @@ function bind() {
     event.stopPropagation();
   }, true);
   document.addEventListener("keydown", (event) => {
+    if (openingNow()) {
+      const field = event.target;
+      if (field && field.closest && field.closest("#name-gate")) return;
+      event.preventDefault();
+      return;
+    }
     noteGesture();
     if (event.code === "Tab") return;
     const typing = event.target;
@@ -1581,7 +1669,10 @@ function placeShapeShadows(sun) {
     shapeMesh.geometry.dispose();
   }
   shapeMesh = next;
-  if (shapeMesh) scene.add(shapeMesh);
+  if (shapeMesh) {
+    if (parkFresh) parkFresh(shapeMesh);
+    else scene.add(shapeMesh);
+  }
 }
 
 function applyDay(day) {
@@ -1622,6 +1713,198 @@ function applyDay(day) {
   // 门口光斑是室外太阳投进来的。馆内改由天花灯照，地面不再铺这条亮带。
   writePatches({ streak: 0x000000, streakGain: 0 }, sun);
   if (bodyRoom) setBodyLight(sun, bodyRoom);
+}
+
+function captureView() {
+  return {
+    px, py, pz,
+    pos: camera.position.clone(),
+    rot: camera.rotation.clone(),
+  };
+}
+
+function restoreView(saved) {
+  px = saved.px;
+  py = saved.py;
+  pz = saved.pz;
+  camera.position.copy(saved.pos);
+  camera.rotation.copy(saved.rot);
+  camera.updateMatrixWorld();
+}
+
+function openingDay() {
+  return findDay("noon");
+}
+
+// 南立面远景。e 从 0 到 1，摄像机沿广场外由西向东横移，始终看着楼。
+function placeApproach(e) {
+  const shell = built.shell;
+  const lookY = Math.max(8, Math.min(shell.top * 0.46, 40));
+  const y = Math.max(9, Math.min(lookY * 0.5, 22));
+  const z = shell.maxZ + 68;
+  const x = -28 + 56 * e;
+  camera.position.set(x, y, z);
+  camera.lookAt(0, lookY, shell.maxZ);
+  camera.updateMatrixWorld();
+}
+
+function advanceVista(t) {
+  if (!vistaStamp) {
+    vistaStamp = t;
+    if (!vistaNow) vistaNow = t;
+    return vistaNow;
+  }
+  let dt = t - vistaStamp;
+  vistaStamp = t;
+  if (!(dt > 0)) dt = 0;
+  // 某一帧被布置堵住时，只停在原地，不按墙上的时钟往前跳。
+  if (dt > VISTA_STEP) dt = VISTA_STEP;
+  vistaNow += dt;
+  return vistaNow;
+}
+
+function vistaE(now) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 0.5;
+  const elapsed = Math.max(0, now - vistaT0);
+  const leg = Math.floor(elapsed / VISTA_LEG);
+  const u = (elapsed % VISTA_LEG) / VISTA_LEG;
+  const eased = 0.5 - 0.5 * Math.cos(Math.PI * u);
+  return leg % 2 === 0 ? eased : 1 - eased;
+}
+
+function easeOutArrive(u) {
+  const t = u < 0 ? 0 : u > 1 ? 1 : u;
+  const inv = 1 - t;
+  return 1 - inv * inv;
+}
+
+function advanceArrival(t) {
+  if (!arrivalStamp) {
+    arrivalStamp = t;
+    if (!arrivalNow) arrivalNow = t;
+    return arrivalNow;
+  }
+  let dt = t - arrivalStamp;
+  arrivalStamp = t;
+  if (!(dt > 0)) dt = 0;
+  // 某一帧被室内网格堵住时，只停在半路，不按墙上的时钟甩到出生点。
+  if (dt > ARRIVE_STEP) dt = ARRIVE_STEP;
+  arrivalNow += dt;
+  return arrivalNow;
+}
+
+function placeArrival(e) {
+  camera.position.lerpVectors(arrivalFromPos, arrivalToPos, e);
+  camera.quaternion.slerpQuaternions(arrivalFromQuat, arrivalToQuat, e);
+  camera.updateMatrixWorld();
+}
+
+function paintOpening() {
+  const day = openingDay();
+  const sun = sunVector(day);
+  if (sunShared) {
+    sunShared.dir.value.set(sun.x, sun.y, sun.z);
+    sunShared.tint.value.set(day.tint);
+    sunShared.shade.value = day.shade;
+  }
+  if (sunRoles) {
+    sunRoles.room.tint.value.set(day.tint);
+    sunRoles.glass.tint.value.set(day.tint);
+    sunRoles.ground.fill.value = day.fillGround;
+    sunRoles.ground.gain.value = day.gainGround;
+    sunRoles.open.fill.value = day.fillOpen;
+    sunRoles.open.gain.value = day.gainOpen;
+    sunRoles.room.fill.value = day.fillRoom;
+    sunRoles.room.gain.value = day.gainRoom;
+    sunRoles.glass.fill.value = day.fillGlass;
+    sunRoles.glass.gain.value = day.gainGlass;
+  }
+  const skyline = new THREE.Color(day.horizon);
+  scene.background.copy(skyline);
+  scene.fog.color.copy(skyline);
+  renderer.setClearColor(skyline);
+  document.body.style.background = skyline.getStyle();
+  document.body.classList.remove("dark-sky");
+  dayIsNight = false;
+  if (skyMesh) paintSky(day);
+  if (sunMesh) {
+    sunMesh.material.color.set(day.sun);
+    sunMesh.position.set(sun.x, sun.y, sun.z).multiplyScalar(SUN_FAR);
+    sunMesh.scale.setScalar(day.disc);
+  }
+  setFacadeSignNight(false);
+  if (horizon && horizon.glow) horizon.glow.color.set(WINDOW_GLOW.noon);
+}
+
+function drawVista(t) {
+  const now = advanceVista(t);
+  if (!vistaT0) vistaT0 = now;
+  placeApproach(vistaE(now));
+  if (horizon) horizon.drift(now);
+  if (beacons) beacons.group.visible = false;
+  try { renderer.render(scene, camera); } catch { /* 这一帧画失败就等下一帧。 */ }
+}
+
+function vistaFrame(t) {
+  if (!vistaRun) return;
+  drawVista(t || performance.now());
+  if (vistaRun) requestAnimationFrame(vistaFrame);
+}
+
+function showVistaStill() {
+  paintOpening();
+  placeApproach(0);
+  renderer.setRenderTarget(null);
+  try { renderer.render(scene, camera); } catch { /* 远景第一帧失败也继续。 */ }
+}
+
+function startVista() {
+  if (vistaRun) return;
+  if (!vistaBegun) {
+    vistaBegun = true;
+    vistaNow = 0;
+    vistaStamp = 0;
+    vistaT0 = 0;
+    paintOpening();
+  } else {
+    vistaStamp = 0;
+  }
+  renderer.setRenderTarget(null);
+  vistaRun = true;
+  vistaFrame(performance.now());
+}
+
+function stopVista() {
+  vistaRun = false;
+  vistaStamp = 0;
+}
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function shown() {
+  if (!vistaRun) return;
+  await nextFrame();
+}
+
+function warmAlongside(held) {
+  if (!held || !held.length) return;
+  // 只排队编译，不把室内画进远景。第一次绘制会把没编完的着色器等完，镜头就会顿一下。
+  try {
+    if (typeof renderer.compileAsync === "function") {
+      const pending = renderer.compileAsync(scene, camera);
+      if (pending && typeof pending.then === "function") pending.then(() => {}, () => {});
+      return;
+    }
+    renderer.compile(scene, camera);
+  } catch {
+    /* 预热失败也要能进馆。 */
+  }
+}
+
+function knownVisitor() {
+  return hasEnteredName() || params.has("noname") || nameCommitted;
 }
 
 // 布置阶段先把馆内、门口和轿厢各画一次到离屏目标，着色器和网格在进门前就编译好。
@@ -1693,11 +1976,14 @@ function rehangFrames() {
   trackPictures();
 }
 
-function buildScene(data, arrange) {
+async function buildScene(data, arrange) {
+  const directPose = params.has("selftest") || params.has("preview") || params.has("x") || params.has("z") || params.has("y") || params.has("yaw") || params.has("car");
   sites = data.sites;
   hangArrange = arrange;
   hangSort = readSortMode();
   built = buildMuseum(sites, hangArrange, hangSort);
+  // 一楼配图从布置一开始拉，不等进门。
+  startBuild(0, false);
   const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
   bodyRoom = {
     minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
@@ -1941,30 +2227,53 @@ function buildScene(data, arrange) {
   liftDoors.update(doorOpen, 0);
   scene.add(liftDoors.root);
   fillLiftPad();
-  const frames = frameMeshes(built.frames, borderMat, matMat);
-  scene.add(frames.border, frames.mat);
-  mats = frames.mat;
+  const parked = [];
+  const stage = (obj) => {
+    if (!obj) return;
+    if (vistaRun) {
+      obj.visible = false;
+      parked.push(obj);
+    }
+    scene.add(obj);
+  };
+  // 外立面先动。室内网格先别画进这一镜，布置让出每一帧，镜头才连得上。
+  if (directPose) showVistaStill();
+  else startVista();
+  await shown();
+  const framePair = allocFrameMeshes(built.frames, borderMat, matMat);
+  for (let i = 0; i < built.frames.length; i += 24) {
+    writeFrameMeshes(built.frames, framePair, i, i + 24);
+    await shown();
+  }
+  finishFrameMeshes(framePair);
+  stage(framePair.border);
+  stage(framePair.mat);
+  mats = framePair.mat;
   const white = new THREE.Color("#f7f3ec");
   baseColors = new Array(built.frames.length);
   hoverColors = new Array(built.frames.length);
   for (let i = 0; i < built.frames.length; i++) {
     baseColors[i] = new THREE.Color(built.frames[i].color);
     hoverColors[i] = baseColors[i].clone().lerp(white, 0.55);
+    if ((i + 1) % 24 === 0) await shown();
   }
+  await shown();
   const indoorShadow = softShadowMaterial(0.55);
   if (built.plants.length) {
     const plants = plantMeshes(built.plants, potMat, leafMat);
-    if (plants.pots) scene.add(plants.pots);
-    for (let i = 0; i < plants.leaves.length; i++) if (plants.leaves[i]) scene.add(plants.leaves[i]);
+    if (plants.pots) stage(plants.pots);
+    for (let i = 0; i < plants.leaves.length; i++) if (plants.leaves[i]) stage(plants.leaves[i]);
     const plantShade = softShadowMaterial(0.6, true);
     shadowMesh = plantShadowMesh(built.plants, plantShade);
     if (shadowMesh) {
       placePlantShadows(shadowMesh, built.plants, 1.7);
-      scene.add(shadowMesh);
+      stage(shadowMesh);
     }
   }
+  await shown();
   const frameShade = frameShadowMesh(built.frames, indoorShadow);
-  if (frameShade) scene.add(frameShade);
+  if (frameShade) stage(frameShade);
+  await shown();
   const contactShadow = softShadowMaterial(0.55, true);
   const indoorDrops = [];
   for (let i = 0; i < built.extinguishers.length; i++) {
@@ -1980,18 +2289,20 @@ function buildScene(data, arrange) {
   const indoorDropMesh = dropShadowMesh(indoorDrops.length, contactShadow);
   if (indoorDropMesh) {
     placeDropShadows(indoorDropMesh, indoorDrops, null);
-    scene.add(indoorDropMesh);
+    stage(indoorDropMesh);
   }
+  await shown();
   shapeMat = shapeShadowMaterial(shapeShadowOpacity(DAYS[dayCursor], sunVector(DAYS[dayCursor])));
   patchMesh = sunPatchMesh(built.openings.length);
-  scene.add(patchMesh);
+  stage(patchMesh);
   nightSpillMesh = sunPatchMesh(2);
   // 观景台影子和门口路面都往镜头偏。光画在它们之后，并再偏一档，才留在最上面。
   nightSpillMesh.renderOrder = 2;
   nightSpillMesh.material.polygonOffset = true;
   nightSpillMesh.material.polygonOffsetFactor = -5;
   nightSpillMesh.material.polygonOffsetUnits = -8;
-  scene.add(nightSpillMesh);
+  stage(nightSpillMesh);
+  await shown();
   beacons = makeBeacons(built.dress.find((item) => item.kind === "roof"));
   if (beacons) scene.add(beacons.group);
   const cones = lightConeMesh(built.cones, coneMat);
@@ -2001,9 +2312,10 @@ function buildScene(data, arrange) {
     beamMat,
     lit(0xd5cfc6, "room"),
   );
-  if (cones) scene.add(cones);
-  if (discs) scene.add(discs);
-  if (heads) scene.add(heads);
+  if (cones) stage(cones);
+  if (discs) stage(discs);
+  if (heads) stage(heads);
+  await shown();
   const ledGlow = new THREE.MeshBasicMaterial({ color: 0xe8c98a });
   const ledPool = new THREE.MeshBasicMaterial({
     color: 0xf0ddb8,
@@ -2036,9 +2348,10 @@ function buildScene(data, arrange) {
   });
   const leds = ledRig(built.leds, lit(0xc8bba6, "room"), ledGlow, ledPool);
   const sconces = sconceRig(built.sconces, lit(0xa67c3d, "room"), sconceShade, sconceWash, sconcePool);
-  if (leds) scene.add(leds);
-  if (sconces) scene.add(sconces);
+  if (leds) stage(leds);
+  if (sconces) stage(sconces);
   if (params.has("debug")) scene.add(colliderLines(built.walls));
+  await shown();
 
   legendEl.replaceChildren();
   for (let i = 0; i < built.legend.length; i++) {
@@ -2049,7 +2362,10 @@ function buildScene(data, arrange) {
     legendEl.appendChild(li);
   }
 
-  applyDay(DAYS[dayCursor]);
+  await shown();
+  parkFresh = stage;
+  applyDay(openingDay());
+  parkFresh = null;
   resetPose();
   if (params.has("preview") && built.frames.length) {
     const frame = built.frames[Math.min(24, built.frames.length - 1)];
@@ -2074,14 +2390,32 @@ function buildScene(data, arrange) {
     camera.rotation.y = Number(params.get("yaw")) * Math.PI / 180;
     camera.rotation.x = Number(params.get("pitch") || 0) * Math.PI / 180;
   }
+  entryView = captureView();
+  placeApproach(vistaRun ? vistaE(vistaNow) : 0);
+  await shown();
   const visitorMat = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0xffffff });
   attachSun(visitorMat, sunShared, sunRoles.body);
   const visitorShadow = softShadowMaterial(0.5);
   selfVisitor = createVisitor(visitorMat, visitorShadow);
   selfVisitor.group.visible = false;
   scene.add(selfVisitor.group);
+  await shown();
   reception = createReception(scene, sunShared, sunRoles.body);
   reception.place(receptionRender, performance.now());
+  // 远景不画接待机器人。先在离屏编好着色器，进馆再显出来。
+  const robotWarm = new THREE.WebGLRenderTarget(8, 8);
+  const prevRobotTarget = renderer.getRenderTarget();
+  try {
+    renderer.setRenderTarget(robotWarm);
+    renderer.render(scene, camera);
+  } catch {
+    /* 预热失败也继续。 */
+  } finally {
+    renderer.setRenderTarget(prevRobotTarget);
+    robotWarm.dispose();
+  }
+  reception.group.visible = false;
+  await shown();
   presence = mountPresence({
     scene,
     material: visitorMat,
@@ -2098,8 +2432,21 @@ function buildScene(data, arrange) {
       if (active) down.clear();
     },
     onGate: (open) => {
-      if (open) showEscCard();
-      else hideEscCard();
+      if (open) {
+        nameCommitted = false;
+        showEscCard();
+      } else {
+        nameCommitted = true;
+        hideEscCard();
+        if (directPose) {
+          if (hallReady) reveal();
+          return;
+        }
+        // 卡片先拿掉。远景停在这一帧，滑行从这里出发，不从下一帧的横移出发。
+        arriveFromGate = true;
+        stopVista();
+        if (hallReady) scheduleArrival();
+      }
     },
     onKick: (active) => {
       visitorOut = !!active;
@@ -2136,7 +2483,12 @@ function buildScene(data, arrange) {
       requestWalk();
     },
   });
-  prepareAtlases();
+  const nameGate = document.getElementById("name-gate");
+  const holdGate = !!(nameGate && !nameGate.hidden);
+  if (holdGate) nameGate.hidden = true;
+  await prepareAtlases(() => {
+    if (vistaRun) warmAlongside(parked);
+  });
   resize();
   shownFloor = playerFloor();
   if (params.get("person") === "3") thirdPerson = true;
@@ -2144,13 +2496,24 @@ function buildScene(data, arrange) {
     const toggle = document.getElementById("drawer-toggle");
     if (toggle) toggle.click();
   }
-  trackPictures();
   ambience = createAmbience();
-  if (heardGesture) ambience.unlock();
-  try {
-    warmPrograms();
-  } catch {
-    /* 预热失败也要能进馆。 */
+  await shown();
+  if (!vistaRun) {
+    try {
+      warmPrograms();
+    } catch {
+      /* 预热失败也要能进馆。 */
+    }
+  }
+  if (holdGate) {
+    for (let i = 0; i < 6; i++) await shown();
+    nameGate.hidden = false;
+    const nameInput = document.getElementById("name-input");
+    requestAnimationFrame(() => {
+      if (nameGate.hidden || !nameInput) return;
+      try { nameInput.focus({ preventScroll: true }); }
+      catch { nameInput.focus(); }
+    });
   }
   let warmed = Promise.resolve();
   try {
@@ -2159,18 +2522,174 @@ function buildScene(data, arrange) {
     warmed = Promise.resolve();
   }
   const cap = new Promise((resolve) => window.setTimeout(resolve, 5000));
-  const reveal = () => {
-    if (reveal.done) return;
-    reveal.done = true;
+  let compileDone = false;
+  const compiled = Promise.race([Promise.resolve(warmed), cap]).then(() => {
+    compileDone = true;
+  });
+  function settleHall() {
+    loadCreep = false;
+    hallReady = true;
+    for (let i = 0; i < parked.length; i++) parked[i].visible = true;
+    stopVista();
+    applyDay(DAYS[dayCursor]);
     renderer.setRenderTarget(null);
     resize();
+    setLoadProgress(1);
+    loading.classList.remove("name-hold");
     loading.hidden = true;
+  }
+
+  function holdNameChrome() {
+    loadCreep = false;
+    loading.hidden = false;
+    loading.classList.add("name-hold");
+  }
+
+  function showPlayHud() {
+    document.body.classList.remove("opening");
     hideEscCard();
     where.hidden = false;
     crosshair.hidden = false;
+    if (gateOpen()) {
+      const input = document.getElementById("name-input");
+      if (input) input.focus();
+    }
+    if (heardGesture && ambience) ambience.unlock();
+  }
+
+  function presentPlayer() {
+    showReception(performance.now());
+    showPlayHud();
+    trackPictures();
     requestAnimationFrame(animate);
+  }
+
+  function reveal() {
+    if (reveal.done || arrivalQueued) return;
+    reveal.done = true;
+    settleHall();
+    if (entryView) restoreView(entryView);
+    presentPlayer();
+  }
+
+  function beginArrival() {
+    if (reveal.done) return;
+    reveal.done = true;
+    settleHall();
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!entryView || reduced) {
+      if (entryView) restoreView(entryView);
+      presentPlayer();
+      return;
+    }
+    arrivalFromPos.copy(camera.position);
+    arrivalFromQuat.copy(camera.quaternion);
+    arrivalToPos.copy(entryView.pos);
+    arrivalToQuat.setFromEuler(entryView.rot);
+    const samePlace = arrivalFromPos.distanceToSquared(arrivalToPos) < 0.0025
+      && Math.abs(arrivalFromQuat.dot(arrivalToQuat)) > 0.9995;
+    if (samePlace) {
+      restoreView(entryView);
+      presentPlayer();
+      return;
+    }
+    const held = performance.now();
+    if (horizon) horizon.drift(held);
+    paintBeacons(held);
+    // 室内网格和真实时辰先画在原地。这一下若偏慢，时钟还没走，镜头不会跳。
+    try { renderer.render(scene, camera); } catch { /* 这一帧画失败就等下一帧。 */ }
+    const t = performance.now();
+    arrivalStamp = t;
+    arrivalNow = t;
+    arrivalT0 = t;
+    arrivalRun = true;
+    requestAnimationFrame(arrivalFrame);
+  }
+
+  function arrivalFrame(t) {
+    if (!arrivalRun) return;
+    const now = advanceArrival(t || performance.now());
+    const u = Math.min(1, (now - arrivalT0) / ARRIVE_MS);
+    if (horizon) horizon.drift(now);
+    paintBeacons(now);
+    if (u >= 1) {
+      arrivalRun = false;
+      showReception(now);
+      // 不用插值收尾。最后一帧就是出生姿态，下一帧玩家循环接上才没有一跳。
+      if (entryView) restoreView(entryView);
+      showPlayHud();
+      try { renderer.render(scene, camera); } catch { /* 这一帧画失败就等下一帧。 */ }
+      trackPictures();
+      requestAnimationFrame(animate);
+      return;
+    }
+    placeArrival(easeOutArrive(u));
+    try { renderer.render(scene, camera); } catch { /* 这一帧画失败就等下一帧。 */ }
+    if (arrivalRun) requestAnimationFrame(arrivalFrame);
+  }
+
+  function scheduleArrival() {
+    if (reveal.done || arrivalQueued) return;
+    arrivalQueued = true;
+    // 先让昵称卡片从画面上消失，再开室内。这两帧镜头不动。
+    requestAnimationFrame(() => {
+      requestAnimationFrame(beginArrival);
+    });
+  }
+
+  function arriveFromLoad() {
+    if (reveal.done || arrivalQueued) return;
+    // 加载画面就停在刚画完的这一帧。下一帧再开室内，滑行从这一机位出发。
+    stopVista();
+    arrivalQueued = true;
+    requestAnimationFrame(beginArrival);
+  }
+
+  setLoadProgress(0.7);
+  const creepFrom = loadProgress;
+  const creepAt = performance.now();
+  const creepCompile = () => {
+    if (compileDone || reveal.done) return;
+    const u = Math.min(1, (performance.now() - creepAt) / 5000);
+    setLoadProgress(creepFrom + (0.84 - creepFrom) * u);
+    requestAnimationFrame(creepCompile);
   };
-  Promise.race([Promise.resolve(warmed), cap]).then(reveal, reveal);
+  requestAnimationFrame(creepCompile);
+  compiled.then(() => {
+    hallReady = true;
+    setLoadProgress(1);
+    if (directPose) {
+      reveal();
+      return;
+    }
+    if (arriveFromGate) {
+      stopVista();
+      scheduleArrival();
+      return;
+    }
+    if (hasEnteredName()) {
+      arriveFromLoad();
+      return;
+    }
+    if (knownVisitor()) reveal();
+    else holdNameChrome();
+  }, () => {
+    hallReady = true;
+    if (directPose) {
+      reveal();
+      return;
+    }
+    if (arriveFromGate) {
+      stopVista();
+      scheduleArrival();
+      return;
+    }
+    if (hasEnteredName()) {
+      arriveFromLoad();
+      return;
+    }
+    reveal();
+  });
 }
 
 function yieldTurn(fn) {
@@ -2263,7 +2782,7 @@ function blankUv() {
   return uv;
 }
 
-function prepareAtlases() {
+async function prepareAtlases(whenMapped) {
   let most = 1;
   for (let f = 0; f < built.floors; f++) {
     const n = floorPictureJobs(f).length;
@@ -2281,8 +2800,6 @@ function prepareAtlases() {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d", { alpha: false });
-    ctx.fillStyle = "#f7f5f2";
-    ctx.fillRect(0, 0, w, h);
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.generateMipmaps = false;
@@ -2290,9 +2807,8 @@ function prepareAtlases() {
     texture.magFilter = THREE.LinearFilter;
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
-    renderer.initTexture(texture);
-    texture.needsUpdate = false;
     atlasSlots.push({ canvas, ctx, texture, w, h });
+    await shown();
   }
   const strip = document.createElement("canvas");
   strip.width = w;
@@ -2310,14 +2826,34 @@ function prepareAtlases() {
   mats.material.map = atlasSlots[0].texture;
   mats.material.needsUpdate = true;
   const white = new THREE.Color("#ffffff");
+  if (built.frames.length) mats.setColorAt(0, white);
+  await shown();
+  if (whenMapped) await whenMapped();
+  await shown();
+  for (let s = 0; s < atlasSlots.length; s++) {
+    const slot = atlasSlots[s];
+    slot.ctx.fillStyle = "#f7f5f2";
+    const band = 128;
+    for (let y = 0; y < h; y += band) {
+      slot.ctx.fillRect(0, y, w, Math.min(band, h - y));
+      await shown();
+    }
+    slot.texture.needsUpdate = true;
+    renderer.initTexture(slot.texture);
+    slot.texture.needsUpdate = false;
+    await shown();
+  }
   for (let i = 0; i < built.frames.length; i++) {
     baseColors[i].copy(white);
     hoverColors[i].copy(white);
     mats.setColorAt(i, white);
+    if ((i + 1) % 64 === 0) await shown();
   }
   mats.instanceColor.needsUpdate = true;
   shownAtlas = 0;
   pictureGrid = grid;
+  await shown();
+  flushPictureDefer();
 }
 
 function applyAtlas(pack) {
@@ -2380,7 +2916,11 @@ function drawCover(ctx, img, ox, oy, cellW, cellH) {
 }
 
 function paintIntoSlot(token, floor, pictures, fallback) {
-  if (token !== buildSerial || !mats) return;
+  if (token !== buildSerial) return;
+  if (!mats || !atlasSlots.length) {
+    pictureDefer = { token, floor, pictures, fallback };
+    return;
+  }
   const slot = claimSlot();
   const holder = atlasSlots[slot];
   const grid = atlasGridSize;
@@ -2439,6 +2979,14 @@ function prefetchAround(floor) {
   }
 }
 
+function flushPictureDefer() {
+  const pending = pictureDefer;
+  if (!pending || pending.token !== buildSerial || !mats || !atlasSlots.length) return;
+  pictureDefer = null;
+  if (pending.plain) commitPlain(pending.floor);
+  else paintIntoSlot(pending.token, pending.floor, pending.pictures, pending.fallback);
+}
+
 function startBuild(floor, showWhenDone) {
   if (!built || floor < 0 || floor >= built.floors) return;
   if (showWhenDone) revealFloor = floor;
@@ -2448,7 +2996,11 @@ function startBuild(floor, showWhenDone) {
     if (showWhenDone) prefetchAround(floor);
     return;
   }
+  if (pictureFloor === floor && pictureToken === buildSerial) return;
+  pictureFloor = floor;
+  pictureDefer = null;
   const token = ++buildSerial;
+  pictureToken = token;
   dropQueued();
   const jobs = floorPictureJobs(floor);
   const pictures = [];
@@ -2487,6 +3039,10 @@ function startBuild(floor, showWhenDone) {
 }
 
 function commitPlain(floor) {
+  if (!mats || !atlasSlots.length) {
+    pictureDefer = { token: buildSerial, floor, plain: true };
+    return;
+  }
   const slot = claimSlot();
   const pack = { floor, texture: atlasSlots[slot].texture, uv: blankUv(), slot, count: 0 };
   atlasReady.set(floor, pack);
@@ -2552,5 +3108,13 @@ fetch("data/sites.json")
     if (!res.ok) throw new Error("sites.json " + res.status);
     return res.json();
   })
-  .then((data) => loadArrange().then((arrange) => buildScene(data, arrange)))
+  .then((data) => {
+    setLoadProgress(0.28);
+    return yieldPaint().then(() => loadArrange().then((arrange) => ({ data, arrange })));
+  })
+  .then((packed) => {
+    loadCreep = false;
+    setLoadProgress(0.36);
+    return yieldPaint().then(() => buildScene(packed.data, packed.arrange));
+  })
   .catch(() => showFatal("展品清单没有读到。请先运行 node tools/fetch-sites.mjs"));

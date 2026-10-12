@@ -5,6 +5,17 @@ import { createCrowd } from "./avatar.js";
 // 线上页面经 lobby.youquhome.com 转到 Cloudflare 房间。本机仍走自己的 /lobby。
 const PUBLIC_LOBBY = "wss://lobby.youquhome.com/lobby";
 
+function lobbyBase() {
+  const host = location.hostname;
+  if (host === "127.0.0.1" || host === "localhost") {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + location.host + "/lobby";
+  }
+  const custom = new URLSearchParams(location.search).get("lobby");
+  if (custom && /^(https?|wss?):\/\//.test(custom)) return custom;
+  return PUBLIC_LOBBY;
+}
+
 const NAME_KEY = "quzhan-museum-name";
 const NAMED_KEY = "quzhan-museum-named";
 const MAP_KEY = "quzhan-museum-map";
@@ -70,6 +81,10 @@ function readConfirmed() {
   } catch {
     return false;
   }
+}
+
+export function hasEnteredName() {
+  return readConfirmed();
 }
 
 export function mountPresence(options) {
@@ -610,14 +625,7 @@ export function mountPresence(options) {
   }
 
   function lobbyAddress() {
-    const host = location.hostname;
-    if (host === "127.0.0.1" || host === "localhost") {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      return proto + "//" + location.host + "/lobby";
-    }
-    const custom = new URLSearchParams(location.search).get("lobby");
-    if (custom && /^(https?|wss?):\/\//.test(custom)) return custom;
-    return PUBLIC_LOBBY;
+    return lobbyBase();
   }
 
   function scheduleHttp(session) {
