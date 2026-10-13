@@ -1021,7 +1021,11 @@ export const adminHtml = `<!DOCTYPE html>
         body: JSON.stringify({ token: document.getElementById("token").value }),
       });
       if (res.status === 503) {
-        loginError.textContent = "线上口令还没设置";
+        loginError.textContent = "后台口令还没设置";
+        return;
+      }
+      if (res.status === 429) {
+        loginError.textContent = "试得太频繁，过一会儿再来";
         return;
       }
       if (!res.ok) {

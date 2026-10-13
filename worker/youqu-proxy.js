@@ -8,8 +8,10 @@ import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "../tools/
 import { musicForm, resolveOrder } from "../tools/audio-catalog.mjs";
 import { listRepoAudio } from "../tools/audio-remote.mjs";
 import { fetchedToday, frameDispatch, frameStatus } from "../tools/frames.mjs";
+import { createLoginGuard, pause } from "../tools/login-guard.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
+const guard = createLoginGuard();
 
 function json(body, status, extra) {
   const headers = Object.assign({
@@ -112,6 +114,11 @@ function adminPage() {
 async function adminLogin(request, env) {
   const token = env.ADMIN_TOKEN || "";
   if (!token) return json({ error: "unset" }, 503);
+  const who = request.headers.get("CF-Connecting-IP") || "unknown";
+  const gate = guard.blocked(who);
+  if (gate.blocked) {
+    return json({ error: "slow" }, 429, { "retry-after": String(gate.retryAfter) });
+  }
   let body = null;
   try {
     body = await request.json();
@@ -119,7 +126,15 @@ async function adminLogin(request, env) {
     body = null;
   }
   const given = body && typeof body.token === "string" ? body.token : "";
-  if (!given || !safeEqual(given, token)) return json({ error: "login" }, 401);
+  if (!given || !safeEqual(given, token)) {
+    const state = guard.recordFailure(who);
+    await pause();
+    if (state.blocked) {
+      return json({ error: "slow" }, 429, { "retry-after": String(state.retryAfter) });
+    }
+    return json({ error: "login" }, 401);
+  }
+  guard.clear(who);
   const secure = new URL(request.url).protocol === "https:";
   return json({ ok: true }, 200, {
     "set-cookie": cookieHeader(await adminMac(token), { secure, maxAge: 43200 }),

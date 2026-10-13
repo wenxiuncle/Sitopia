@@ -1,10 +1,37 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { adminHtml } from "./admin-page.mjs";
 import { COOKIE, adminMac, cookieHeader, readCookie, safeEqual } from "./admin-auth.mjs";
 import { musicForm, resolveOrder } from "./audio-catalog.mjs";
 import { scanAudioDir } from "./audio-scan.mjs";
 import { frameDispatch, frameStatus } from "./frames.mjs";
+import { createLoginGuard, pause } from "./login-guard.mjs";
 
-const token = process.env.MUSEUM_ADMIN_TOKEN || "local-museum";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function envToken() {
+  const raw = process.env.MUSEUM_ADMIN_TOKEN;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : "";
+}
+
+// 口令只从环境变量或 .admin-token（已在 .gitignore 里）读。
+// 代码里不留默认值，没有口令就不开后台，免得默认口令变成谁都能算出的 cookie。
+function fileToken() {
+  try {
+    return fs.readFileSync(path.join(root, ".admin-token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const token = envToken() || fileToken();
+const guard = createLoginGuard();
+
+export function adminTokenState() {
+  if (!token) return { ready: false, source: "none" };
+  return { ready: true, source: envToken() ? "env" : "file" };
+}
 
 function send(res, status, body, extra) {
   const headers = Object.assign({
@@ -93,6 +120,7 @@ export function handleLocalAdmin(req, res, lobby) {
 }
 
 async function allowed(req) {
+  if (!token) return false;
   const got = readCookie(req.headers.cookie, COOKIE);
   if (!got) return false;
   const mac = await adminMac(token);
@@ -101,12 +129,29 @@ async function allowed(req) {
 
 async function route(req, res, lobby, path, url) {
   if (path === "/admin/api/login" && req.method === "POST") {
+    if (!token) {
+      send(res, 503, { error: "unset" });
+      return;
+    }
+    const who = clientIp(req);
+    const gate = guard.blocked(who);
+    if (gate.blocked) {
+      send(res, 429, { error: "slow" }, { "retry-after": String(gate.retryAfter) });
+      return;
+    }
     const body = await readBody(req);
     const given = body && typeof body.token === "string" ? body.token : "";
     if (!given || !safeEqual(given, token)) {
+      const state = guard.recordFailure(who);
+      await pause();
+      if (state.blocked) {
+        send(res, 429, { error: "slow" }, { "retry-after": String(state.retryAfter) });
+        return;
+      }
       send(res, 401, { error: "login" });
       return;
     }
+    guard.clear(who);
     const mac = await adminMac(token);
     send(res, 200, { ok: true }, { "set-cookie": cookieHeader(mac, { secure: false, maxAge: 43200 }) });
     return;

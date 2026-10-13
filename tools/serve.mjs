@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachLobby } from "./lobby.mjs";
-import { handleLocalAdmin } from "./admin-local.mjs";
+import { adminTokenState, handleLocalAdmin } from "./admin-local.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const types = {
@@ -54,4 +54,10 @@ lobby = attachLobby(server);
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`http://127.0.0.1:${port}/`);
+  const state = adminTokenState();
+  if (!state.ready) {
+    console.log("后台口令没设置：放一个 .admin-token，或设 MUSEUM_ADMIN_TOKEN，再重启。");
+    return;
+  }
+  console.log(state.source === "env" ? "后台口令来自 MUSEUM_ADMIN_TOKEN。" : "后台口令来自 .admin-token。");
 });
