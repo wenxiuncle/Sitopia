@@ -87,7 +87,7 @@ export function boxMesh(boxes, material) {
 export function allocFrameMeshes(frames, borderMat, matMat) {
   const border = new THREE.InstancedMesh(new THREE.BoxGeometry(FRAME.w, FRAME.h, FRAME.d), borderMat, frames.length);
   const mat = new THREE.InstancedMesh(
-    new THREE.PlaneGeometry(FRAME.w - 0.14, FRAME.h - 0.14),
+    new THREE.PlaneGeometry(FRAME.w * MAT_INSET, FRAME.h * MAT_INSET),
     matMat,
     frames.length,
   );
@@ -156,6 +156,11 @@ export function atlasGrid(count, maxSize) {
 }
 
 const FRAME_EXT = /\.(webp|jpe?g|png|gif|avif)$/i;
+
+// 画芯按比例内缩，给边框让出一条。原来四边各减 0.14 是等量内缩，把画芯比例从
+// 37:18 改成 2.25，而图集格子按 37:18 裁图，配图因此被横向拉伸约 9.5%。
+// 等比内缩后画芯比例与画框、与图集格子都是 37:18，四个边各留约 0.038 的边。
+const MAT_INSET = 0.9148;
 
 // 没配图，或配图拉不下来时，画芯共用这一张。地址仍要过 usableFrameImage。
 export const FALLBACK_FRAME_IMAGE = "https://img.youquhome.com/wupeitu.webp";

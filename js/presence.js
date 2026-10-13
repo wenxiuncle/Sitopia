@@ -57,6 +57,9 @@ const HOLD_MS = 30000;
 // 点画框白卡上的链接跳出去时，人先留在在线名单里，十分钟后仍没回来再离开。
 const CARD_HOLD_MS = 10 * 60 * 1000;
 const SEAT_KEY = "quzhan-museum-seat";
+// 同座位被顶掉后，连接活过这么久才算稳定，之前的顶替计数才清零。
+// 按 1.5 秒固定回抢会一直互顶，所以要等一条连接真正站住。
+const SEAT_STABLE_MS = 60000;
 
 function readSeat() {
   let saved = "";
@@ -169,6 +172,10 @@ export function mountPresence(options) {
   let socket = null;
   let http = null;
   let retry = 0;
+  // 被别人顶掉座位（close 4000）后连着被顶了几次，用来把重连间隔逐次拉长。
+  let seatRetry = 0;
+  // 这一条连接是什么时候被接纳的，用来判断它活够久没有。
+  let connAt = 0;
   let dead = false;
   let publishAt = 0;
   let sentX = NaN;
@@ -533,6 +540,7 @@ export function mountPresence(options) {
       rememberName(msg.name);
       syncNameInputs(msg.name);
       linked = true;
+      connAt = Date.now();
       roster.clear();
       crowd.clear();
       roster.set(msg.id, { id: msg.id, name: msg.name, x: 0, y: 0, z: 0 });
@@ -797,7 +805,11 @@ export function mountPresence(options) {
       online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
       window.clearTimeout(retry);
       if (dead || document.hidden || !confirmed || solo) return;
-      retry = window.setTimeout(arm, 1500);
+      // 4000 是同一个座位被另一条连接接管，多半是同一个浏览器里又开了一页。
+      // 只有这条连接活够久才算稳定，稳定过才清零；否则逐次拉长间隔，避免一直互顶。
+      if (Date.now() - connAt >= SEAT_STABLE_MS) seatRetry = 0;
+      const wait = event.code === 4000 ? Math.min(1500 * 2 ** seatRetry, 30000) : 1500;
+      retry = window.setTimeout(arm, wait);
     });
   }
 
