@@ -173,6 +173,12 @@ export function musicForm(catalog, saved) {
     }
     byName.set(item.file, { file: item.file, ms: item.ms });
   }
+  const savedOn = new Map();
+  for (let i = 0; i < savedTracks.length; i++) {
+    const row = savedTracks[i];
+    if (!row || !row.file || savedOn.has(row.file)) continue;
+    savedOn.set(row.file, row.on !== false);
+  }
   const files = [];
   const seen = new Set();
   for (let i = 0; i < savedTracks.length; i++) {
@@ -180,11 +186,11 @@ export function musicForm(catalog, saved) {
     const item = byName.get(name);
     if (!item || seen.has(item.file)) continue;
     seen.add(item.file);
-    files.push(item);
+    files.push({ file: item.file, ms: item.ms, on: savedOn.get(item.file) !== false });
   }
   for (const item of byName.values()) {
     if (seen.has(item.file)) continue;
-    files.push(item);
+    files.push({ file: item.file, ms: item.ms, on: true });
   }
   const dropped = [];
   for (let i = 0; i < savedTracks.length; i++) {
@@ -207,14 +213,17 @@ export function resolveOrder(catalog, order, volume) {
   const seen = new Set();
   const names = Array.isArray(order) ? order : [];
   for (let i = 0; i < names.length; i++) {
-    const item = byName.get(names[i]);
+    const spec = names[i];
+    const file = typeof spec === "string" ? spec : (spec && spec.file);
+    const item = byName.get(file);
     if (!item || seen.has(item.file)) continue;
     seen.add(item.file);
-    tracks.push({ file: item.file, ms: item.ms });
+    const on = typeof spec === "string" ? true : !(spec && spec.on === false);
+    tracks.push({ file: item.file, ms: item.ms, on });
   }
   for (const item of byName.values()) {
     if (seen.has(item.file)) continue;
-    tracks.push({ file: item.file, ms: item.ms });
+    tracks.push({ file: item.file, ms: item.ms, on: true });
   }
   const clean = asPlaylist(tracks);
   if (!clean) return { error: "empty" };

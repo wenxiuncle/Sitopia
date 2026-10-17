@@ -408,18 +408,29 @@ function musicTracks(array $music): array {
         $ms = isset($item["ms"]) ? (int) $item["ms"] : 0;
         if ($file === "" || strpbrk($file, "/\\") !== false || strpos($file, "..") !== false) continue;
         if ($ms < 1000 || $ms > 3600000) continue;
-        $out[] = ["file" => $file, "ms" => $ms];
+        $row = ["file" => $file, "ms" => $ms];
+        if (isset($item["on"]) && $item["on"] === false) $row["on"] = false;
+        $out[] = $row;
         if (count($out) >= 40) break;
     }
     return $out;
 }
 
+function musicPlayable(array $music): array {
+    $out = [];
+    foreach (musicTracks($music) as $item) {
+        if (isset($item["on"]) && $item["on"] === false) continue;
+        $out[] = ["file" => $item["file"], "ms" => $item["ms"]];
+    }
+    return $out;
+}
+
 function musicTotal(array $music): int {
-    $tracks = musicTracks($music);
-    if (!$tracks) return SCORE_MS;
+    $all = musicTracks($music);
+    if (!$all) return SCORE_MS;
     $n = 0;
-    foreach ($tracks as $item) $n += $item["ms"];
-    return $n > 0 ? $n : SCORE_MS;
+    foreach (musicPlayable($music) as $item) $n += $item["ms"];
+    return $n;
 }
 
 function musicVolume(array $music): int {
@@ -439,7 +450,9 @@ function wrapScore(int $ms, int $total = SCORE_MS): int {
 function musicPos(array $music, int $now): int {
     $pos = (int) ($music["pos"] ?? 0);
     if (!empty($music["playing"])) $pos += $now - (int) ($music["at"] ?? $now);
-    return wrapScore($pos, musicTotal($music));
+    $total = musicTotal($music);
+    if ($total < 1) return 0;
+    return wrapScore($pos, $total);
 }
 
 function musicView(array $music, int $now): array {
@@ -450,8 +463,8 @@ function musicView(array $music, int $now): array {
         "at" => $now,
         "volume" => musicVolume($music),
     ];
-    $tracks = musicTracks($music);
-    if ($tracks) $view["tracks"] = $tracks;
+    $stored = musicTracks($music);
+    if ($stored) $view["tracks"] = musicPlayable($music);
     return $view;
 }
 

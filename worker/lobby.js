@@ -14,6 +14,8 @@ import {
   cleanMax,
   cleanName,
   cleanSeat,
+  cleanSign,
+  setRobotSign,
   createVisitBook,
   dayBounds,
   finishVisit,
@@ -319,6 +321,7 @@ export class SitopiaLobby extends DurableObject {
       x: this.robot.x,
       z: this.robot.z,
       yaw: this.robot.yaw,
+      sign: cleanSign(this.robot.sign),
     });
     this.robotSavedAt = at;
   }
@@ -416,7 +419,7 @@ export class SitopiaLobby extends DurableObject {
     const ev = await this.noteMusic(this.roster(), now);
     if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
     else if (this.music.playing) await this.persistMusic(now, false);
-    return json({ ok: true, music: musicView(this.music, now) }, 200, request);
+    return json({ ok: true, music: musicView(this.music, now), sign: cleanSign(this.robot.sign) }, 200, request);
   }
 
   async leave(request) {
@@ -480,6 +483,7 @@ export class SitopiaLobby extends DurableObject {
         inHall: namedCount(this.roster()),
         now,
         people: adminPeople(this.roster(), this.solo, now),
+        sign: cleanSign(this.robot.sign),
       }, 200);
     }
     if (url.pathname === "/admin/api/visits" && request.method === "GET") {
@@ -582,6 +586,14 @@ export class SitopiaLobby extends DurableObject {
       this.kickSockets(seat, id, until);
       return json({ ok: true, until }, 200);
     }
+    if (url.pathname === "/admin/api/sign" && request.method === "POST") {
+      const body = await readJson(request);
+      if (!body) return json({ error: "body" }, 400);
+      const sign = setRobotSign(this.robot, body.text);
+      await this.persistRobot(Date.now(), true);
+      this.fanout(null, [{ who: "all", obj: { t: "sign", text: sign } }]);
+      return json({ sign }, 200);
+    }
     return new Response("not found", { status: 404 });
   }
 
@@ -596,7 +608,9 @@ export class SitopiaLobby extends DurableObject {
       if (swept) await this.persistSolo();
       const ev = await this.noteMusic(this.roster(), now);
       if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
-      return json(musicView(this.music, now), 200, request);
+      const view = musicView(this.music, now);
+      view.sign = cleanSign(this.robot.sign);
+      return json(view, 200, request);
     }
     if (url.pathname === "/lobby/beat") {
       if (request.method !== "POST") return new Response("method", { status: 405 });

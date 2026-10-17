@@ -543,8 +543,13 @@ function submitNote(event) {
   renderGuestbook();
 }
 
+function applySign(text) {
+  if (reception && typeof text === "string") reception.setSign(text);
+}
+
 function onRobotMessage(view) {
   if (!view) return;
+  applySign(view.sign);
   const was = receptionDriver;
   receptionDriver = view.driver || "";
   const mine = presence && presence.myId();
@@ -2453,8 +2458,10 @@ async function buildScene(data, arrange) {
       if (active) releaseLook();
     },
     onMusic: (view) => {
+      if (view && typeof view.sign === "string") applySign(view.sign);
       if (ambience) ambience.follow(view);
     },
+    onSign: applySign,
     onRobot: onRobotMessage,
     onNotes: onNotesMessage,
     onUnlink: onDeskUnlink,

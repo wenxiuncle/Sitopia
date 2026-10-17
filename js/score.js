@@ -45,23 +45,40 @@ export function asPlaylist(list) {
     const ms = known || Math.round(Number(item && item.ms));
     if (!Number.isFinite(ms) || ms < 1000 || ms > 60 * 60 * 1000) continue;
     seen.add(file);
-    out.push({ file, ms });
+    const row = { file, ms };
+    if (item && item.on === false) row.on = false;
+    out.push(row);
   }
   return out.length ? out : null;
 }
 
+// 没给曲目时用默认整张。给了曲目但全部关掉时是 0，不要退回默认整张。
+export function playableTracks(tracks) {
+  if (!Array.isArray(tracks)) return null;
+  const out = [];
+  for (let i = 0; i < tracks.length; i++) {
+    const row = tracks[i];
+    if (!row || row.on === false) continue;
+    out.push(row);
+  }
+  return out;
+}
+
 export function scoreTotal(tracks) {
   if (!tracks || !tracks.length) return SCORE_MS;
+  const list = playableTracks(tracks) || [];
+  if (!list.length) return 0;
   let n = 0;
-  for (let i = 0; i < tracks.length; i++) {
-    const ms = Number(tracks[i] && tracks[i].ms);
+  for (let i = 0; i < list.length; i++) {
+    const ms = Number(list[i] && list[i].ms);
     if (Number.isFinite(ms) && ms > 0) n += ms;
   }
-  return n > 0 ? n : SCORE_MS;
+  return n > 0 ? n : 0;
 }
 
 export function wrapScore(ms, total) {
-  const span = Number(total) > 0 ? Number(total) : SCORE_MS;
+  const span = total == null ? SCORE_MS : Number(total);
+  if (!(span > 0)) return 0;
   let n = Number(ms) || 0;
   n %= span;
   if (n < 0) n += span;
@@ -69,7 +86,8 @@ export function wrapScore(ms, total) {
 }
 
 export function scoreAt(ms, tracks) {
-  const list = tracks && tracks.length ? tracks : SCORE;
+  const list = tracks == null ? SCORE : (playableTracks(tracks) || []);
+  if (!list.length) return { index: -1, ms: 0, into: 0 };
   const t = wrapScore(ms, scoreTotal(list));
   let acc = 0;
   for (let i = 0; i < list.length; i++) {

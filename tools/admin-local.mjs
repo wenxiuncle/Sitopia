@@ -259,6 +259,15 @@ async function route(req, res, lobby, path, url) {
     send(res, 200, { ok: true });
     return;
   }
+  if (path === "/admin/api/sign" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body) {
+      send(res, 400, { error: "body" });
+      return;
+    }
+    send(res, 200, { sign: lobby.setSign(body.text) });
+    return;
+  }
   if (path === "/admin/api/kick" && req.method === "POST") {
     const body = await readBody(req);
     const until = lobby.kick(body || {});

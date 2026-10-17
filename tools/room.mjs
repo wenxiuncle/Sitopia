@@ -5,15 +5,21 @@
 // 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
 // 顺序和音量也可以存在这里。没存过时，用 js/score.js 的默认曲目，音量按满。
 import { occupiesHall } from "../js/layout.js";
-import { asPlaylist, scoreTotal, wrapScore } from "../js/score.js";
+import { asPlaylist, playableTracks, scoreTotal, wrapScore } from "../js/score.js";
 import { readVolume } from "./audio-catalog.mjs";
 import { RECEPTION, receptionHome } from "../js/layout.js";
+import { cleanSign } from "../js/sign.js";
+
+export { cleanSign };
 
 export { PIN_CAP, cleanArrange } from "../js/layout.js";
 export const PEOPLE_CAP = 24;
 export const MAX_PEOPLE = PEOPLE_CAP;
 export const LOG_MAX = 40;
-export const SOLO_MS = 45000;
+// 前台心跳大约 30 秒一次。页面在后台时，浏览器会把定时器放慢到大约 1 分钟。
+// 短于这个间隔，同一次来访会在下一次心跳前被掐掉：离开时间被记回进馆那一下，停留就是 0 秒，下一分钟再记一条。
+// 点开链接或把页面放到后台还要再留 10 分钟，所以这里留得更宽。关掉页面会立刻走 leave，不等这里。
+export const SOLO_MS = 11 * 60 * 1000;
 export const VISIT_KEEP_MS = 90 * 24 * 60 * 60 * 1000;
 export const VISIT_LIMIT = 500;
 // 安静超过这段时间才把离开记到最后一次心跳。正常关页面仍记现在。
@@ -158,14 +164,26 @@ export function musicView(music, now) {
     at,
     volume: musicVolume(music),
   };
-  if (music && music.tracks && music.tracks.length) view.tracks = music.tracks;
+  if (Array.isArray(music && music.tracks)) {
+    const playable = playableTracks(music.tracks) || [];
+    const tracks = [];
+    for (let i = 0; i < playable.length; i++) tracks.push({ file: playable[i].file, ms: playable[i].ms });
+    view.tracks = tracks;
+  }
   return view;
 }
 
 export function musicDesk(music) {
+  const raw = music && Array.isArray(music.tracks) ? music.tracks : [];
+  const tracks = [];
+  for (let i = 0; i < raw.length; i++) {
+    const row = raw[i];
+    if (!row || !row.file) continue;
+    tracks.push({ file: row.file, ms: row.ms, on: row.on !== false });
+  }
   return {
     volume: musicVolume(music),
-    tracks: music && music.tracks && music.tracks.length ? music.tracks : [],
+    tracks,
   };
 }
 
@@ -348,7 +366,7 @@ export function cleanNote(value) {
 
 export function blankRobot() {
   const home = receptionHome();
-  return { x: home.x, z: home.z, yaw: home.yaw, driver: "", moving: false, poseAt: 0 };
+  return { x: home.x, z: home.z, yaw: home.yaw, driver: "", moving: false, poseAt: 0, sign: cleanSign() };
 }
 
 export function cleanRobotPose(msg) {
@@ -370,10 +388,12 @@ export function cleanRobotPose(msg) {
 export function restoreRobot(saved) {
   const robot = blankRobot();
   const pose = cleanRobotPose(saved);
-  if (!pose) return robot;
-  robot.x = pose.x;
-  robot.z = pose.z;
-  robot.yaw = pose.yaw;
+  if (pose) {
+    robot.x = pose.x;
+    robot.z = pose.z;
+    robot.yaw = pose.yaw;
+  }
+  robot.sign = cleanSign(saved && saved.sign);
   return robot;
 }
 
@@ -385,7 +405,14 @@ export function robotView(robot) {
     yaw: robot.yaw,
     driver: robot.driver || "",
     moving: !!robot.moving,
+    sign: cleanSign(robot && robot.sign),
   };
+}
+
+export function setRobotSign(robot, value) {
+  if (!robot) return "";
+  robot.sign = cleanSign(value);
+  return robot.sign;
 }
 
 export function electDriver(people) {

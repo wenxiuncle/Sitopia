@@ -242,15 +242,17 @@ export function createAmbience() {
     if (!lastView) return 0;
     let pos = Number(lastView.pos) || 0;
     if (lastView.playing && lastView.receivedAt) pos += Date.now() - lastView.receivedAt;
-    return wrapScore(pos, scoreTotal(playlist));
+    return wrapScore(pos, playlist.length ? scoreTotal(playlist) : 0);
   }
 
   function usePlaylist(list) {
-    let key = "";
-    for (let i = 0; i < list.length; i++) key += list[i].file + "\n" + list[i].ms + "\n";
+    let key = list && list.length ? "" : "off";
+    if (list) {
+      for (let i = 0; i < list.length; i++) key += list[i].file + "\n" + list[i].ms + "\n" + (list[i].on === false ? "0" : "1") + "\n";
+    }
     if (key === playlistKey) return;
     playlistKey = key;
-    playlist = list;
+    playlist = list && list.length ? list : [];
     clipIndex = -1;
     audio.dataset.track = "";
   }
@@ -315,11 +317,15 @@ export function createAmbience() {
 
   function align() {
     if (!started || !lastView || !ctx || ctx.state !== "running") return;
-    if (!audible || !lastView.playing || !enabled) {
+    if (!audible || !lastView.playing || !enabled || !playlist.length) {
       quiet();
       return;
     }
     const place = scoreAt(livePos(), playlist);
+    if (place.index < 0) {
+      quiet();
+      return;
+    }
     if (audio.ended && Number(audio.dataset.track) === place.index) return;
     if (audio.dataset.track === String(place.index) && (audio.seeking || audio.readyState < 2)) return;
     if (clipIndex === place.index && !audio.paused && !audio.seeking && audio.readyState >= 2) {
@@ -380,7 +386,7 @@ export function createAmbience() {
     }
     ctx.resume();
     ensureMedia();
-    if (!audio.src) {
+    if (!audio.src && playlist.length) {
       audio.dataset.track = "0";
       audio.src = new URL("../audio/" + playlist[0].file, import.meta.url).href;
     }
@@ -393,8 +399,13 @@ export function createAmbience() {
     unlock,
     follow(view) {
       if (!view || !Number.isFinite(Number(view.pos))) return;
-      const next = asPlaylist(view.tracks);
-      if (next) usePlaylist(next);
+      if (Array.isArray(view.tracks)) {
+        if (!view.tracks.length) usePlaylist([]);
+        else {
+          const next = asPlaylist(view.tracks);
+          if (next) usePlaylist(next);
+        }
+      }
       const level = Math.round(Number(view.volume));
       if (Number.isInteger(level) && level >= 0 && level <= 100 && level !== volumePct) {
         volumePct = level;

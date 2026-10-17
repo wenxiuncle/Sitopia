@@ -1,6 +1,7 @@
 // 一楼门厅的接待机器人。一个网格，基本材质。胸前屏幕是这一台自己的字，不是展品站名。
 import * as THREE from "../vendor/three.module.js";
 import { attachSun } from "./meshes.js";
+import { DEFAULT_SIGN, cleanSign } from "./sign.js";
 
 const raycaster = new THREE.Raycaster();
 const aim = new THREE.Vector3();
@@ -11,26 +12,51 @@ function box(w, h, d, material, x, y, z) {
   return mesh;
 }
 
-function screenTexture() {
+function createScreen() {
   const canvas = document.createElement("canvas");
   canvas.width = 512;
   canvas.height = 288;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#1a2744";
-  ctx.fillRect(0, 0, 512, 288);
-  // 屏幕网格会绕 Y 转 180° 朝向馆门。转过之后字已经是正的，再镜像就会反着读。
-  ctx.strokeStyle = "#3ad4e6";
-  ctx.lineWidth = 6;
-  ctx.strokeRect(18, 18, 476, 252);
-  ctx.fillStyle = "#d8fff6";
-  ctx.font = "600 72px Songti SC, SimSun, STSong, serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("欢迎光临", 256, 150);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  return texture;
+  let text = DEFAULT_SIGN;
+  // 屏幕网格会绕 Y 转 180° 朝向馆门。转过之后字已经是正的，再镜像就会反着读。
+  // 字从右往左滚。边框画在裁切外面，不跟着走。
+  function paint(now) {
+    ctx.fillStyle = "#1a2744";
+    ctx.fillRect(0, 0, 512, 288);
+    ctx.strokeStyle = "#3ad4e6";
+    ctx.lineWidth = 6;
+    ctx.strokeRect(18, 18, 476, 252);
+    ctx.fillStyle = "#d8fff6";
+    ctx.font = "600 72px Songti SC, SimSun, STSong, serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const width = Math.max(1, ctx.measureText(text).width);
+    const gap = 96;
+    const span = width + gap;
+    const travel = ((Number(now) || 0) * 0.04) % span;
+    const innerLeft = 36;
+    const innerRight = 476;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(30, 30, 452, 228);
+    ctx.clip();
+    let x = innerRight - travel;
+    while (x > innerLeft - span) x -= span;
+    for (; x < innerRight; x += span) ctx.fillText(text, x, 150);
+    ctx.restore();
+    texture.needsUpdate = true;
+  }
+  paint(0);
+  return {
+    texture,
+    setText(value) {
+      text = cleanSign(value);
+    },
+    paint,
+  };
 }
 
 function lidAmount(now) {
@@ -51,7 +77,8 @@ export function createReception(scene, sunShared, sunRole) {
   attachSun(silver, sunShared, sunRole);
   attachSun(lidMat, sunShared, sunRole);
 
-  const screenMat = new THREE.MeshBasicMaterial({ map: screenTexture(), fog: false });
+  const screen = createScreen();
+  const screenMat = new THREE.MeshBasicMaterial({ map: screen.texture, fog: false });
   const group = new THREE.Group();
   group.name = "reception";
 
@@ -97,10 +124,10 @@ export function createReception(scene, sunShared, sunRole) {
   const armL = addArm(-1);
   const armR = addArm(1);
   group.add(box(0.34, 0.22, 0.03, dark, 0, 0.7, -0.15));
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.18), screenMat);
-  screen.position.set(0, 0.7, -0.168);
-  screen.rotation.y = Math.PI;
-  group.add(screen);
+  const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.18), screenMat);
+  screenMesh.position.set(0, 0.7, -0.168);
+  screenMesh.rotation.y = Math.PI;
+  group.add(screenMesh);
 
   group.add(box(0.16, 0.06, 0.16, silver, 0, 0.92, 0));
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 20, 14), white);
@@ -137,6 +164,9 @@ export function createReception(scene, sunShared, sunRole) {
 
   return {
     group,
+    setSign(value) {
+      screen.setText(value);
+    },
     pick(origin, direction, minT) {
       aim.copy(direction);
       if (aim.lengthSq() < 1e-8) return -1;
@@ -154,6 +184,7 @@ export function createReception(scene, sunShared, sunRole) {
       placed = true;
       group.position.set(pose.x, 0, pose.z);
       group.rotation.y = pose.yaw;
+      screen.paint(now);
       // 留言板开着时停在这一帧：不摆臂，也不眨眼。
       if (paused) return;
       if (dist < 1.2) travel += dist;

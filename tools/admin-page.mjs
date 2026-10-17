@@ -31,7 +31,7 @@ export const adminHtml = `<!DOCTYPE html>
     }
     #login p { margin: 8px 0 0; color: #8a4b32; min-height: 1.4em; }
     label { display: block; margin: 14px 0 8px; }
-    input[type="password"], input[type="number"], input[type="date"], select {
+    input[type="password"], input[type="number"], input[type="date"], input[type="text"], select {
       box-sizing: border-box;
       padding: 8px 10px;
       border: 1px solid rgba(44, 41, 38, 0.16);
@@ -49,7 +49,7 @@ export const adminHtml = `<!DOCTYPE html>
       color: #2c2926;
     }
     header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    #max-form, #kick-form, #visit-form, #frame-form {
+    #max-form, #kick-form, #visit-form, #frame-form, #sign-form {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
@@ -78,6 +78,7 @@ export const adminHtml = `<!DOCTYPE html>
     #music-volume { width: 5em; }
     #music-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
     #music-list li { display: flex; align-items: center; gap: 8px; }
+    #music-list label { display: flex; align-items: center; gap: 4px; margin: 0; flex: none; }
     #music-list .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     #music-list .time { color: #6f6a64; flex: none; }
     #music-list button { padding: 4px 8px; border: 1px solid #2c2926; background: transparent; flex: none; }
@@ -108,7 +109,15 @@ export const adminHtml = `<!DOCTYPE html>
       background: #fff;
       resize: vertical;
     }
-    #frame-status, #arrange-status, #music-status { min-height: 1.4em; color: #6f6a64; }
+    #frame-status, #arrange-status, #music-status, #sign-status { min-height: 1.4em; color: #6f6a64; }
+    #sign-text { width: 18em; max-width: 100%; }
+    #page-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 22px 0 0;
+    }
+    #page-tabs button { font-size: 16px; font-weight: 650; }
     #visit-status { min-height: 1.4em; color: #6f6a64; }
     #visit-pager, #chat-pager, #note-pager {
       display: flex;
@@ -172,11 +181,18 @@ export const adminHtml = `<!DOCTYPE html>
       <h1>趣站博物馆后台</h1>
       <button id="logout" type="button">退出</button>
     </header>
+    <div id="page-tabs" role="tablist">
+      <button type="button" id="tab-page-visit" class="solid" role="tab" aria-selected="true" aria-controls="page-visit">访问数据</button>
+      <button type="button" id="tab-page-board" class="line" role="tab" aria-selected="false" aria-controls="page-board">互动数据</button>
+      <button type="button" id="tab-page-frames" class="line" role="tab" aria-selected="false" aria-controls="page-frames">画框设置</button>
+      <button type="button" id="tab-page-museum" class="line" role="tab" aria-selected="false" aria-controls="page-museum">博物馆设置</button>
+    </div>
+    <section id="page-visit" role="tabpanel" aria-labelledby="tab-page-visit">
     <h2>此刻在馆</h2>
     <form id="max-form">
       <label>最大在线人数 <input id="max" type="number" min="1" max="24" step="1"></label>
       <button class="solid" type="submit">保存</button>
-      <span class="hint">硬顶 24。只限制正在馆里的联机人数，单人和把页面藏到后台的人不占名额。</span>
+      <span class="hint">硬顶 24。只限制正在馆里的联机人数。点开画框链接或把页面放到后台，十分钟内仍算在馆；关掉页面马上离开。单人不占名额。</span>
     </form>
     <form id="kick-form">
       <label>踢出时长
@@ -230,6 +246,8 @@ export const adminHtml = `<!DOCTYPE html>
     </table>
     <nav id="visit-pager" hidden></nav>
     <p id="visit-empty" hidden>这一天没有来访。</p>
+    </section>
+    <section id="page-board" role="tabpanel" aria-labelledby="tab-page-board" hidden>
     <div id="board-tabs" role="tablist">
       <button type="button" id="tab-chat" class="solid" role="tab" aria-selected="true" aria-controls="panel-chat" data-kind="chat">聊天记录</button>
       <button type="button" id="tab-note" class="line" role="tab" aria-selected="false" aria-controls="panel-note" data-kind="note">访客留言</button>
@@ -268,6 +286,8 @@ export const adminHtml = `<!DOCTYPE html>
       <nav id="note-pager" hidden></nav>
       <p id="note-empty" hidden>没有留言。</p>
     </section>
+    </section>
+    <section id="page-frames" role="tabpanel" aria-labelledby="tab-page-frames" hidden>
     <h2>画框</h2>
     <form id="frame-form">
       <button class="solid" type="submit">立即更新</button>
@@ -295,11 +315,13 @@ export const adminHtml = `<!DOCTYPE html>
       </div>
     </form>
     <p id="arrange-status"></p>
+    </section>
+    <section id="page-museum" role="tabpanel" aria-labelledby="tab-page-museum" hidden>
     <h2>展厅音乐</h2>
     <form id="music-form">
       <div class="arrange-card" id="music-order-card">
         <ol id="music-list"></ol>
-        <span class="hint">自动读 audio 文件夹里的曲子。上移、下移调整循环顺序。馆里有人时才放，没人就停在刚才的进度。广场和观景台仍会把声音放轻，菜单里的音乐开关也还在。</span>
+        <span class="hint">自动读 audio 文件夹里的曲子。上移、下移调整循环顺序。勾上「播放」的才会在展厅里放，没勾的留在名单里。馆里有人时才放，没人就停在刚才的进度。广场和观景台仍会把声音放轻，菜单里的音乐开关也还在。</span>
       </div>
       <div class="arrange-card" id="music-volume-card">
         <label>音量
@@ -313,6 +335,14 @@ export const adminHtml = `<!DOCTYPE html>
       </div>
     </form>
     <p id="music-status"></p>
+    <h2>胸前屏幕</h2>
+    <form id="sign-form">
+      <label>滚动文字 <input id="sign-text" type="text" maxlength="32" autocomplete="off" value="欢迎光临"></label>
+      <button class="solid" type="submit">保存</button>
+      <span class="hint">一楼接待机器人胸前，字从右往左循环滚。最多 32 个字。留空就回到「欢迎光临」。正在馆里的人会跟着换。</span>
+    </form>
+    <p id="sign-status"></p>
+    </section>
   </main>
   <script>
     const login = document.getElementById("login");
@@ -346,6 +376,8 @@ export const adminHtml = `<!DOCTYPE html>
     const frameStatus = document.getElementById("frame-status");
     const arrangeStatus = document.getElementById("arrange-status");
     const musicStatus = document.getElementById("music-status");
+    const signStatus = document.getElementById("sign-status");
+    const signInput = document.getElementById("sign-text");
     const musicVolumeInput = document.getElementById("music-volume");
     const musicSave = document.getElementById("music-save");
     let musicOrder = [];
@@ -413,6 +445,7 @@ export const adminHtml = `<!DOCTYPE html>
       const now = data.now || Date.now();
       maxInput.max = String(data.cap || 24);
       if (document.activeElement !== maxInput) maxInput.value = String(data.max || 24);
+      if (typeof data.sign === "string" && document.activeElement !== signInput) signInput.value = data.sign;
       let solo = 0;
       let away = 0;
       for (let i = 0; i < people.length; i++) {
@@ -547,6 +580,24 @@ export const adminHtml = `<!DOCTYPE html>
       paintOneBoard("chat");
       paintOneBoard("note");
     }
+
+    function showPage(name) {
+      const names = ["visit", "board", "frames", "museum"];
+      for (let i = 0; i < names.length; i++) {
+        const id = names[i];
+        const on = id === name;
+        document.getElementById("page-" + id).hidden = !on;
+        const button = document.getElementById("tab-page-" + id);
+        button.className = on ? "solid" : "line";
+        button.setAttribute("aria-selected", on ? "true" : "false");
+      }
+    }
+
+    document.getElementById("page-tabs").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || !button.id || button.id.indexOf("tab-page-") !== 0) return;
+      showPage(button.id.slice("tab-page-".length));
+    });
 
     function showBoardTab(kind) {
       const chatOn = kind !== "note";
@@ -1144,6 +1195,14 @@ export const adminHtml = `<!DOCTYPE html>
       for (let i = 0; i < musicOrder.length; i++) {
         const row = musicOrder[i];
         const li = document.createElement("li");
+        const play = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = row.on !== false;
+        box.addEventListener("change", () => {
+          row.on = box.checked;
+        });
+        play.append(box, document.createTextNode("播放"));
         const name = document.createElement("span");
         name.className = "name";
         name.textContent = row.file;
@@ -1160,7 +1219,7 @@ export const adminHtml = `<!DOCTYPE html>
         down.textContent = "下移";
         down.disabled = i === musicOrder.length - 1;
         down.addEventListener("click", () => moveMusic(i, 1));
-        li.append(name, time, up, down);
+        li.append(play, name, time, up, down);
         list.appendChild(li);
       }
       musicSave.disabled = musicOrder.length === 0;
@@ -1181,7 +1240,7 @@ export const adminHtml = `<!DOCTYPE html>
       for (let i = 0; i < files.length; i++) {
         const row = files[i];
         if (!row || !row.file) continue;
-        musicOrder.push({ file: row.file, ms: row.ms });
+        musicOrder.push({ file: row.file, ms: row.ms, on: row.on !== false });
       }
       if (document.activeElement !== musicVolumeInput) {
         const volume = data && Number.isInteger(data.volume) ? data.volume : 100;
@@ -1228,7 +1287,9 @@ export const adminHtml = `<!DOCTYPE html>
         return;
       }
       const order = [];
-      for (let i = 0; i < musicOrder.length; i++) order.push(musicOrder[i].file);
+      for (let i = 0; i < musicOrder.length; i++) {
+        order.push({ file: musicOrder[i].file, on: musicOrder[i].on !== false });
+      }
       musicSave.disabled = true;
       try {
         const res = await fetch("/admin/api/music", {
@@ -1251,12 +1312,34 @@ export const adminHtml = `<!DOCTYPE html>
         }
         paintMusic(data);
         const note = musicStatus.textContent;
-        musicStatus.textContent = note ? "已保存。" + note : "已保存。正在馆里的人会按这个顺序和音量接着放";
+        musicStatus.textContent = note ? "已保存。" + note : "已保存。正在馆里的人会按勾上的曲子和音量接着放";
       } catch {
         musicStatus.textContent = "没有保存";
       } finally {
         musicSave.disabled = musicOrder.length === 0;
       }
+    });
+
+    document.getElementById("sign-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      signStatus.textContent = "正在保存…";
+      const res = await fetch("/admin/api/sign", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: signInput.value.trim() }),
+      });
+      if (res.status === 401) {
+        showLogin("口令已失效");
+        return;
+      }
+      const data = await readJson(res);
+      if (!res.ok || !data || typeof data.sign !== "string") {
+        signStatus.textContent = "没有保存";
+        return;
+      }
+      signInput.value = data.sign;
+      signStatus.textContent = "已保存。正在馆里的人胸前会换成这行字";
     });
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {

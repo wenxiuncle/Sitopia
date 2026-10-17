@@ -53,9 +53,9 @@ function writeSortMode(mode) {
 const KICK_KEY = "quzhan-museum-kicked";
 const BEAT_MS = 30000;
 const BUBBLE_LIFE = 6000;
-const HOLD_MS = 30000;
-// 点画框白卡上的链接跳出去时，人先留在在线名单里，十分钟后仍没回来再离开。
-const CARD_HOLD_MS = 10 * 60 * 1000;
+// 点画框白卡上的链接，或把这一页放到后台：人先留在在线名单里。十分钟后还没回来，再从馆里请出。
+// 关掉页面不等这十分钟。
+const HOLD_MS = 10 * 60 * 1000;
 const SEAT_KEY = "quzhan-museum-seat";
 // 同座位被顶掉后，连接活过这么久才算稳定，之前的顶替计数才清零。
 // 按 1.5 秒固定回抢会一直互顶，所以要等一条连接真正站住。
@@ -117,6 +117,7 @@ export function mountPresence(options) {
     onGate,
     onKick,
     onMusic,
+    onSign,
     onRobot,
     onNotes,
     onUnlink,
@@ -201,6 +202,7 @@ export function mountPresence(options) {
   let holdUntil = 0;
   let holdTimer = 0;
   let holdToken = 0;
+  let shelved = false;
   let sawHall = false;
   let wasInHall = false;
   let musicTimer = 0;
@@ -229,7 +231,11 @@ export function mountPresence(options) {
   }
 
   function hello() {
-    return { t: "hi", name: myName, away: document.hidden, seat };
+    return { t: "hi", name: myName, away: document.hidden && !(holdUntil > Date.now()), seat };
+  }
+
+  function takeSign(value) {
+    if (typeof value === "string" && onSign) onSign(value);
   }
 
   function beatAddress() {
@@ -307,7 +313,7 @@ export function mountPresence(options) {
   }
 
   function sendBeat() {
-    if (!solo || !confirmed || !myName || stillKicked()) return;
+    if (shelved || dead || !solo || !confirmed || !myName || stillKicked()) return;
     const url = beatAddress();
     if (!url) return;
     const pose = getPose();
@@ -342,7 +348,10 @@ export function mountPresence(options) {
       }
     }).then((data) => {
       if (data && data.t === "kick") applyKick(data.until);
-      else if (data && data.music && onMusic) onMusic(data.music);
+      else if (data) {
+        takeSign(data.sign);
+        if (data.music && onMusic) onMusic(data.music);
+      }
     }).catch(() => {
       /* 下一轮心跳再试。 */
     });
@@ -368,7 +377,9 @@ export function mountPresence(options) {
     fetch(url, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data && data.t === "music" && onMusic) onMusic(data);
+        if (!data) return;
+        takeSign(data.sign);
+        if (data.t === "music" && onMusic) onMusic(data);
       })
       .catch(() => {});
   }
@@ -531,7 +542,12 @@ export function mountPresence(options) {
       return;
     }
     if (msg.t === "music") {
+      takeSign(msg.sign);
       if (onMusic) onMusic(msg);
+      return;
+    }
+    if (msg.t === "sign") {
+      takeSign(msg.text);
       return;
     }
     if (msg.t === "welcome") {
@@ -557,10 +573,14 @@ export function mountPresence(options) {
           else toast("你进入了展厅");
         }
       }
-      if (document.hidden) send({ t: "away" });
+      if (document.hidden && !(holdUntil > Date.now())) send({ t: "away" });
       else if (msg.away) send({ t: "back" });
+      takeSign(msg.sign);
       if (msg.music && onMusic) onMusic(msg.music);
-      if (msg.robot && onRobot) onRobot(msg.robot);
+      if (msg.robot && onRobot) {
+        takeSign(msg.robot.sign);
+        onRobot(msg.robot);
+      }
       if (msg.notes && onNotes) onNotes(msg.notes);
       publishAt = 0;
       sentX = NaN;
@@ -620,6 +640,7 @@ export function mountPresence(options) {
       return;
     }
     if (msg.t === "robot") {
+      takeSign(msg.sign);
       if (onRobot) onRobot(msg);
       return;
     }
@@ -701,7 +722,8 @@ export function mountPresence(options) {
     if (id) beaconLeave(address, id);
     online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
     window.clearTimeout(retry);
-    if (stillKicked() || dead || document.hidden || !confirmed || solo) return;
+    if (stillKicked() || dead || !confirmed || solo) return;
+    if (document.hidden && !(holdUntil > Date.now())) return;
     retry = window.setTimeout(arm, 1500);
   }
 
@@ -761,7 +783,8 @@ export function mountPresence(options) {
   }
 
   function arm() {
-    if (stillKicked() || solo || dead || document.hidden || !confirmed || !myName || socketLive()) return;
+    if (stillKicked() || solo || dead || !confirmed || !myName || socketLive()) return;
+    if (document.hidden && !(holdUntil > Date.now())) return;
     const address = lobbyAddress();
     if (!address) {
       online.textContent = "未连接";
@@ -804,7 +827,8 @@ export function mountPresence(options) {
       }
       online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
       window.clearTimeout(retry);
-      if (dead || document.hidden || !confirmed || solo) return;
+      if (dead || !confirmed || solo) return;
+      if (document.hidden && !(holdUntil > Date.now())) return;
       // 4000 是同一个座位被另一条连接接管，多半是同一个浏览器里又开了一页。
       // 只有这条连接活够久才算稳定，稳定过才清零；否则逐次拉长间隔，避免一直互顶。
       if (Date.now() - connAt >= SEAT_STABLE_MS) seatRetry = 0;
@@ -901,10 +925,26 @@ export function mountPresence(options) {
     online.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
+  function shelve() {
+    if (dead || stillKicked() || !document.hidden) return;
+    shelved = true;
+    window.clearTimeout(retry);
+    holdUntil = 0;
+    if (solo) {
+      stopBeat();
+      sendLeave();
+      online.textContent = "未连接";
+      return;
+    }
+    dropLink();
+    online.textContent = confirmed && myName ? "未连接" : "先起个名字";
+  }
+
   function holdPresence(ms) {
     const wait = ms > 0 ? ms : HOLD_MS;
     const token = ++holdToken;
     holdUntil = Date.now() + wait;
+    shelved = false;
     window.clearTimeout(holdTimer);
     const tick = () => {
       if (token !== holdToken) return;
@@ -915,9 +955,7 @@ export function mountPresence(options) {
         return;
       }
       holdUntil = 0;
-      if (!document.hidden) return;
-      if (linked) send({ t: "away" });
-      else if (solo) sendBeat();
+      shelve();
     };
     tick();
   }
@@ -936,7 +974,7 @@ export function mountPresence(options) {
       return;
     }
     if (link.target !== "_blank" && url.origin === location.origin) return;
-    holdPresence(link.closest("#panel") ? CARD_HOLD_MS : HOLD_MS);
+    holdPresence(HOLD_MS);
   }
 
   function applyOnline(show) {
@@ -1144,17 +1182,26 @@ export function mountPresence(options) {
 
   document.addEventListener("visibilitychange", () => {
     if (stillKicked()) return;
-    if (solo) sendBeat();
     if (document.hidden) {
       window.clearTimeout(retry);
-      if (Date.now() < holdUntil) return;
-      holdPresence();
+      if (!(holdUntil > Date.now() + HOLD_MS - 1000)) holdPresence(HOLD_MS);
+      if (solo && confirmed && myName && !shelved) {
+        if (!beatTimer) startBeat();
+        else sendBeat();
+      }
       return;
     }
     holdToken += 1;
     window.clearTimeout(holdTimer);
     holdUntil = 0;
+    shelved = false;
     if (dead || !confirmed || !myName) return;
+    if (solo) {
+      online.textContent = "单人";
+      if (!beatTimer) startBeat();
+      else sendBeat();
+      return;
+    }
     if ((socket && socket.readyState === WebSocket.OPEN) || (http && !http.stopped)) {
       if (linked) send({ t: "back" });
       return;
@@ -1164,6 +1211,9 @@ export function mountPresence(options) {
 
   window.addEventListener("pagehide", () => {
     dead = true;
+    holdToken += 1;
+    window.clearTimeout(holdTimer);
+    holdUntil = 0;
     window.clearTimeout(retry);
     stopBeat();
     window.clearInterval(musicTimer);

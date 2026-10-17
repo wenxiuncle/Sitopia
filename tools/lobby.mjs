@@ -21,6 +21,8 @@ import {
   attachDesk,
   blankMusic,
   blankRobot,
+  cleanSign,
+  setRobotSign,
   musicDesk,
   musicView,
   onClientMessage,
@@ -349,7 +351,7 @@ export function attachLobby(server) {
       settleSolo(now);
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
-      return { status: 200, body: { ok: true, music: musicView(room.music, now) } };
+      return { status: 200, body: { ok: true, music: musicView(room.music, now), sign: cleanSign(room.robot.sign) } };
     },
     leave(msg) {
       const now = Date.now();
@@ -365,7 +367,9 @@ export function attachLobby(server) {
       settleSolo(now);
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
-      return musicView(room.music, now);
+      const view = musicView(room.music, now);
+      view.sign = cleanSign(room.robot.sign);
+      return view;
     },
     musicSettings() {
       return musicDesk(room.music);
@@ -396,7 +400,13 @@ export function attachLobby(server) {
         inHall: namedCount(people),
         now,
         people: adminPeople(people, solo, now),
+        sign: cleanSign(room.robot.sign),
       };
+    },
+    setSign(text) {
+      const sign = setRobotSign(room.robot, text);
+      broadcast({ t: "sign", text: sign });
+      return sign;
     },
     visits(day) {
       const now = Date.now();
