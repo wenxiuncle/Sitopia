@@ -111,6 +111,7 @@ export const adminHtml = `<!DOCTYPE html>
     }
     #frame-status, #arrange-status, #music-status, #sign-status { min-height: 1.4em; color: #6f6a64; }
     #sign-text { width: 18em; max-width: 100%; }
+    #sign-speed { width: 5em; }
     #page-tabs {
       display: flex;
       flex-wrap: wrap;
@@ -338,8 +339,9 @@ export const adminHtml = `<!DOCTYPE html>
     <h2>胸前屏幕</h2>
     <form id="sign-form">
       <label>滚动文字 <input id="sign-text" type="text" maxlength="32" autocomplete="off" value="欢迎光临"></label>
+      <label>滚动速度 <input id="sign-speed" type="number" min="0" max="100" step="1" inputmode="numeric" autocomplete="off" value="20"></label>
       <button class="solid" type="submit">保存</button>
-      <span class="hint">一楼接待机器人胸前，字从右往左循环滚。最多 32 个字。留空就回到「欢迎光临」。正在馆里的人会跟着换。</span>
+      <span class="hint">一楼接待机器人胸前，字从右往左循环滚。最多 32 个字。留空就回到「欢迎光临」。速度填 0 到 100 的整数，0 是字停住，20 是现在这一档，100 最快，大约是现在的 5 倍。比 20 大就更快。正在馆里的人会跟着换。</span>
     </form>
     <p id="sign-status"></p>
     </section>
@@ -378,6 +380,7 @@ export const adminHtml = `<!DOCTYPE html>
     const musicStatus = document.getElementById("music-status");
     const signStatus = document.getElementById("sign-status");
     const signInput = document.getElementById("sign-text");
+    const signSpeedInput = document.getElementById("sign-speed");
     const musicVolumeInput = document.getElementById("music-volume");
     const musicSave = document.getElementById("music-save");
     let musicOrder = [];
@@ -446,6 +449,7 @@ export const adminHtml = `<!DOCTYPE html>
       maxInput.max = String(data.cap || 24);
       if (document.activeElement !== maxInput) maxInput.value = String(data.max || 24);
       if (typeof data.sign === "string" && document.activeElement !== signInput) signInput.value = data.sign;
+      if (Number.isInteger(data.speed) && document.activeElement !== signSpeedInput) signSpeedInput.value = String(data.speed);
       let solo = 0;
       let away = 0;
       for (let i = 0; i < people.length; i++) {
@@ -1322,24 +1326,33 @@ export const adminHtml = `<!DOCTYPE html>
 
     document.getElementById("sign-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const raw = signSpeedInput.value.trim();
+      if (!/^\d{1,3}$/.test(raw) || Number(raw) > 100) {
+        signStatus.textContent = "速度要填 0 到 100 的整数";
+        return;
+      }
       signStatus.textContent = "正在保存…";
       const res = await fetch("/admin/api/sign", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: signInput.value.trim() }),
+        body: JSON.stringify({ text: signInput.value.trim(), speed: Number(raw) }),
       });
       if (res.status === 401) {
         showLogin("口令已失效");
         return;
       }
       const data = await readJson(res);
-      if (!res.ok || !data || typeof data.sign !== "string") {
-        signStatus.textContent = "没有保存";
+      if (!res.ok || !data || typeof data.sign !== "string" || !Number.isInteger(data.speed)) {
+        if (data && data.error === "speed") signStatus.textContent = "速度要填 0 到 100 的整数";
+        else signStatus.textContent = "没有保存";
         return;
       }
       signInput.value = data.sign;
-      signStatus.textContent = "已保存。正在馆里的人胸前会换成这行字";
+      signSpeedInput.value = String(data.speed);
+      signStatus.textContent = data.speed === 0
+        ? "已保存。正在馆里的人胸前这行字会停住"
+        : "已保存。正在馆里的人胸前会按这个速度滚";
     });
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {

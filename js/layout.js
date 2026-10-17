@@ -688,6 +688,16 @@ export function inLiftCar(x, z) {
   return x > LIFT.xRear + 0.16 && x < LIFT.xDoor - 0.12 && z > LIFT.z0 + 0.1 && z < LIFT.z1 - 0.1;
 }
 
+// 人还站在门洞里时轿厢不能走。完全进了轿厢，或已经离开门口，就不算挡着。
+export function blocksLiftDoor(x, z, y, cabY) {
+  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(y) || !Number.isFinite(cabY)) return false;
+  if (Math.abs(y - cabY) > 0.9) return false;
+  if (inLiftCar(x, z)) return false;
+  const half = LIFT.doorW / 2 + 0.45;
+  if (Math.abs(z - LIFT.cz) > half) return false;
+  return x > LIFT.xDoor - 0.55 && x < LIFT.xDoor + 1.5;
+}
+
 // 馆内琴声有多满。1 是展厅和轿厢，0 是广场和观景台，门口这一两步取中间。
 export function hallBlend(x, z, interior) {
   if (inLiftCar(x, z)) return 1;

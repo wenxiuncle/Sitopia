@@ -1,7 +1,7 @@
 // 一楼门厅的接待机器人。一个网格，基本材质。胸前屏幕是这一台自己的字，不是展品站名。
 import * as THREE from "../vendor/three.module.js";
 import { attachSun } from "./meshes.js";
-import { DEFAULT_SIGN, cleanSign } from "./sign.js";
+import { DEFAULT_SIGN, DEFAULT_SIGN_SPEED, cleanSign, readSignSpeed, signTravel } from "./sign.js";
 
 const raycaster = new THREE.Raycaster();
 const aim = new THREE.Vector3();
@@ -21,9 +21,12 @@ function createScreen() {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   let text = DEFAULT_SIGN;
+  let speed = DEFAULT_SIGN_SPEED;
+  let parked = false;
   // 屏幕网格会绕 Y 转 180° 朝向馆门。转过之后字已经是正的，再镜像就会反着读。
-  // 字从右往左滚。边框画在裁切外面，不跟着走。
+  // 字从右往左滚。边框画在裁切外面，不跟着走。速度 0 时只画一次，停在屏幕中间。
   function paint(now) {
+    if (speed === 0 && parked) return;
     ctx.fillStyle = "#1a2744";
     ctx.fillRect(0, 0, 512, 288);
     ctx.strokeStyle = "#3ad4e6";
@@ -31,21 +34,29 @@ function createScreen() {
     ctx.strokeRect(18, 18, 476, 252);
     ctx.fillStyle = "#d8fff6";
     ctx.font = "600 72px Songti SC, SimSun, STSong, serif";
-    ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     const width = Math.max(1, ctx.measureText(text).width);
-    const gap = 96;
-    const span = width + gap;
-    const travel = ((Number(now) || 0) * 0.04) % span;
     const innerLeft = 36;
     const innerRight = 476;
     ctx.save();
     ctx.beginPath();
     ctx.rect(30, 30, 452, 228);
     ctx.clip();
-    let x = innerRight - travel;
-    while (x > innerLeft - span) x -= span;
-    for (; x < innerRight; x += span) ctx.fillText(text, x, 150);
+    if (speed === 0) {
+      const room = innerRight - innerLeft;
+      ctx.textAlign = width <= room ? "center" : "left";
+      ctx.fillText(text, width <= room ? (innerLeft + innerRight) / 2 : innerLeft, 150);
+      parked = true;
+    } else {
+      parked = false;
+      ctx.textAlign = "left";
+      const gap = 96;
+      const span = width + gap;
+      const travel = signTravel(now, speed) % span;
+      let x = innerRight - travel;
+      while (x > innerLeft - span) x -= span;
+      for (; x < innerRight; x += span) ctx.fillText(text, x, 150);
+    }
     ctx.restore();
     texture.needsUpdate = true;
   }
@@ -53,7 +64,17 @@ function createScreen() {
   return {
     texture,
     setText(value) {
-      text = cleanSign(value);
+      const next = cleanSign(value);
+      if (next === text) return;
+      text = next;
+      parked = false;
+    },
+    setSpeed(value) {
+      if (value == null || value === "") return;
+      const next = readSignSpeed(value);
+      if (next < 0 || next === speed) return;
+      speed = next;
+      parked = false;
     },
     paint,
   };
@@ -164,8 +185,9 @@ export function createReception(scene, sunShared, sunRole) {
 
   return {
     group,
-    setSign(value) {
+    setSign(value, speed) {
       screen.setText(value);
+      screen.setSpeed(speed);
     },
     pick(origin, direction, minT) {
       aim.copy(direction);

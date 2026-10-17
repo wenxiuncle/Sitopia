@@ -124,6 +124,7 @@ export function mountPresence(options) {
     onRobotFace,
     onNotes,
     onUnlink,
+    onLift,
     onSort,
   } = options;
   const corner = document.getElementById("corner");
@@ -235,8 +236,8 @@ export function mountPresence(options) {
     return { t: "hi", name: myName, away: document.hidden && !(holdUntil > Date.now()), seat };
   }
 
-  function takeSign(value) {
-    if (typeof value === "string" && onSign) onSign(value);
+  function takeSign(value, speed) {
+    if (typeof value === "string" && onSign) onSign(value, speed);
   }
 
   function beatAddress() {
@@ -350,7 +351,7 @@ export function mountPresence(options) {
     }).then((data) => {
       if (data && data.t === "kick") applyKick(data.until);
       else if (data) {
-        takeSign(data.sign);
+        takeSign(data.sign, data.speed);
         if (data.music && onMusic) onMusic(data.music);
       }
     }).catch(() => {
@@ -379,7 +380,7 @@ export function mountPresence(options) {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
-        takeSign(data.sign);
+        takeSign(data.sign, data.speed);
         if (data.t === "music" && onMusic) onMusic(data);
       })
       .catch(() => {});
@@ -613,12 +614,12 @@ export function mountPresence(options) {
       return;
     }
     if (msg.t === "music") {
-      takeSign(msg.sign);
+      takeSign(msg.sign, msg.speed);
       if (onMusic) onMusic(msg);
       return;
     }
     if (msg.t === "sign") {
-      takeSign(msg.text);
+      takeSign(msg.text, msg.speed);
       return;
     }
     if (msg.t === "welcome") {
@@ -647,13 +648,14 @@ export function mountPresence(options) {
       }
       if (document.hidden && !(holdUntil > Date.now())) send({ t: "away" });
       else if (msg.away) send({ t: "back" });
-      takeSign(msg.sign);
+      takeSign(msg.sign, msg.speed);
       if (msg.music && onMusic) onMusic(msg.music);
       if (msg.robot && onRobot) {
-        takeSign(msg.robot.sign);
+        takeSign(msg.robot.sign, msg.robot.speed);
         onRobot(msg.robot);
       }
       if (msg.notes && onNotes) onNotes(msg.notes);
+      if (msg.lift && onLift) onLift(msg.lift);
       publishAt = 0;
       sentX = NaN;
       sentY = NaN;
@@ -712,7 +714,7 @@ export function mountPresence(options) {
       return;
     }
     if (msg.t === "robot") {
-      takeSign(msg.sign);
+      takeSign(msg.sign, msg.speed);
       if (onRobot) onRobot(msg);
       return;
     }
@@ -737,6 +739,10 @@ export function mountPresence(options) {
     }
     if (msg.t === "kick") {
       applyKick(msg.until);
+      return;
+    }
+    if (msg.t === "lift") {
+      if (onLift) onLift(msg);
       return;
     }
     if (msg.t === "full") toast("展厅人满了");
@@ -1416,6 +1422,13 @@ export function mountPresence(options) {
 
   return {
     others() { return crowd.list(); },
+    rideLift(y, moving) { crowd.ride(y, moving); },
+    sendLift(floor, on) {
+      if (!linked) return false;
+      send({ t: "lift-call", floor, on: on ? 1 : 0 });
+      return true;
+    },
+    holdHall(on) { crowd.holdHall(on); },
     linked() { return linked; },
     solo() { return solo; },
     myId() { return me ? me.id : ""; },

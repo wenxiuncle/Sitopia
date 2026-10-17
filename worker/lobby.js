@@ -15,8 +15,8 @@ import {
   cleanMax,
   cleanName,
   cleanSeat,
-  cleanSign,
   setRobotSign,
+  signState,
   createVisitBook,
   dayBounds,
   finishVisit,
@@ -45,6 +45,12 @@ import {
   dropSay,
   syncMusic,
   syncRobot,
+  attachLift,
+  createSharedLift,
+  liftBusy,
+  pumpLift,
+  restoreSharedLift,
+  liftView,
   shanghaiDay,
   visitLeftAt,
   visitView,
@@ -120,6 +126,11 @@ export class SitopiaLobby extends DurableObject {
     this.musicSavedAt = 0;
     this.robot = blankRobot();
     this.robotSavedAt = 0;
+    this.lift = createSharedLift(Date.now());
+    this.liftSavedAt = 0;
+    this.liftStoredKey = "";
+    this.liftAlarmAt = 0;
+    this.pingAt = 0;
     this.notes = [];
     this.solo = new Map();
     this.visits = createVisitBook();
@@ -164,6 +175,7 @@ export class SitopiaLobby extends DurableObject {
       await this.persistMusic(now, true);
       this.robot = restoreRobot(await ctx.storage.get("robot"));
       this.notes = restoreNotes(await ctx.storage.get("notes"));
+      this.lift = restoreSharedLift(await ctx.storage.get("lift"), Date.now());
     });
   }
 
@@ -312,17 +324,37 @@ export class SitopiaLobby extends DurableObject {
   }
 
   room() {
-    return { maxPeople: this.maxPeople, kicks: this.kicks, robot: this.robot, notes: this.notes };
+    return { maxPeople: this.maxPeople, kicks: this.kicks, robot: this.robot, notes: this.notes, lift: this.lift };
+  }
+
+  async persistLift(now) {
+    const at = now || Date.now();
+    if (at - this.liftSavedAt < 3000) return;
+    if (this.liftStoredKey && this.liftStoredKey === this.lift.key) return;
+    const view = liftView(this.lift);
+    view.at = this.lift.at;
+    await this.ctx.storage.put("lift", view);
+    this.liftSavedAt = at;
+    this.liftStoredKey = this.lift.key;
+  }
+
+  async nudgeLift(now) {
+    if (!liftBusy(this.lift)) return;
+    if (this.liftAlarmAt && this.liftAlarmAt <= now + 200) return;
+    this.liftAlarmAt = now + 100;
+    await this.ctx.storage.setAlarm(this.liftAlarmAt);
   }
 
   async persistRobot(now, force) {
     const at = now || Date.now();
     if (!force && at - this.robotSavedAt < 5000) return;
+    const chest = signState(this.robot);
     await this.ctx.storage.put("robot", {
       x: this.robot.x,
       z: this.robot.z,
       yaw: this.robot.yaw,
-      sign: cleanSign(this.robot.sign),
+      sign: chest.sign,
+      speed: chest.speed,
     });
     this.robotSavedAt = at;
   }
@@ -420,7 +452,7 @@ export class SitopiaLobby extends DurableObject {
     const ev = await this.noteMusic(this.roster(), now);
     if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
     else if (this.music.playing) await this.persistMusic(now, false);
-    return json({ ok: true, music: musicView(this.music, now), sign: cleanSign(this.robot.sign) }, 200, request);
+    return json({ ok: true, music: musicView(this.music, now), ...signState(this.robot) }, 200, request);
   }
 
   async leave(request) {
@@ -484,7 +516,7 @@ export class SitopiaLobby extends DurableObject {
         inHall: namedCount(this.roster()),
         now,
         people: adminPeople(this.roster(), this.solo, now),
-        sign: cleanSign(this.robot.sign),
+        ...signState(this.robot),
       }, 200);
     }
     if (url.pathname === "/admin/api/visits" && request.method === "GET") {
@@ -590,10 +622,11 @@ export class SitopiaLobby extends DurableObject {
     if (url.pathname === "/admin/api/sign" && request.method === "POST") {
       const body = await readJson(request);
       if (!body) return json({ error: "body" }, 400);
-      const sign = setRobotSign(this.robot, body.text);
+      const saved = setRobotSign(this.robot, body.text, body.speed);
+      if (!saved) return json({ error: "speed" }, 400);
       await this.persistRobot(Date.now(), true);
-      this.fanout(null, [{ who: "all", obj: { t: "sign", text: sign } }]);
-      return json({ sign }, 200);
+      this.fanout(null, [{ who: "all", obj: { t: "sign", text: saved.sign, speed: saved.speed } }]);
+      return json(saved, 200);
     }
     return new Response("not found", { status: 404 });
   }
@@ -610,7 +643,7 @@ export class SitopiaLobby extends DurableObject {
       const ev = await this.noteMusic(this.roster(), now);
       if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
       const view = musicView(this.music, now);
-      view.sign = cleanSign(this.robot.sign);
+      Object.assign(view, signState(this.robot));
       return json(view, 200, request);
     }
     if (url.pathname === "/lobby/beat") {
@@ -681,10 +714,14 @@ export class SitopiaLobby extends DurableObject {
     if (!result.close) {
       const ev = await this.noteMusic(people, now);
       if (ev) result.out.push({ who: "all", obj: ev });
+      const lift = pumpLift(this.lift, people, now);
+      if (lift) result.out.push({ who: "all", obj: lift });
       attachMusic(result.out, this.music, now);
+      attachLift(result.out, this.lift);
       attachDesk(result.out, this.robot, this.notes);
     }
     this.fanout(ws, result.out);
+    if (!result.close) await this.nudgeLift(now);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
       this.noteArrival({
         seat: person.seat,
@@ -705,6 +742,17 @@ export class SitopiaLobby extends DurableObject {
 
   async alarm() {
     const now = Date.now();
+    this.liftAlarmAt = 0;
+    const riding = pumpLift(this.lift, this.roster(), now);
+    if (riding) this.fanout(null, [{ who: "all", obj: riding }]);
+    const busy = liftBusy(this.lift);
+    if (busy && this.pingAt && now - this.pingAt < PING_MS) {
+      await this.persistLift(now);
+      this.liftAlarmAt = now + 100;
+      await this.ctx.storage.setAlarm(this.liftAlarmAt);
+      return;
+    }
+    this.pingAt = now;
     const sockets = this.ctx.getWebSockets();
     let live = 0;
     for (let i = 0; i < sockets.length; i++) {
@@ -742,13 +790,16 @@ export class SitopiaLobby extends DurableObject {
     if (swept) await this.persistSolo();
     const ev = await this.noteMusic(this.roster(), now);
     if (live || ev) await this.persistMusic(now, !!ev);
-    if (live) {
+    if (live || liftBusy(this.lift)) {
       const view = JSON.stringify(musicView(this.music, now));
       const open = this.ctx.getWebSockets();
       for (let i = 0; i < open.length; i++) {
         try { open[i].send(view); } catch { /* 这条连接已经断了。 */ }
       }
-      await this.ctx.storage.setAlarm(now + PING_MS);
+      await this.persistLift(now);
+      const wait = liftBusy(this.lift) ? 100 : PING_MS;
+      this.liftAlarmAt = liftBusy(this.lift) ? now + wait : 0;
+      await this.ctx.storage.setAlarm(now + wait);
     }
   }
 

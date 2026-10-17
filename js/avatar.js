@@ -1,5 +1,5 @@
 import * as THREE from "../vendor/three.module.js";
-import { FLOOR_TILT } from "./layout.js";
+import { FLOOR_TILT, inLiftCar, occupiesHall } from "./layout.js";
 
 // 别人在第一人称里看到的方块人。样子对齐参考海报中间那个：
 // 棕发盖住额头、浅色短袖、深色短裤、方头。正面是局部 -Z，鼻子标记在脸前。
@@ -215,11 +215,23 @@ function dropBubble(row) {
 
 export function createCrowd(scene, material, shadowMaterial) {
   const people = new Map();
+  // 点「进入」后镜头还在往下飞，这一段不跑 update。人模若停在原点，原点正在一楼中心，在线的人会叠成一个。
+  let veilHall = false;
+
+  function showBody(row) {
+    const y = row.feet || 0;
+    row.visitor.group.position.set(row.x, y, row.z);
+    row.visitor.group.rotation.y = row.yaw;
+    placeBodyShadow(row.visitor, row.x, y, row.z, row.yaw);
+    row.visitor.group.visible = !(veilHall && occupiesHall(row.x, row.z));
+  }
 
   function ensure(person, snap) {
     let row = people.get(person.id);
     if (!row) {
       const visitor = createVisitor(material, shadowMaterial);
+      // 先藏着再摆位置。欢迎包若赶在玩家循环之前到达，不能有一帧停在原点。
+      visitor.group.visible = false;
       scene.add(visitor.group);
       row = {
         id: person.id,
@@ -239,6 +251,7 @@ export function createCrowd(scene, material, shadowMaterial) {
         swing: 0,
         bubble: null,
         bubbleUntil: 0,
+        riding: false,
       };
       people.set(person.id, row);
       snap = true;
@@ -259,6 +272,7 @@ export function createCrowd(scene, material, shadowMaterial) {
       row.lx = person.x;
       row.lz = person.z;
     }
+    if (snap || veilHall) showBody(row);
     return row;
   }
 
@@ -314,6 +328,7 @@ export function createCrowd(scene, material, shadowMaterial) {
         const idle = Math.sin(now * 0.002 + row.phase) * 0.01;
         row.visitor.group.position.set(row.x, (row.feet || 0) + idle, row.z);
         row.visitor.group.rotation.y = row.yaw;
+        row.visitor.group.visible = !(veilHall && occupiesHall(row.x, row.z));
         placeBodyShadow(row.visitor, row.x, row.feet || 0, row.z, row.yaw);
         if (row.bubble && now > row.bubbleUntil) dropBubble(row);
       }
@@ -323,10 +338,29 @@ export function createCrowd(scene, material, shadowMaterial) {
       if (!row || !name) return;
       row.name = name;
     },
+    // 轿厢里的人跟这一台一起升降。网络位置慢半拍时也不要留在路过的楼层上。
+    ride(cabY, moving) {
+      if (!Number.isFinite(cabY)) return;
+      for (const row of people.values()) {
+        const inCar = inLiftCar(row.x, row.z);
+        const near = Math.abs((row.feet || 0) - cabY) < 1.35 || Math.abs((row.tFeet || 0) - cabY) < 1.35;
+        row.riding = inCar && (near || (row.riding && moving));
+        if (!row.riding) continue;
+        row.feet = cabY;
+        row.tFeet = cabY;
+        row.visitor.group.position.y = cabY;
+        placeBodyShadow(row.visitor, row.x, cabY, row.z, row.yaw);
+      }
+    },
     list() {
       const out = [];
       for (const row of people.values()) out.push({ id: row.id, name: row.name, x: row.x, y: row.feet || 0, z: row.z, yaw: row.yaw });
       return out;
+    },
+    // 降落镜头期间为真：展厅里的人不画。广场上的人仍留在真实位置。
+    holdHall(on) {
+      veilHall = !!on;
+      for (const row of people.values()) showBody(row);
     },
   };
 }

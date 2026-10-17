@@ -17,6 +17,7 @@ import {
   hangOrder,
   liftFloorLabel,
   retitleFloors,
+  blocksLiftDoor,
   doorBoxes,
   doorWantsOpen,
   groundAt,
@@ -200,6 +201,8 @@ let liftDoors = null;
 let lift = null;
 let doorOpen = [];
 let doorHeld = [];
+let liftShared = false;
+const liftWish = new Map();
 const hallNear = [];
 let shownFloor = -1;
 let pictureGrid = null;
@@ -297,6 +300,7 @@ const ARRIVE_STEP = 32;
 let arriveFromGate = false;
 let arrivalQueued = false;
 let arrivalRun = false;
+let hallVeiled = false;
 let arrivalStamp = 0;
 let arrivalNow = 0;
 let arrivalT0 = 0;
@@ -1264,13 +1268,13 @@ function submitNote(event) {
   renderGuestbook();
 }
 
-function applySign(text) {
-  if (reception && typeof text === "string") reception.setSign(text);
+function applySign(text, speed) {
+  if (reception && typeof text === "string") reception.setSign(text, speed);
 }
 
 function onRobotMessage(view) {
   if (!view) return;
-  applySign(view.sign);
+  applySign(view.sign, view.speed);
   const was = receptionDriver;
   receptionDriver = view.driver || "";
   const mine = presence && presence.myId();
@@ -1318,6 +1322,8 @@ function onNotesMessage(payload) {
 function onDeskUnlink() {
   receptionDriver = "";
   notesShared = false;
+  liftShared = false;
+  liftWish.clear();
   if (!guestbook.hidden) renderGuestbook();
 }
 
@@ -1617,11 +1623,31 @@ function liftLabelOn() {
 
 // 人还停在门上时不算进了电梯。完全进到轿厢里，门才可以关。
 function holdingLiftDoor() {
-  if (!lift || Math.abs(py - lift.y) > 0.9) return false;
-  if (inLiftCar(px, pz)) return false;
-  const half = LIFT.doorW / 2 + 0.45;
-  if (Math.abs(pz - LIFT.cz) > half) return false;
-  return px > LIFT.xDoor - 0.55 && px < LIFT.xDoor + 1.5;
+  if (!lift) return false;
+  if (blocksLiftDoor(px, pz, py, lift.y)) return true;
+  if (!presence) return false;
+  const people = presence.others();
+  for (let i = 0; i < people.length; i++) {
+    const person = people[i];
+    if (blocksLiftDoor(person.x, person.z, person.y || 0, lift.y)) return true;
+  }
+  return false;
+}
+
+function personOpensDoor(x, z, y, floor) {
+  if (Math.abs(y - floor * STORY) >= 1.35) return false;
+  return doorWantsOpen(x, z, doorHeld[floor]);
+}
+
+function floorDoorWanted(floor) {
+  if (personOpensDoor(px, pz, py, floor)) return true;
+  if (!presence) return false;
+  const people = presence.others();
+  for (let i = 0; i < people.length; i++) {
+    const person = people[i];
+    if (personOpensDoor(person.x, person.z, person.y || 0, floor)) return true;
+  }
+  return false;
 }
 
 function feetOn() {
@@ -1733,14 +1759,43 @@ function fillLiftPad() {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       if (!lift) return;
-      const chosen = lift.has(f);
+      const chosen = liftChosen(f);
       if (ambience) ambience.press();
-      if (chosen) lift.cancel(f);
-      else lift.call(f);
+      pushLift(f, !chosen);
       paintLiftChoices();
       if (!chosen) requestWalk();
     });
     list.appendChild(button);
+  }
+}
+
+function liftChosen(floor) {
+  const wish = liftWish.get(floor);
+  if (wish && performance.now() - wish.at < 1600) return wish.on;
+  if (wish) liftWish.delete(floor);
+  return !!(lift && lift.has(floor));
+}
+
+function pushLift(floor, on) {
+  if (!lift || !built) return;
+  let target = floor | 0;
+  if (target < 0) target = 0;
+  if (target >= built.floors) target = built.floors - 1;
+  if (presence && presence.linked()) presence.sendLift(target, !!on);
+  if (liftShared) {
+    liftWish.set(target, { on: !!on, at: performance.now() });
+    return;
+  }
+  if (on) lift.call(target);
+  else lift.cancel(target);
+}
+
+function onLiftMessage(view) {
+  if (!lift || !view) return;
+  lift.adopt(view);
+  liftShared = true;
+  for (const [floor, wish] of liftWish) {
+    if (lift.has(floor) === wish.on) liftWish.delete(floor);
   }
 }
 
@@ -1749,13 +1804,13 @@ function onDoorKey() {
   if (insideLift()) {
     if (lift.phase === "moving") return;
     if (ambience) ambience.press();
-    lift.call(lift.current);
+    pushLift(lift.current, true);
     return;
   }
   if (!atLiftDoor()) return;
   if (ambience) ambience.press();
   doorCall = true;
-  lift.call(playerFloor());
+  pushLift(playerFloor(), true);
 }
 
 function paintLiftChoices() {
@@ -1764,7 +1819,7 @@ function paintLiftChoices() {
   const buttons = list.children;
   for (let i = 0; i < buttons.length; i++) {
     const button = buttons[i];
-    const on = lift.has(Number(button.dataset.floor));
+    const on = liftChosen(Number(button.dataset.floor));
     button.classList.toggle("chosen", on);
     const pressed = on ? "true" : "false";
     if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
@@ -1901,9 +1956,8 @@ function liftNear() {
 }
 
 function step(dt, now) {
-  const floorNow = playerFloor();
   for (let f = 0; f < built.floors; f++) {
-    const want = f === floorNow && Math.abs(py - f * STORY) < 1.35 && doorWantsOpen(px, pz, doorHeld[f]);
+    const want = floorDoorWanted(f);
     doorHeld[f] = want;
     hallNear[f] = hallDoorNear(px, py, pz, f);
     const aim = want ? 1 : 0;
@@ -1913,7 +1967,8 @@ function step(dt, now) {
   }
   if (doors) doors.update(doorOpen);
   if (lift) {
-    lift.tick(dt, holdingLiftDoor());
+    if (liftShared) lift.predict(dt);
+    else lift.tick(dt, holdingLiftDoor());
     if (liftDoors) {
       const opens = [];
       for (let f = 0; f < built.floors; f++) opens.push(liftOpenVisual(f));
@@ -1960,7 +2015,10 @@ function step(dt, now) {
   syncLiftHint();
   trackPictures();
   updateReception(dt, now);
-  if (presence) presence.update(dt, now);
+  if (presence) {
+    presence.update(dt, now);
+    if (lift) presence.rideLift(lift.y, lift.phase === "moving");
+  }
   if (ambience && built) {
     const indoors = hallBlend(px, pz, built.interior);
     ambience.hear(indoors);
@@ -2073,7 +2131,14 @@ function paintBeacons(now) {
   beacons.glow.opacity = blink ? 0.45 : 0.14;
 }
 
+function veilHallBodies(on) {
+  hallVeiled = !!on;
+  if (presence && presence.holdHall) presence.holdHall(hallVeiled);
+}
+
 function animate(now) {
+  // 落地后的第一帧先揭开。update 在这一帧的 render 之前，人已经在真实位置。
+  if (hallVeiled) veilHallBodies(false);
   noteFps(now);
   noteLag(now);
   paintBeacons(now);
@@ -3363,7 +3428,7 @@ async function buildScene(data, arrange) {
       if (active) releaseLook();
     },
     onMusic: (view) => {
-      if (view && typeof view.sign === "string") applySign(view.sign);
+      if (view && typeof view.sign === "string") applySign(view.sign, view.speed);
       if (ambience) ambience.follow(view);
     },
     onSign: applySign,
@@ -3371,6 +3436,7 @@ async function buildScene(data, arrange) {
     onRobotFace,
     onNotes: onNotesMessage,
     onUnlink: onDeskUnlink,
+    onLift: onLiftMessage,
     onExclusive: (which) => {
       if (which === "roster") closeLiftPad();
     },
@@ -3535,6 +3601,8 @@ async function buildScene(data, arrange) {
     const held = performance.now();
     if (horizon) horizon.drift(held);
     paintBeacons(held);
+    // 往下飞的这几帧不画展厅里的人。欢迎包刚到时人模还没进玩家循环，不能先露在一楼。
+    veilHallBodies(true);
     // 室内网格和真实时辰先画在原地。这一下若偏慢，时钟还没走，镜头不会跳。
     try { renderer.render(scene, camera); } catch { /* 这一帧画失败就等下一帧。 */ }
     const t = performance.now();

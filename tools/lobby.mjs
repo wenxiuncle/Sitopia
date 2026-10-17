@@ -21,8 +21,8 @@ import {
   attachDesk,
   blankMusic,
   blankRobot,
-  cleanSign,
   setRobotSign,
+  signState,
   musicDesk,
   musicView,
   onClientMessage,
@@ -34,6 +34,10 @@ import {
   shanghaiDay,
   syncMusic,
   syncRobot,
+  attachLift,
+  createSharedLift,
+  liftBusy,
+  pumpLift,
   visitLeftAt,
   visitTrend,
   visitsOnDay,
@@ -89,7 +93,7 @@ export function attachLobby(server) {
   const solo = new Map();
   const visits = createVisitBook();
   let arrange = cleanArrange(null);
-  const room = { maxPeople: MAX_PEOPLE, kicks: {}, music: blankMusic(Date.now()), robot: blankRobot(), notes: [] };
+  const room = { maxPeople: MAX_PEOPLE, kicks: {}, music: blankMusic(Date.now()), robot: blankRobot(), notes: [], lift: createSharedLift(Date.now()) };
 
   function touchMusic(now) {
     const at = now || Date.now();
@@ -200,7 +204,10 @@ export function attachLobby(server) {
     if (msg.t === "hi" && !result.close && person.seat) solo.delete(person.seat);
     const music = syncMusic(room.music, people, solo, now);
     if (music) result.out.push({ who: "all", obj: music });
+    const lift = pumpLift(room.lift, people, now);
+    if (lift) result.out.push({ who: "all", obj: lift });
     attachMusic(result.out, room.music, now);
+    attachLift(result.out, room.lift);
     attachDesk(result.out, room.robot, room.notes);
     if (!result.close && person.named && person.seat && (msg.t === "hi" || msg.t === "name")) {
       arrive(person, "online", now);
@@ -313,6 +320,13 @@ export function attachLobby(server) {
   }
 
   server.on("upgrade", onUpgrade);
+  const liftTimer = setInterval(() => {
+    if (!people.size || !liftBusy(room.lift)) return;
+    const view = pumpLift(room.lift, people, Date.now());
+    if (view) broadcast(view);
+  }, 100);
+  liftTimer.unref();
+
   const timer = setInterval(() => {
     const now = Date.now();
     const ping = encodeFrame(0x9, Buffer.alloc(0));
@@ -334,6 +348,7 @@ export function attachLobby(server) {
 
   return {
     close() {
+      clearInterval(liftTimer);
       clearInterval(timer);
       server.off("upgrade", onUpgrade);
       for (const person of Array.from(people.values())) person.socket.destroy();
@@ -354,7 +369,7 @@ export function attachLobby(server) {
       settleSolo(now);
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
-      return { status: 200, body: { ok: true, music: musicView(room.music, now), sign: cleanSign(room.robot.sign) } };
+      return { status: 200, body: { ok: true, music: musicView(room.music, now), ...signState(room.robot) } };
     },
     leave(msg) {
       const now = Date.now();
@@ -371,7 +386,7 @@ export function attachLobby(server) {
       const music = syncMusic(room.music, people, solo, now);
       if (music) broadcast(music);
       const view = musicView(room.music, now);
-      view.sign = cleanSign(room.robot.sign);
+      Object.assign(view, signState(room.robot));
       return view;
     },
     musicSettings() {
@@ -403,13 +418,14 @@ export function attachLobby(server) {
         inHall: namedCount(people),
         now,
         people: adminPeople(people, solo, now),
-        sign: cleanSign(room.robot.sign),
+        ...signState(room.robot),
       };
     },
-    setSign(text) {
-      const sign = setRobotSign(room.robot, text);
-      broadcast({ t: "sign", text: sign });
-      return sign;
+    setSign(text, speed) {
+      const saved = setRobotSign(room.robot, text, speed);
+      if (!saved) return null;
+      broadcast({ t: "sign", text: saved.sign, speed: saved.speed });
+      return saved;
     },
     visits(day) {
       const now = Date.now();

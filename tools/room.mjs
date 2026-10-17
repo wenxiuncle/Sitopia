@@ -3,14 +3,15 @@
 // 来访表只给后台按天查看。PHP 那间房间不记这张表。
 // 画框排列存在这间房间里。PHP 那间不存，展厅读不到时用原来的顺序。
 // 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
+// 电梯也只有这一台。呼叫并进同一组停靠，轿厢位置由这里往前算，各页跟着走。
 // 顺序和音量也可以存在这里。没存过时，用 js/score.js 的默认曲目，音量按满。
-import { occupiesHall } from "../js/layout.js";
+import { occupiesHall, blocksLiftDoor, STORY, RECEPTION, receptionHome } from "../js/layout.js";
+import { createLift } from "../js/lift.js";
 import { asPlaylist, playableTracks, scoreTotal, wrapScore } from "../js/score.js";
 import { readVolume } from "./audio-catalog.mjs";
-import { RECEPTION, receptionHome } from "../js/layout.js";
-import { cleanSign } from "../js/sign.js";
+import { cleanSign, readSignSpeed, signSpeed, DEFAULT_SIGN_SPEED } from "../js/sign.js";
 
-export { cleanSign };
+export { cleanSign, readSignSpeed, signSpeed };
 
 export { PIN_CAP, cleanArrange } from "../js/layout.js";
 export const PEOPLE_CAP = 24;
@@ -366,7 +367,16 @@ export function cleanNote(value) {
 
 export function blankRobot() {
   const home = receptionHome();
-  return { x: home.x, z: home.z, yaw: home.yaw, driver: "", moving: false, poseAt: 0, sign: cleanSign() };
+  return {
+    x: home.x,
+    z: home.z,
+    yaw: home.yaw,
+    driver: "",
+    moving: false,
+    poseAt: 0,
+    sign: cleanSign(),
+    speed: DEFAULT_SIGN_SPEED,
+  };
 }
 
 export function cleanRobotPose(msg) {
@@ -394,7 +404,15 @@ export function restoreRobot(saved) {
     robot.yaw = pose.yaw;
   }
   robot.sign = cleanSign(saved && saved.sign);
+  robot.speed = signSpeed(saved && saved.speed);
   return robot;
+}
+
+export function signState(robot) {
+  return {
+    sign: cleanSign(robot && robot.sign),
+    speed: signSpeed(robot && robot.speed),
+  };
 }
 
 export function clearRobotFace(robot, id) {
@@ -435,13 +453,18 @@ export function robotView(robot) {
     driver: robot.driver || "",
     moving: !!robot.moving,
     sign: cleanSign(robot && robot.sign),
+    speed: signSpeed(robot && robot.speed),
   };
 }
 
-export function setRobotSign(robot, value) {
-  if (!robot) return "";
+// 速度缺了或不是 0 到 100 的整数时不改，调用方按没保存处理。
+export function setRobotSign(robot, value, speed) {
+  if (!robot) return null;
+  const level = readSignSpeed(speed);
+  if (level < 0) return null;
   robot.sign = cleanSign(value);
-  return robot.sign;
+  robot.speed = level;
+  return signState(robot);
 }
 
 export function electDriver(people) {
@@ -862,6 +885,130 @@ export function adminPeople(people, solo, now) {
   return list;
 }
 
+// 楼层够用即可。馆内实际层数更少，页面也不会呼叫超出自己那栋楼的层。
+const LIFT_FLOORS = 64;
+const LIFT_SEND_MS = 80;
+
+export function createSharedLift(now) {
+  return {
+    sim: createLift(LIFT_FLOORS, STORY),
+    at: Number(now) || Date.now(),
+    key: "",
+    phase: "",
+    sentAt: 0,
+  };
+}
+
+export function restoreSharedLift(saved, now) {
+  const at = Number(now) || Date.now();
+  const shared = createSharedLift(at);
+  if (!saved || typeof saved !== "object") return shared;
+  const stamp = Number(saved.at) || 0;
+  if (!stamp || at - stamp > 120000) {
+    const y = Number(saved.y);
+    const floor = Number.isFinite(y) ? Math.round(y / STORY) : 0;
+    shared.sim.place(floor);
+    return shared;
+  }
+  shared.sim.adopt(saved);
+  shared.at = stamp;
+  return shared;
+}
+
+function liftKey(view) {
+  return view.phase + "|" + view.dir + "|" + view.current + "|" + view.dest + "|" + view.y + "|" + view.door + "|" + view.stops.join(",");
+}
+
+export function liftView(shared) {
+  const sim = shared.sim;
+  return {
+    t: "lift",
+    y: Math.round(sim.y * 1000) / 1000,
+    door: Math.round(sim.door * 1000) / 1000,
+    vel: Math.round(sim.vel * 1000) / 1000,
+    phase: sim.phase,
+    dir: sim.dir,
+    current: sim.current,
+    dest: sim.dest,
+    stops: sim.list(),
+    at: shared.at,
+  };
+}
+
+export function liftBusy(shared) {
+  if (!shared || !shared.sim) return false;
+  const sim = shared.sim;
+  return sim.phase !== "idle" || sim.door > 0.001 || sim.list().length > 0;
+}
+
+function liftBlocked(people, cabY) {
+  if (!people) return false;
+  for (const person of people.values()) {
+    if (!person || person.gone || person.away || !person.named) continue;
+    if (blocksLiftDoor(person.x, person.z, person.y || 0, cabY)) return true;
+  }
+  return false;
+}
+
+export function advanceLift(shared, people, now) {
+  if (!shared || !shared.sim) return;
+  const at = Number(now) || Date.now();
+  let gap = (at - (Number(shared.at) || at)) / 1000;
+  if (gap < 0) gap = 0;
+  if (gap > 70) gap = 70;
+  shared.at = at;
+  let left = gap;
+  let steps = 0;
+  while (left > 0.0001 && steps < 2200) {
+    const sim = shared.sim;
+    if (sim.phase === "idle" && sim.door <= 0.001 && !sim.list().length) break;
+    sim.tick(Math.min(left, 1 / 30), liftBlocked(people, sim.y));
+    left -= 1 / 30;
+    steps += 1;
+  }
+}
+
+function publishLift(shared, view, force) {
+  const key = liftKey(view);
+  const phaseChanged = view.phase !== shared.phase;
+  const stopsChanged = key.slice(key.lastIndexOf("|")) !== String(shared.key || "").slice(String(shared.key || "").lastIndexOf("|"));
+  if (!force && key === shared.key) return null;
+  if (!force && !phaseChanged && !stopsChanged && (Number(view.at) || 0) - (shared.sentAt || 0) < LIFT_SEND_MS) return null;
+  shared.key = key;
+  shared.phase = view.phase;
+  shared.sentAt = Number(view.at) || 0;
+  return view;
+}
+
+export function pumpLift(shared, people, now) {
+  if (!shared) return null;
+  advanceLift(shared, people, now);
+  return publishLift(shared, liftView(shared), false);
+}
+
+export function takeLiftCall(shared, people, person, msg, now) {
+  if (!shared || !shared.sim || !person || person.away) return null;
+  if ((Number(now) || 0) - (person.lastLift || 0) < 50) return null;
+  const floor = Math.floor(Number(msg && msg.floor));
+  if (!Number.isFinite(floor) || floor < 0 || floor >= LIFT_FLOORS) return null;
+  person.lastLift = now;
+  advanceLift(shared, people, now);
+  if (msg.on === 0 || msg.on === false) shared.sim.cancel(floor);
+  else shared.sim.call(floor);
+  const view = liftView(shared);
+  return publishLift(shared, view, true);
+}
+
+export function attachLift(events, shared) {
+  if (!events || !shared) return;
+  const view = liftView(shared);
+  for (let i = 0; i < events.length; i++) {
+    const obj = events[i] && events[i].obj;
+    if (!obj || obj.t !== "welcome") continue;
+    obj.lift = view;
+  }
+}
+
 export function onClientMessage(people, log, person, msg, now, room) {
   const limit = cleanMax(room && room.maxPeople) || MAX_PEOPLE;
   const out = [];
@@ -967,6 +1114,11 @@ export function onClientMessage(people, log, person, msg, now, room) {
   if (msg.t === "note") {
     const note = room && room.notes ? addNote(room.notes, person, msg.text, now, msg.parent) : null;
     if (note) out.push({ who: "all", obj: note });
+    return { close: false, out };
+  }
+  if (msg.t === "lift-call") {
+    const view = room && room.lift ? takeLiftCall(room.lift, people, person, msg, now) : null;
+    if (view) out.push({ who: "all", obj: view });
     return { close: false, out };
   }
   return { close: false, out };

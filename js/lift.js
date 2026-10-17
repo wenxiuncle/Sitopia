@@ -1,5 +1,6 @@
-// 一台轿厢。门外呼叫和轿内选层都进同一组停靠，先沿当前方向走完，再折返。
-// 门没关严、或门口有人，轿厢不动。
+// 一台轿厢。门外呼叫和轿内选层都进同一组停靠。
+// 上行先接上面的人，从近到远；上面没有了才掉头。下行先接下面的人，同样从近到远。
+// 门没关严、或门口有人，轿厢不动。联机时房间按这份往前算，各页只跟着显示。
 
 // 巡航比原来快半倍。加速度一起加上，单层行程才跟着缩短，不会只把最高速度写高、起步仍慢。
 const CRUISE = 2.025;
@@ -23,38 +24,73 @@ export function createLift(floors, story) {
     y = floor * story;
     vel = 0;
     stops.delete(floor);
-    dir = 0;
     dest = floor;
     phase = "opening";
   }
 
+  // 以轿厢现在的高度分上下，已经走过的楼层不算在前进方向里。
   function nextStop() {
     if (!stops.size) return null;
     const ups = [];
     const downs = [];
+    let here = null;
     for (const floor of stops) {
-      if (floor > current) ups.push(floor);
-      else if (floor < current) downs.push(floor);
+      const delta = floor * story - y;
+      if (Math.abs(delta) <= 0.08) here = floor;
+      else if (delta > 0) ups.push(floor);
+      else downs.push(floor);
     }
     ups.sort((a, b) => a - b);
     downs.sort((a, b) => b - a);
-    if (dir >= 0 && ups.length) {
-      dir = 1;
-      return ups[0];
+    if (here != null) return here;
+    if (dir > 0 && ups.length) return ups[0];
+    if (dir < 0 && downs.length) return downs[0];
+    if (dir === 0) {
+      if (ups.length) {
+        dir = 1;
+        return ups[0];
+      }
+      if (downs.length) {
+        dir = -1;
+        return downs[0];
+      }
+      return null;
     }
-    if (dir <= 0 && downs.length) {
+    if (dir > 0 && downs.length) {
       dir = -1;
       return downs[0];
     }
-    if (ups.length) {
+    if (dir < 0 && ups.length) {
       dir = 1;
       return ups[0];
     }
-    if (downs.length) {
-      dir = -1;
-      return downs[0];
-    }
+    dir = 0;
     return null;
+  }
+
+  // finish 为假时只滑动，不自己到站。到站由房间那一份宣布，各页才不会各开一次门。
+  function glide(dt, finish) {
+    const goal = dest * story;
+    const dist = goal - y;
+    const adist = Math.abs(dist);
+    if (adist < 0.03 || (dest === current && adist < 0.02)) {
+      if (finish) arrive(dest);
+      return;
+    }
+    const sign = dist < 0 ? -1 : 1;
+    const brake = (vel * vel) / (2 * ACCEL + 1e-6);
+    if (adist <= brake) vel -= sign * ACCEL * dt;
+    else vel += sign * ACCEL * dt;
+    const cap = Math.min(CRUISE, Math.sqrt(2 * ACCEL * adist));
+    if (vel > cap) vel = cap;
+    if (vel < -cap) vel = -cap;
+    if (vel * sign < 0) vel = 0;
+    const step = vel * dt;
+    if (Math.abs(step) >= adist - 1e-4 || vel === 0) {
+      if (finish) arrive(dest);
+      return;
+    }
+    y += step;
   }
 
   return {
@@ -67,7 +103,9 @@ export function createLift(floors, story) {
       dir = 0;
       phase = "idle";
       door = 0;
+      stops.clear();
     },
+    get vel() { return vel; },
     get door() { return door; },
     get phase() { return phase; },
     get dir() { return dir; },
@@ -165,28 +203,52 @@ export function createLift(floors, story) {
         target = ahead;
       }
       dest = target;
-      const goal = target * story;
-      const dist = goal - y;
-      const adist = Math.abs(dist);
-      // 帧间隔较小时，提前刹车会把速度收到 0，轿厢停在楼层前一两厘米，门就不再开。
-      if (adist < 0.03 || (target === current && adist < 0.02)) {
-        arrive(target);
+      glide(dt, true);
+    },
+    list() {
+      const out = [];
+      for (const floor of stops) out.push(floor);
+      out.sort((a, b) => a - b);
+      return out;
+    },
+    // 房间广播的轿厢。位置、门和停靠都以这一份为准，本页不再自己改路线。
+    adopt(view) {
+      if (!view) return;
+      const nextY = Number(view.y);
+      const nextDoor = Number(view.door);
+      if (!Number.isFinite(nextY) || !Number.isFinite(nextDoor)) return;
+      y = nextY;
+      door = nextDoor < 0 ? 0 : nextDoor > 1 ? 1 : nextDoor;
+      const nextVel = Number(view.vel);
+      vel = Number.isFinite(nextVel) ? nextVel : 0;
+      const known = view.phase;
+      if (known === "idle" || known === "opening" || known === "open" || known === "closing" || known === "moving") {
+        phase = known;
+      }
+      dir = view.dir > 0 ? 1 : view.dir < 0 ? -1 : 0;
+      const cur = Math.floor(Number(view.current));
+      const dst = Math.floor(Number(view.dest));
+      if (Number.isFinite(cur)) current = cur < 0 ? 0 : cur >= floors ? floors - 1 : cur;
+      if (Number.isFinite(dst)) dest = dst < 0 ? 0 : dst >= floors ? floors - 1 : dst;
+      stops.clear();
+      const list = Array.isArray(view.stops) ? view.stops : [];
+      for (let i = 0; i < list.length; i++) {
+        const floor = Math.floor(Number(list[i]));
+        if (floor >= 0 && floor < floors) stops.add(floor);
+      }
+    },
+    predict(dt) {
+      if (!(dt > 0)) return;
+      if (dt > 0.1) dt = 0.1;
+      if (phase === "opening") {
+        door = Math.min(1, door + dt * DOOR_SPEED);
         return;
       }
-      const sign = dist < 0 ? -1 : 1;
-      const brake = (vel * vel) / (2 * ACCEL + 1e-6);
-      if (adist <= brake) vel -= sign * ACCEL * dt;
-      else vel += sign * ACCEL * dt;
-      const cap = Math.min(CRUISE, Math.sqrt(2 * ACCEL * adist));
-      if (vel > cap) vel = cap;
-      if (vel < -cap) vel = -cap;
-      if (vel * sign < 0) vel = 0;
-      const step = vel * dt;
-      if (Math.abs(step) >= adist - 1e-4 || vel === 0) {
-        arrive(target);
+      if (phase === "closing") {
+        door = Math.max(0, door - dt * DOOR_SPEED);
         return;
       }
-      y += step;
+      if (phase === "moving") glide(dt, false);
     },
   };
 }

@@ -265,7 +265,12 @@ async function route(req, res, lobby, path, url) {
       send(res, 400, { error: "body" });
       return;
     }
-    send(res, 200, { sign: lobby.setSign(body.text) });
+    const saved = lobby.setSign(body.text, body.speed);
+    if (!saved) {
+      send(res, 400, { error: "speed" });
+      return;
+    }
+    send(res, 200, saved);
     return;
   }
   if (path === "/admin/api/kick" && req.method === "POST") {

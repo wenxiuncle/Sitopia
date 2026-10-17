@@ -89,6 +89,8 @@ if (!isset($data["robot"]) || !is_array($data["robot"])) $data["robot"] = blankR
 else $data["robot"] = normalizeRobot($data["robot"]);
 if (!isset($data["notes"]) || !is_array($data["notes"])) $data["notes"] = [];
 $now = (int) round(microtime(true) * 1000);
+if (!isset($data["lift"]) || !is_array($data["lift"])) $data["lift"] = blankLift($now);
+else $data["lift"] = normalizeLift($data["lift"], $now);
 $ip = clientIp();
 if (!rateOk($data, $ip, $now)) {
     saveState($statePath, $data);
@@ -98,6 +100,8 @@ if (!rateOk($data, $ip, $now)) {
 }
 
 sweep($data, $now);
+$liftNote = pumpLift($data, $now);
+if ($liftNote) deliver($data, "", [["who" => "all", "obj" => $liftNote]]);
 $booted = syncMusic($data, $now);
 if ($booted) deliver($data, "", [["who" => "all", "obj" => $booted]]);
 
@@ -553,8 +557,18 @@ function onLeave(array &$data, string $id): array {
     return $out;
 }
 
+// 范围与 js/sign.js 的 readSignSpeed 相同。缺了或不合规则按 20，也就是原来的滚动速度。
+function signSpeed($value): int {
+    if (is_int($value) && $value >= 0 && $value <= 100) return $value;
+    if (is_string($value) && preg_match('/^\d{1,3}$/', $value)) {
+        $n = (int) $value;
+        if ($n >= 0 && $n <= 100) return $n;
+    }
+    return 20;
+}
+
 function blankRobot(): array {
-    return ["x" => 0.0, "z" => -2.9, "yaw" => M_PI, "driver" => "", "moving" => false, "poseAt" => 0];
+    return ["x" => 0.0, "z" => -2.9, "yaw" => M_PI, "driver" => "", "moving" => false, "poseAt" => 0, "speed" => 20];
 }
 
 function cleanRobotPose(array $msg): ?array {
@@ -576,6 +590,7 @@ function normalizeRobot(array $saved): array {
         $robot["z"] = $pose["z"];
         $robot["yaw"] = $pose["yaw"];
     }
+    $robot["speed"] = signSpeed($saved["speed"] ?? null);
     return $robot;
 }
 
@@ -620,6 +635,7 @@ function robotView(array $robot): array {
         "yaw" => $robot["yaw"],
         "driver" => (string) ($robot["driver"] ?? ""),
         "moving" => !empty($robot["moving"]),
+        "speed" => signSpeed($robot["speed"] ?? null),
     ];
 }
 
@@ -710,6 +726,7 @@ function attachDesk(array &$events, array $data): void {
         if (($ev["obj"]["t"] ?? "") !== "welcome") continue;
         $ev["obj"]["robot"] = robotView($data["robot"]);
         $ev["obj"]["notes"] = array_values($data["notes"]);
+        if (isset($data["lift"]) && is_array($data["lift"])) $ev["obj"]["lift"] = liftView($data["lift"]);
     }
 }
 
@@ -722,6 +739,18 @@ function deliver(array &$data, string $selfId, array $events): void {
             if ($ev["who"] === "self" && !$isSelf) continue;
             if ($ev["who"] === "others" && $isSelf) continue;
             if (!isset($data["queues"][$pid]) || !is_array($data["queues"][$pid])) $data["queues"][$pid] = [];
+            if (($ev["obj"]["t"] ?? "") === "lift") {
+                $replaced = false;
+                foreach ($data["queues"][$pid] as $qi => $queued) {
+                    if (is_array($queued) && ($queued["t"] ?? "") === "lift") {
+                        $data["queues"][$pid][$qi] = $ev["obj"];
+                        $replaced = true;
+                        break;
+                    }
+                }
+                if (!$replaced) $data["queues"][$pid][] = $ev["obj"];
+                continue;
+            }
             $data["queues"][$pid][] = $ev["obj"];
         }
     }
@@ -860,5 +889,350 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
         if ($note) $out[] = ["who" => "all", "obj" => $note];
         return ["close" => false, "out" => $out];
     }
+    if ($msg["t"] === "lift-call") {
+        $view = takeLiftCall($room, $person, $msg, $now);
+        if ($view) $out[] = ["who" => "all", "obj" => $view];
+        return ["close" => false, "out" => $out];
+    }
     return ["close" => false, "out" => $out];
+}
+
+const LIFT_STORY = 5.4;
+const LIFT_FLOORS = 64;
+const LIFT_CRUISE = 2.025;
+const LIFT_ACCEL = 1.725;
+const LIFT_DOOR_SPEED = 0.833333333333;
+const LIFT_DWELL = 3.1;
+const LIFT_X_REAR = -18.4;
+const LIFT_X_DOOR = -15.5;
+const LIFT_Z0 = -4.75;
+const LIFT_Z1 = -0.25;
+const LIFT_CZ = -3.0;
+const LIFT_DOOR_W = 1.8;
+
+function blankLift(int $now): array {
+    return [
+        "y" => 0.0,
+        "door" => 0.0,
+        "vel" => 0.0,
+        "phase" => "idle",
+        "dir" => 0,
+        "current" => 0,
+        "dest" => 0,
+        "stops" => [],
+        "dwell" => 0.0,
+        "at" => $now,
+        "key" => "",
+        "sentAt" => 0,
+    ];
+}
+
+function normalizeLift(array $saved, int $now): array {
+    $lift = blankLift($now);
+    $phase = (string) ($saved["phase"] ?? "idle");
+    if (in_array($phase, ["idle", "opening", "open", "closing", "moving"], true)) $lift["phase"] = $phase;
+    $lift["y"] = (float) ($saved["y"] ?? 0);
+    $lift["door"] = max(0.0, min(1.0, (float) ($saved["door"] ?? 0)));
+    $lift["vel"] = (float) ($saved["vel"] ?? 0);
+    $dir = (int) ($saved["dir"] ?? 0);
+    $lift["dir"] = $dir > 0 ? 1 : ($dir < 0 ? -1 : 0);
+    $cur = (int) ($saved["current"] ?? 0);
+    $dst = (int) ($saved["dest"] ?? 0);
+    $lift["current"] = max(0, min(LIFT_FLOORS - 1, $cur));
+    $lift["dest"] = max(0, min(LIFT_FLOORS - 1, $dst));
+    $lift["dwell"] = (float) ($saved["dwell"] ?? 0);
+    $stops = [];
+    foreach (($saved["stops"] ?? []) as $floor) {
+        $n = (int) $floor;
+        if ($n >= 0 && $n < LIFT_FLOORS) $stops[$n] = $n;
+    }
+    $lift["stops"] = array_values($stops);
+    $stamp = (int) ($saved["at"] ?? 0);
+    if ($stamp > 0 && $now - $stamp <= 120000) $lift["at"] = $stamp;
+    else {
+        $floor = (int) round($lift["y"] / LIFT_STORY);
+        $lift = blankLift($now);
+        $floor = max(0, min(LIFT_FLOORS - 1, $floor));
+        $lift["y"] = $floor * LIFT_STORY;
+        $lift["current"] = $floor;
+        $lift["dest"] = $floor;
+    }
+    return $lift;
+}
+
+function liftStopList(array $lift): array {
+    $out = [];
+    foreach ($lift["stops"] as $floor) $out[] = (int) $floor;
+    sort($out);
+    return $out;
+}
+
+function liftHas(array $lift, int $floor): bool {
+    foreach ($lift["stops"] as $stop) if ((int) $stop === $floor) return true;
+    return false;
+}
+
+function liftAdd(array &$lift, int $floor): void {
+    if (!liftHas($lift, $floor)) $lift["stops"][] = $floor;
+}
+
+function liftDrop(array &$lift, int $floor): void {
+    $next = [];
+    foreach ($lift["stops"] as $stop) if ((int) $stop !== $floor) $next[] = (int) $stop;
+    $lift["stops"] = $next;
+}
+
+function liftView(array $lift): array {
+    return [
+        "t" => "lift",
+        "y" => round((float) $lift["y"], 3),
+        "door" => round((float) $lift["door"], 3),
+        "vel" => round((float) $lift["vel"], 3),
+        "phase" => (string) $lift["phase"],
+        "dir" => (int) $lift["dir"],
+        "current" => (int) $lift["current"],
+        "dest" => (int) $lift["dest"],
+        "stops" => liftStopList($lift),
+        "at" => (int) $lift["at"],
+    ];
+}
+
+function liftKey(array $view): string {
+    return $view["phase"] . "|" . $view["dir"] . "|" . $view["current"] . "|" . $view["dest"] . "|" . $view["y"] . "|" . $view["door"] . "|" . implode(",", $view["stops"]);
+}
+
+function phpInLiftCar(float $x, float $z): bool {
+    return $x > LIFT_X_REAR + 0.16 && $x < LIFT_X_DOOR - 0.12 && $z > LIFT_Z0 + 0.1 && $z < LIFT_Z1 - 0.1;
+}
+
+function phpBlocksLift(float $x, float $z, float $y, float $cabY): bool {
+    if (abs($y - $cabY) > 0.9) return false;
+    if (phpInLiftCar($x, $z)) return false;
+    if (abs($z - LIFT_CZ) > LIFT_DOOR_W / 2 + 0.45) return false;
+    return $x > LIFT_X_DOOR - 0.55 && $x < LIFT_X_DOOR + 1.5;
+}
+
+function liftBlocked(array $people, float $cabY): bool {
+    foreach ($people as $person) {
+        if (!is_array($person) || empty($person["named"]) || !empty($person["away"]) || !empty($person["gone"])) continue;
+        $x = (float) ($person["x"] ?? 0);
+        $z = (float) ($person["z"] ?? 0);
+        $y = (float) ($person["y"] ?? 0);
+        if (phpBlocksLift($x, $z, $y, $cabY)) return true;
+    }
+    return false;
+}
+
+function liftArrive(array &$lift, int $floor): void {
+    $lift["current"] = $floor;
+    $lift["y"] = $floor * LIFT_STORY;
+    $lift["vel"] = 0.0;
+    liftDrop($lift, $floor);
+    $lift["dest"] = $floor;
+    $lift["phase"] = "opening";
+}
+
+function liftNext(array &$lift): ?int {
+    if (!$lift["stops"]) return null;
+    $ups = [];
+    $downs = [];
+    $here = null;
+    $y = (float) $lift["y"];
+    foreach ($lift["stops"] as $floor) {
+        $floor = (int) $floor;
+        $delta = $floor * LIFT_STORY - $y;
+        if (abs($delta) <= 0.08) $here = $floor;
+        elseif ($delta > 0) $ups[] = $floor;
+        else $downs[] = $floor;
+    }
+    sort($ups);
+    rsort($downs);
+    if ($here !== null) return $here;
+    $dir = (int) $lift["dir"];
+    if ($dir > 0 && $ups) return $ups[0];
+    if ($dir < 0 && $downs) return $downs[0];
+    if ($dir === 0) {
+        if ($ups) {
+            $lift["dir"] = 1;
+            return $ups[0];
+        }
+        if ($downs) {
+            $lift["dir"] = -1;
+            return $downs[0];
+        }
+        return null;
+    }
+    if ($dir > 0 && $downs) {
+        $lift["dir"] = -1;
+        return $downs[0];
+    }
+    if ($dir < 0 && $ups) {
+        $lift["dir"] = 1;
+        return $ups[0];
+    }
+    $lift["dir"] = 0;
+    return null;
+}
+
+function liftGlide(array &$lift, float $dt, bool $finish): void {
+    $dest = (int) $lift["dest"];
+    $goal = $dest * LIFT_STORY;
+    $dist = $goal - (float) $lift["y"];
+    $adist = abs($dist);
+    if ($adist < 0.03 || ($dest === (int) $lift["current"] && $adist < 0.02)) {
+        if ($finish) liftArrive($lift, $dest);
+        return;
+    }
+    $sign = $dist < 0 ? -1.0 : 1.0;
+    $vel = (float) $lift["vel"];
+    $brake = ($vel * $vel) / (2 * LIFT_ACCEL + 1e-6);
+    if ($adist <= $brake) $vel -= $sign * LIFT_ACCEL * $dt;
+    else $vel += $sign * LIFT_ACCEL * $dt;
+    $cap = min(LIFT_CRUISE, sqrt(2 * LIFT_ACCEL * $adist));
+    if ($vel > $cap) $vel = $cap;
+    if ($vel < -$cap) $vel = -$cap;
+    if ($vel * $sign < 0) $vel = 0.0;
+    $step = $vel * $dt;
+    $lift["vel"] = $vel;
+    if (abs($step) >= $adist - 1e-4 || $vel == 0.0) {
+        if ($finish) liftArrive($lift, $dest);
+        return;
+    }
+    $lift["y"] = (float) $lift["y"] + $step;
+}
+
+function liftTick(array &$lift, float $dt, bool $blocked): void {
+    $phase = (string) $lift["phase"];
+    if ($phase === "opening") {
+        $lift["door"] = (float) $lift["door"] + $dt * LIFT_DOOR_SPEED;
+        if ($lift["door"] >= 1) {
+            $lift["door"] = 1.0;
+            $lift["phase"] = "open";
+            $lift["dwell"] = LIFT_DWELL;
+        }
+        return;
+    }
+    if ($phase === "open") {
+        if ($blocked) {
+            $lift["dwell"] = LIFT_DWELL;
+            return;
+        }
+        $lift["dwell"] = (float) $lift["dwell"] - $dt;
+        if ($lift["dwell"] <= 0) $lift["phase"] = "closing";
+        return;
+    }
+    if ($phase === "closing") {
+        if ($blocked) {
+            $lift["phase"] = "opening";
+            return;
+        }
+        $lift["door"] = (float) $lift["door"] - $dt * LIFT_DOOR_SPEED;
+        if ($lift["door"] <= 0) {
+            $lift["door"] = 0.0;
+            liftDrop($lift, (int) $lift["current"]);
+            if ($lift["stops"]) $lift["phase"] = "moving";
+            else {
+                $lift["phase"] = "idle";
+                $lift["dir"] = 0;
+            }
+        }
+        return;
+    }
+    if ($phase === "idle") {
+        if ($lift["stops"]) $lift["phase"] = "moving";
+        return;
+    }
+    $target = liftNext($lift);
+    if ($target === null) {
+        $level = (float) $lift["y"] / LIFT_STORY;
+        $dir = (int) $lift["dir"];
+        $vel = (float) $lift["vel"];
+        $goingUp = $dir > 0 || $vel > 0.02;
+        $goingDown = !$goingUp && ($dir < 0 || $vel < -0.02);
+        if (!$goingUp && !$goingDown) {
+            $lift["y"] = (int) $lift["current"] * LIFT_STORY;
+            $lift["vel"] = 0.0;
+            $lift["dir"] = 0;
+            $lift["dest"] = (int) $lift["current"];
+            $lift["phase"] = "idle";
+            return;
+        }
+        $ahead = $goingUp
+            ? min(LIFT_FLOORS - 1, (int) ceil($level - 1e-4))
+            : max(0, (int) floor($level + 1e-4));
+        $progressed = $goingUp ? $level - (int) $lift["current"] : (int) $lift["current"] - $level;
+        if ($ahead === (int) $lift["current"] || $progressed < 0.12) {
+            $lift["y"] = (int) $lift["current"] * LIFT_STORY;
+            $lift["vel"] = 0.0;
+            $lift["dir"] = 0;
+            $lift["dest"] = (int) $lift["current"];
+            $lift["phase"] = "opening";
+            return;
+        }
+        $target = $ahead;
+    }
+    $lift["dest"] = $target;
+    liftGlide($lift, $dt, true);
+}
+
+function liftCall(array &$lift, int $floor): void {
+    if ($floor === (int) $lift["current"] && $lift["phase"] !== "moving") {
+        if ($lift["phase"] === "closing" || $lift["phase"] === "idle") $lift["phase"] = "opening";
+        if ($lift["phase"] === "open") $lift["dwell"] = max((float) $lift["dwell"], LIFT_DWELL);
+        return;
+    }
+    liftAdd($lift, $floor);
+    if ($lift["phase"] === "open" || $lift["phase"] === "opening") $lift["phase"] = "closing";
+    elseif ($lift["phase"] === "idle") $lift["phase"] = "moving";
+}
+
+function advanceLift(array &$data, int $now): void {
+    if (!isset($data["lift"]) || !is_array($data["lift"])) $data["lift"] = blankLift($now);
+    $lift = &$data["lift"];
+    $gap = ($now - (int) ($lift["at"] ?? $now)) / 1000;
+    if ($gap < 0) $gap = 0;
+    if ($gap > 70) $gap = 70;
+    $lift["at"] = $now;
+    $left = $gap;
+    $steps = 0;
+    $people = isset($data["people"]) && is_array($data["people"]) ? $data["people"] : [];
+    while ($left > 0.0001 && $steps < 2200) {
+        if ($lift["phase"] === "idle" && (float) $lift["door"] <= 0.001 && !$lift["stops"]) break;
+        $step = min($left, 1 / 30);
+        liftTick($lift, $step, liftBlocked($people, (float) $lift["y"]));
+        $left -= 1 / 30;
+        $steps += 1;
+    }
+}
+
+function pumpLift(array &$data, int $now): ?array {
+    advanceLift($data, $now);
+    $view = liftView($data["lift"]);
+    $key = liftKey($view);
+    $phaseChanged = $view["phase"] !== (string) ($data["lift"]["phaseKey"] ?? "");
+    $prev = (string) ($data["lift"]["key"] ?? "");
+    $stopsChanged = substr($key, (int) strrpos($key, "|")) !== ($prev === "" ? "" : substr($prev, (int) strrpos($prev, "|")));
+    if ($key === $prev) return null;
+    if (!$phaseChanged && !$stopsChanged && $now - (int) ($data["lift"]["sentAt"] ?? 0) < 80) return null;
+    $data["lift"]["key"] = $key;
+    $data["lift"]["phaseKey"] = $view["phase"];
+    $data["lift"]["sentAt"] = $now;
+    return $view;
+}
+
+function takeLiftCall(array &$room, array &$person, array $msg, int $now): ?array {
+    if (!empty($person["away"])) return null;
+    if ($now - (int) ($person["lastLift"] ?? 0) < 50) return null;
+    $floor = (int) floor((float) ($msg["floor"] ?? -1));
+    if ($floor < 0 || $floor >= LIFT_FLOORS) return null;
+    $person["lastLift"] = $now;
+    if (!isset($room["lift"]) || !is_array($room["lift"])) $room["lift"] = blankLift($now);
+    advanceLift($room, $now);
+    if (($msg["on"] ?? 1) === 0 || ($msg["on"] ?? 1) === false) liftDrop($room["lift"], $floor);
+    else liftCall($room["lift"], $floor);
+    $view = liftView($room["lift"]);
+    $room["lift"]["key"] = liftKey($view);
+    $room["lift"]["phaseKey"] = $view["phase"];
+    $room["lift"]["sentAt"] = $now;
+    return $view;
 }
