@@ -214,6 +214,7 @@ let doorCall = false;
 let revealFloor = -1;
 let pictureAim = -1;
 let prefetchFloor = -2;
+let floorLoaded = -2;
 let thirdPerson = false;
 let orbiting = false;
 let orbitYaw = 0;
@@ -872,15 +873,27 @@ function paintCornerPlan(ctx, w) {
   ctx.fillText("你", you[0] + 8 * s, you[1] - 7 * s);
 }
 
+function planTextWidth(text) {
+  let width = 0;
+  const size = PLAN_LABEL;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 32) width += size * 0.4;
+    else if (code < 128) width += size * 0.72;
+    else width += size;
+  }
+  return width;
+}
+
 function drawMuseumPlan() {
   if (!guestbookPlan || !built || !built.shell) return;
   const shell = built.shell;
   const floors = built.floors;
   const here = playerFloor();
-  let widest = 4;
-  for (let f = 0; f < floors; f++) widest = Math.max(widest, planLabel(f).length);
+  let labelW = 48;
+  for (let f = 0; f < floors; f++) labelW = Math.max(labelW, planTextWidth(planLabel(f)));
   const labelX = 18 + 132 + 46 + 28;
-  const width = Math.ceil(labelX + Math.min(360, widest * PLAN_LABEL) + 12);
+  const width = Math.ceil(labelX + labelW + 16);
   const height = Math.ceil(PLAN_TOP + floors * PLAN_PITCH + 24);
   const svg = planNode("svg", {
     width: String(width),
@@ -1109,6 +1122,8 @@ function noteThreads(notes) {
 function placeReplyForm() {
   if (!guestbookForm || !guestbookList) return;
   if (guestbookReplying) guestbookReplying.hidden = !replyTo;
+  const buttons = guestbookList.querySelectorAll(".note-reply");
+  for (let i = 0; i < buttons.length; i++) buttons[i].hidden = false;
   if (!replyTo) {
     guestbookList.before(guestbookForm);
     return;
@@ -1121,8 +1136,12 @@ function placeReplyForm() {
       break;
     }
   }
-  if (host) host.append(guestbookForm);
-  else guestbookList.before(guestbookForm);
+  if (host) {
+    host.append(guestbookForm);
+    const body = host.querySelector(".note-body");
+    const own = body && body.querySelector(".note-reply");
+    if (own) own.hidden = true;
+  } else guestbookList.before(guestbookForm);
 }
 
 function fillNote(note) {
@@ -2813,6 +2832,7 @@ function rehangFrames() {
   refreshLiftNames();
   atlasReady.clear();
   prefetchFloor = -2;
+  floorLoaded = -2;
   pictureAim = -1;
   revealFloor = -1;
   // 图集按旧顺序画在这一层。pictureFloor 还指着本层时，startBuild 会当成正在画而直接跳过。
@@ -3587,10 +3607,30 @@ async function buildScene(data, arrange) {
   else unveilOpening();
 }
 
-function yieldTurn(fn) {
-  requestAnimationFrame(() => {
-    window.setTimeout(fn, 0);
+// 场景画完再传图。这一帧剩下的时间不够，就只传一格，避免图片出现前掉帧。
+const FRAME_MS = 14;
+
+function afterFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame((now) => {
+      window.setTimeout(() => resolve(now), 0);
+    });
   });
+}
+
+function runSliced(token, step) {
+  const tick = (frameStart) => {
+    if (token !== buildSerial) return;
+    const limit = performance.now() + Math.max(0, FRAME_MS - (performance.now() - frameStart));
+    let steps = 0;
+    while (steps < 8) {
+      if (!step()) return;
+      steps += 1;
+      if (performance.now() >= limit) break;
+    }
+    afterFrame().then(tick);
+  };
+  afterFrame().then(tick);
 }
 
 function dropQueued() {
@@ -3677,31 +3717,83 @@ function blankUv() {
   return uv;
 }
 
-async function uploadAtlas(slot, note) {
-  const texture = slot.texture;
-  const canvas = slot.canvas;
-  // 只分配显存，不把整张画布一次传上去。dataReady 保持为假，渲染器才不会回头再传整张。
-  if (texture.source) texture.source.dataReady = false;
+function allocAtlasTexture(w, h) {
+  const texture = new THREE.Texture({ width: w, height: h });
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  texture.flipY = true;
+  // 只分配显存。dataReady 保持为假，渲染器才不会把占位对象整张传上去。
+  texture.source.dataReady = false;
   texture.needsUpdate = true;
   try { renderer.initTexture(texture); }
   catch { /* 分配失败也继续，画芯先留白。 */ }
   texture.needsUpdate = false;
-  const strip = atlasSlots.strip;
-  const stripTex = atlasSlots.stripTex;
-  const sctx = atlasSlots.stripCtx;
-  if (!strip || !sctx || !stripTex) return;
-  const band = 64;
-  for (let y = 0; y < canvas.height; y += band) {
-    const row = Math.min(band, canvas.height - y);
-    if (strip.height !== row) strip.height = row;
-    sctx.drawImage(canvas, 0, y, canvas.width, row, 0, 0, canvas.width, row);
-    try {
-      renderer.copyTextureToTexture(stripTex, texture, null, { x: 0, y: canvas.height - y - row });
-    } catch {
-      break;
+  texture.source.dataReady = false;
+  return texture;
+}
+
+function paperStrip(width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  ctx.fillStyle = "#f7f5f2";
+  ctx.fillRect(0, 0, width, height);
+  const texture = new THREE.Texture(canvas);
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = true;
+  return texture;
+}
+
+async function uploadPaper(texture, w, h) {
+  const stripH = Math.min(64, h);
+  const full = paperStrip(w, stripH);
+  const tailH = h % stripH;
+  const tail = tailH ? paperStrip(w, tailH) : null;
+  let y = 0;
+  try {
+    while (y < h) {
+      const frameStart = await afterFrame();
+      const limit = performance.now() + Math.max(0, FRAME_MS - (performance.now() - frameStart));
+      let bands = 0;
+      do {
+        const row = Math.min(stripH, h - y);
+        const src = row === stripH ? full : tail;
+        try {
+          renderer.copyTextureToTexture(src, texture, null, { x: 0, y: h - y - row });
+        } catch {
+          return;
+        }
+        y += row;
+        bands += 1;
+      } while (y < h && bands < 4 && performance.now() < limit);
     }
-    await note();
+  } finally {
+    full.dispose();
+    if (tail) tail.dispose();
   }
+}
+
+function ensureScratch(cellW, cellH) {
+  const prev = atlasSlots.scratch;
+  if (prev && prev.w === cellW && prev.h === cellH) return prev;
+  if (prev && prev.texture) prev.texture.dispose();
+  const canvas = document.createElement("canvas");
+  canvas.width = cellW;
+  canvas.height = cellH;
+  const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  const texture = new THREE.Texture(canvas);
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = true;
+  const scratch = { canvas, ctx, texture, w: cellW, h: cellH };
+  atlasSlots.scratch = scratch;
+  return scratch;
 }
 
 async function prepareAtlases() {
@@ -3717,38 +3809,15 @@ async function prepareAtlases() {
   atlasGridSize = grid;
   const w = grid.cols * grid.cellW;
   const h = grid.rows * grid.cellH;
-  const cpuBand = 128;
-  const gpuBand = 64;
-  // 图集在进馆之后才铺。这里只让帧，不再推加载条。
-  const note = async () => {
-    await nextFrame();
-  };
+  // 图集在进馆之后才铺。这里只让帧，不再推加载条。不建整张画布，避免回读时卡顿。
   for (let s = 0; s < 2; s++) {
-    await note();
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d", { alpha: false });
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.generateMipmaps = false;
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.wrapS = THREE.ClampToEdgeWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    atlasSlots.push({ canvas, ctx, texture, w, h });
-    await note();
+    await afterFrame();
+    atlasSlots.push({ texture: allocAtlasTexture(w, h), w, h });
   }
-  const strip = document.createElement("canvas");
-  strip.width = w;
-  strip.height = 128;
-  const stripTex = new THREE.CanvasTexture(strip);
-  stripTex.generateMipmaps = false;
-  stripTex.minFilter = THREE.LinearFilter;
-  stripTex.magFilter = THREE.LinearFilter;
-  atlasSlots.strip = strip;
-  atlasSlots.stripTex = stripTex;
-  atlasSlots.stripCtx = strip.getContext("2d", { alpha: false });
+  for (let s = 0; s < atlasSlots.length; s++) {
+    await uploadPaper(atlasSlots[s].texture, w, h);
+  }
+  ensureScratch(grid.cellW, grid.cellH);
   const attr = new THREE.InstancedBufferAttribute(blankUv(), 4);
   attr.setUsage(THREE.DynamicDrawUsage);
   mats.geometry.setAttribute("frameUv", attr);
@@ -3756,21 +3825,12 @@ async function prepareAtlases() {
   mats.material.needsUpdate = true;
   const white = new THREE.Color("#ffffff");
   if (built.frames.length) mats.setColorAt(0, white);
-  await note();
-  for (let s = 0; s < atlasSlots.length; s++) {
-    const slot = atlasSlots[s];
-    slot.ctx.fillStyle = "#f7f5f2";
-    for (let y = 0; y < h; y += cpuBand) {
-      slot.ctx.fillRect(0, y, w, Math.min(cpuBand, h - y));
-      await note();
-    }
-    await uploadAtlas(slot, note);
-  }
+  await nextFrame();
   for (let i = 0; i < built.frames.length; i++) {
     baseColors[i].copy(white);
     hoverColors[i].copy(white);
     mats.setColorAt(i, white);
-    if ((i + 1) % 64 === 0) await note();
+    if ((i + 1) % 64 === 0) await nextFrame();
   }
   mats.instanceColor.needsUpdate = true;
   shownAtlas = 0;
@@ -3798,34 +3858,18 @@ function claimSlot() {
   return slot;
 }
 
-function uploadBands(token, canvas, texture, done) {
-  const band = 24;
-  let y = 0;
-  const strip = atlasSlots.strip;
-  const stripTex = atlasSlots.stripTex;
-  const sctx = atlasSlots.stripCtx;
-  const step = () => {
-    if (token !== buildSerial) return;
-    const h = Math.min(band, canvas.height - y);
-    if (strip.height !== h) strip.height = h;
-    sctx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-    renderer.copyTextureToTexture(stripTex, texture, null, { x: 0, y: canvas.height - y - h });
-    y += h;
-    if (y < canvas.height) {
-      yieldTurn(step);
-      return;
-    }
-    done();
-  };
-  yieldTurn(step);
-}
-
 function drawContain(ctx, img, ox, oy, cellW, cellH) {
   const srcW = img.naturalWidth || img.width;
   const srcH = img.naturalHeight || img.height;
   if (srcW < 1 || srcH < 1) return;
   const fit = containRect(srcW, srcH, cellW, cellH);
   ctx.drawImage(img, 0, 0, srcW, srcH, ox + fit.x, oy + fit.y, fit.w, fit.h);
+}
+
+function paintCell(scratch, img) {
+  scratch.ctx.fillStyle = "#f7f5f2";
+  scratch.ctx.fillRect(0, 0, scratch.w, scratch.h);
+  if (img) drawContain(scratch.ctx, img, 0, 0, scratch.w, scratch.h);
 }
 
 function paintIntoSlot(token, floor, pictures, fallback) {
@@ -3838,48 +3882,40 @@ function paintIntoSlot(token, floor, pictures, fallback) {
   const holder = atlasSlots[slot];
   const grid = atlasGridSize;
   const uv = blankUv();
+  const scratch = ensureScratch(grid.cellW, grid.cellH);
+  // 第 0 格是占位图。没配图或没拉下来的画框都指着它，不各占一格。
+  const cells = [{ col: 0, row: 0, img: fallback || null }];
+  for (let i = 0; i < pictures.length; i++) {
+    const cell = i + 1;
+    const col = cell % grid.cols;
+    const row = Math.floor(cell / grid.cols);
+    cells.push({ col, row, img: pictures[i].img });
+    uv.set(cellUv(col, row, grid.cols, grid.rows), pictures[i].index * 4);
+  }
   let cursor = 0;
-  let clearY = 0;
-  let planted = !fallback;
-  const step = () => {
-    if (token !== buildSerial) return;
-    if (clearY < holder.h) {
-      const h = Math.min(128, holder.h - clearY);
-      holder.ctx.fillStyle = "#f7f5f2";
-      holder.ctx.fillRect(0, clearY, holder.w, h);
-      clearY += h;
-      yieldTurn(step);
-      return;
-    }
-    // 第 0 格是占位图。没配图或没拉下来的画框都指着它，不各占一格。
-    if (!planted) {
-      drawContain(holder.ctx, fallback, 0, 0, grid.cellW, grid.cellH);
-      planted = true;
-      yieldTurn(step);
-      return;
-    }
-    if (cursor < pictures.length) {
-      const picture = pictures[cursor];
-      const cell = cursor + 1;
-      const col = cell % grid.cols;
-      const row = Math.floor(cell / grid.cols);
-      drawContain(holder.ctx, picture.img, col * grid.cellW, row * grid.cellH, grid.cellW, grid.cellH);
-      uv.set(cellUv(col, row, grid.cols, grid.rows), picture.index * 4);
-      cursor += 1;
-      yieldTurn(step);
-      return;
-    }
-    uploadBands(token, holder.canvas, holder.texture, () => {
-      if (token !== buildSerial) return;
+  runSliced(token, () => {
+    if (cursor >= cells.length) {
       const pack = { floor, texture: holder.texture, uv, slot, count: pictures.length };
       atlasReady.set(floor, pack);
       if (revealFloor === floor) applyAtlas(pack);
-    });
-  };
-  yieldTurn(step);
+      return false;
+    }
+    const cell = cells[cursor];
+    paintCell(scratch, cell.img);
+    try {
+      renderer.copyTextureToTexture(scratch.texture, holder.texture, null, {
+        x: cell.col * scratch.w,
+        y: holder.h - (cell.row + 1) * scratch.h,
+      });
+    } catch {
+      /* 这一格传不上去就留底色。 */
+    }
+    cursor += 1;
+    return true;
+  });
 }
 
-// 这一层的图进了缓存之后，再去要楼上和楼下。不占图集，电梯里也不走这里。
+// 当前层的图一旦都进了缓存，马上加载楼上和楼下。只进缓存，不画进图集。人还在电梯里时不预取。
 function prefetchAround(floor) {
   if (prefetchFloor === floor) return;
   prefetchFloor = floor;
@@ -3905,8 +3941,9 @@ function startBuild(floor, showWhenDone) {
   if (showWhenDone) revealFloor = floor;
   const cached = atlasReady.get(floor);
   if (cached) {
+    floorLoaded = floor;
     if (revealFloor === floor) applyAtlas(cached);
-    if (showWhenDone) prefetchAround(floor);
+    if (showWhenDone || revealFloor === floor) prefetchAround(floor);
     return;
   }
   if (pictureFloor === floor && pictureToken === buildSerial) return;
@@ -3920,15 +3957,17 @@ function startBuild(floor, showWhenDone) {
   let fallback = null;
   let left = jobs.length + (FALLBACK_SRC ? 1 : 0);
   if (!left) {
+    floorLoaded = floor;
     commitPlain(floor);
-    if (showWhenDone) prefetchAround(floor);
+    if (showWhenDone || revealFloor === floor) prefetchAround(floor);
     return;
   }
   const finish = () => {
     if (token !== buildSerial) return;
     left -= 1;
     if (left > 0) return;
-    if (showWhenDone) prefetchAround(floor);
+    floorLoaded = floor;
+    if (showWhenDone || revealFloor === floor) prefetchAround(floor);
     if (!pictures.length && !fallback) {
       commitPlain(floor);
       return;
@@ -3981,12 +4020,13 @@ function trackPictures() {
     pictureAim = standing;
     revealFloor = standing;
     startBuild(standing, true);
+    if (floorLoaded === standing) prefetchAround(standing);
     return;
   }
   revealFloor = standing;
   const pack = atlasReady.get(standing);
   if (pack && mats && mats.material.map !== pack.texture) applyAtlas(pack);
-  if (pack) prefetchAround(standing);
+  if (floorLoaded === standing) prefetchAround(standing);
 }
 
 for (let i = 0; i < DAYS.length; i++) {
