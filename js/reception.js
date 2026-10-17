@@ -1,5 +1,5 @@
 // 接待机器人的走动。不画东西。朝向只用 basis 里的那一套。
-import { forwardFromYaw } from "./basis.js";
+import { forwardFromYaw, yawFacing } from "./basis.js";
 import { PLAYER_RADIUS, RECEPTION, receptionObstacles } from "./layout.js";
 
 // 座身 0.7×0.56，整机缩放 1.3。外接圆当实体半径，转身时盒子大小不变，人碰不到角上。
@@ -83,17 +83,63 @@ function shortest(from, to) {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
 }
 
+export function stepYaw(from, to, dt) {
+  const delta = shortest(from, to);
+  const left = Math.abs(delta);
+  if (left < 0.012) return to;
+  const step = Math.min(TURN_RATE * dt, left);
+  return from + (delta > 0 ? step : -step);
+}
+
 // 对着 face 慢慢转。转完才返回 true。转的时候不往前走。
 function turnToward(state, dt) {
-  const delta = shortest(state.yaw, state.face);
-  const left = Math.abs(delta);
-  if (left < 0.012) {
-    state.yaw = state.face;
-    return true;
+  state.yaw = stepYaw(state.yaw, state.face, dt);
+  return state.yaw === state.face;
+}
+
+export function yawAt(fromX, fromZ, toX, toZ) {
+  const dx = toX - fromX;
+  const dz = toZ - fromZ;
+  if (dx * dx + dz * dz < 1e-4) return null;
+  return yawFacing({ x: dx, z: dz });
+}
+
+export function aimRobot(state, x, z) {
+  const yaw = yawAt(state.x, state.z, x, z);
+  if (yaw == null) return;
+  state.face = yaw;
+  state.look = yaw;
+}
+
+export function rememberRobotHeading(state) {
+  if (!state || Number.isFinite(state.priorYaw)) return;
+  state.priorYaw = state.yaw;
+}
+
+// 看完以后不要顺着新朝向往前走，先慢慢转回点击前的方向。
+export function releaseRobotHeading(state) {
+  if (!state) return;
+  const back = Number.isFinite(state.priorYaw) ? state.priorYaw : state.yaw;
+  state.face = back;
+  state.look = back;
+  state.keepFace = false;
+  state.hold = 0;
+  state.priorYaw = NaN;
+}
+
+export function turnRobot(state, dt) {
+  if (!state || dt <= 0) return;
+  turnToward(state, dt);
+}
+
+function steerNear(state, people) {
+  const base = Number.isFinite(state.look) ? state.look : state.face;
+  const steps = [0.45, -0.45, 0.9, -0.9, 1.35, -1.35, 1.8, -1.8];
+  for (let i = 0; i < steps.length; i++) {
+    const yaw = base + steps[i];
+    if (!ahead(state.x, state.z, yaw, people)) return yaw;
   }
-  const step = Math.min(TURN_RATE * dt, left);
-  state.yaw += delta > 0 ? step : -step;
-  return false;
+  return null;
 }
 
 function nextRest() {
@@ -118,14 +164,18 @@ export function createReceptionState(home) {
     z: home.z,
     yaw: home.yaw,
     face: home.yaw,
+    look: home.yaw,
+    priorYaw: NaN,
     hold: 0,
     wander: 2 + Math.random() * 3,
     pauseIn: 12 + Math.random() * 16,
+    keepFace: false,
   };
 }
 
 // 前方有人、有柱边的灭火器，或走到范围边上，就换个方向，原地慢慢转过去。
 // 走一阵会自己站定十秒。卡片开着时不要调用，计时才停得住。
+// keepFace 时尽量贴着刚才朝向玩家的方向走，人挡在前面就只偏开一点。
 export function stepReception(state, dt, people) {
   if (!state || dt <= 0) return;
   if (state.hold > 0) {
@@ -143,6 +193,14 @@ export function stepReception(state, dt, people) {
   }
   const blocked = ahead(state.x, state.z, state.yaw, people);
   if (blocked || state.wander <= 0) {
+    if (state.keepFace && state.wander > 0 && blocked) {
+      const near = steerNear(state, people);
+      if (near != null) {
+        state.face = near;
+        return;
+      }
+    }
+    state.keepFace = false;
     state.face = steer(state, people);
     state.wander = 3.2 + Math.random() * 4.2;
     return;

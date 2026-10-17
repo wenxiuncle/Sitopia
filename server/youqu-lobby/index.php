@@ -540,6 +540,8 @@ function onLeave(array &$data, string $id): array {
     $name = (string) ($person["name"] ?? "");
     unset($data["people"][$id]);
     $out = [];
+    $face = clearRobotFace($data, $id);
+    if ($face) $out[] = ["who" => "all", "obj" => $face];
     if ($announce) {
         $out[] = [
             "who" => "all",
@@ -575,6 +577,39 @@ function normalizeRobot(array $saved): array {
         $robot["yaw"] = $pose["yaw"];
     }
     return $robot;
+}
+
+function clearRobotFace(array &$data, string $id): ?array {
+    if (!isset($data["robot"]) || !is_array($data["robot"])) return null;
+    if ((string) ($data["robot"]["faceBy"] ?? "") !== $id) return null;
+    $data["robot"]["faceBy"] = "";
+    $data["robot"]["faceX"] = 0;
+    $data["robot"]["faceZ"] = 0;
+    return ["t" => "robot-face", "id" => $id, "off" => 1];
+}
+
+function takeRobotFace(array &$data, array &$person, array $msg, int $now): ?array {
+    if (!empty($person["away"])) return null;
+    if (!empty($msg["off"])) {
+        $note = clearRobotFace($data, (string) ($person["id"] ?? ""));
+        return $note ? ["who" => "others", "obj" => $note] : null;
+    }
+    $x = isset($msg["x"]) ? (float) $msg["x"] : NAN;
+    $z = isset($msg["z"]) ? (float) $msg["z"] : NAN;
+    if (!is_finite($x) || !is_finite($z)) return null;
+    if ($x < -80 || $x > 80 || $z < -80 || $z > 80) return null;
+    if ($now - (int) ($person["lastFace"] ?? 0) < 80) return null;
+    $rx = round($x, 2);
+    $rz = round($z, 2);
+    $robot = &$data["robot"];
+    if ((string) ($robot["faceBy"] ?? "") === (string) ($person["id"] ?? "") && (float) ($robot["faceX"] ?? 0) === $rx && (float) ($robot["faceZ"] ?? 0) === $rz) {
+        return null;
+    }
+    $person["lastFace"] = $now;
+    $robot["faceBy"] = (string) ($person["id"] ?? "");
+    $robot["faceX"] = $rx;
+    $robot["faceZ"] = $rz;
+    return ["who" => "others", "obj" => ["t" => "robot-face", "id" => $person["id"], "x" => $rx, "z" => $rz]];
 }
 
 function robotView(array $robot): array {
@@ -638,21 +673,35 @@ function cleanNoteText($value): string {
     return uSlice($text, 120);
 }
 
-function addNote(array &$data, array &$person, $text, int $now): ?array {
+function addNote(array &$data, array &$person, $text, int $now, $parent = ""): ?array {
     if (!empty($person["away"])) return null;
     if ($now - (int) ($person["lastNote"] ?? 0) < 2500) return null;
     $clean = cleanNoteText($text);
     if ($clean === "") return null;
     $person["lastNote"] = $now;
+    $parentId = uSlice(trim((string) $parent), 48);
+    $found = false;
+    if ($parentId !== "") {
+        foreach ($data["notes"] as $row) {
+            if (is_array($row) && (string) ($row["id"] ?? "") === $parentId) {
+                $found = true;
+                break;
+            }
+        }
+    }
+    if (!$found) $parentId = "";
     $note = [
         "id" => (string) $person["id"] . "-" . $now,
         "name" => (string) ($person["name"] ?? "访客"),
         "text" => $clean,
         "at" => $now,
     ];
+    if ($parentId !== "") $note["parent"] = $parentId;
     $data["notes"][] = $note;
     if (count($data["notes"]) > 200) $data["notes"] = array_slice($data["notes"], -200);
-    return ["t" => "note", "id" => $note["id"], "name" => $note["name"], "text" => $note["text"], "at" => $note["at"]];
+    $out = ["t" => "note", "id" => $note["id"], "name" => $note["name"], "text" => $note["text"], "at" => $note["at"]];
+    if ($parentId !== "") $out["parent"] = $parentId;
+    return $out;
 }
 
 function attachDesk(array &$events, array $data): void {
@@ -801,8 +850,13 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
         if ($ev) $out[] = $ev;
         return ["close" => false, "out" => $out];
     }
+    if ($msg["t"] === "robot-face") {
+        $ev = isset($room["robot"]) ? takeRobotFace($room, $person, $msg, $now) : null;
+        if ($ev) $out[] = $ev;
+        return ["close" => false, "out" => $out];
+    }
     if ($msg["t"] === "note") {
-        $note = addNote($room, $person, $msg["text"] ?? "", $now);
+        $note = addNote($room, $person, $msg["text"] ?? "", $now, $msg["parent"] ?? "");
         if ($note) $out[] = ["who" => "all", "obj" => $note];
         return ["close" => false, "out" => $out];
     }

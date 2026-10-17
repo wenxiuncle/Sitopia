@@ -5,6 +5,7 @@ import { planarBasis, yawFacing } from "./basis.js";
 import { CITY_SHADOW_MAX, DAYS, dayIndex, findDay, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
 import {
+  DOOR,
   EYE,
   FRAME,
   HALLS,
@@ -31,7 +32,7 @@ import {
   zoneAt,
 } from "./layout.js";
 import { hasEnteredName, mountPresence, readSortMode } from "./presence.js";
-import { createReceptionState, receptionBody, stepReception } from "./reception.js";
+import { aimRobot, createReceptionState, receptionBody, releaseRobotHeading, rememberRobotHeading, stepReception, stepYaw, turnRobot, yawAt } from "./reception.js";
 import { createReception } from "./robot.js";
 import {
   attachFramePicture,
@@ -40,7 +41,7 @@ import {
   boxMesh,
   cellUv,
   colliderLines,
-  coverRect,
+  containRect,
   FALLBACK_FRAME_IMAGE,
   usableFrameImage,
   doorRig,
@@ -115,6 +116,13 @@ const guestbookPage = document.getElementById("guestbook-page");
 const guestbookPrev = document.getElementById("guestbook-prev");
 const guestbookNext = document.getElementById("guestbook-next");
 const guestbookClose = document.getElementById("guestbook-close");
+const guestbookTabPlan = document.getElementById("guestbook-tab-plan");
+const guestbookTabNotes = document.getElementById("guestbook-tab-notes");
+const guestbookPlan = document.getElementById("guestbook-plan");
+const guestbookPlanScroll = document.getElementById("guestbook-plan-scroll");
+const guestbookNotes = document.getElementById("guestbook-notes");
+const guestbookReplying = document.getElementById("guestbook-replying");
+const guestbookReplyCancel = document.getElementById("guestbook-reply-cancel");
 const NOTE_PAGE = 10;
 const NOTES_KEY = "quzhan-museum-notes";
 const receptionHomePose = receptionHome();
@@ -128,7 +136,14 @@ let localNotes = readLocalNotes();
 let notesShared = false;
 let notePage = 0;
 let noteWait = 0;
+let replyTo = "";
 let hoverRobot = false;
+let planSig = "";
+let planSeenFloor = -2;
+let planPeopleKey = "";
+let guestPlaceKey = "";
+let remoteFace = null;
+let robotLookHeld = false;
 let framePickDist = Infinity;
 const dayNav = document.getElementById("day");
 const corner = document.getElementById("corner");
@@ -259,8 +274,12 @@ const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 900);
 camera.rotation.order = "YXZ";
 
 let loadProgress = 0;
-let loadCreep = true;
+let loadPace = true;
+let loadCeil = 0.08;
+let paceBoot = false;
 let hallReady = false;
+let framesReady = false;
+let beginHang = () => {};
 let nameCommitted = false;
 let vistaRun = false;
 let vistaBegun = false;
@@ -285,18 +304,33 @@ const arrivalToPos = new THREE.Vector3();
 const arrivalFromQuat = new THREE.Quaternion();
 const arrivalToQuat = new THREE.Quaternion();
 
+// 这些刻度是这一段真正做完时的位置。条跟着刻度走，不再在半路停住再跳到头。
+// 外立面一出来就开始画，进度条盖在楼上。画框不占这条。
+const LOAD_LIST = 0.10;
+const LOAD_ARRANGE = 0.14;
+const LOAD_LAYOUT = 0.24;
+const LOAD_SHELL = 0.46;
+const LOAD_INDOOR = 0.78;
+
 function setLoadProgress(value) {
   const next = Math.max(loadProgress, Math.min(1, value));
-  if (next === loadProgress) return;
+  if (Math.abs(next - loadProgress) < 0.0001) return;
   loadProgress = next;
   if (loadingBar) loadingBar.style.transform = "scaleX(" + loadProgress + ")";
   if (loadingMeter) loadingMeter.setAttribute("aria-valuenow", String(Math.round(loadProgress * 100)));
 }
 
-function creepLoad() {
-  if (!loadCreep) return;
-  if (loadProgress < 0.22) setLoadProgress(loadProgress + 0.0035);
-  requestAnimationFrame(creepLoad);
+function loadSpan(from, to, done, total) {
+  const n = total > 0 ? total : 1;
+  const u = Math.max(0, Math.min(1, done / n));
+  setLoadProgress(from + (to - from) * u);
+}
+
+// 等网络时只在这一段里慢慢走，到不了下一段。布置一开始就停，改由每一步自己报进度。
+function pumpLoad() {
+  if (!loadPace) return;
+  if (loadProgress < loadCeil) setLoadProgress(Math.min(loadCeil, loadProgress + 0.0025));
+  requestAnimationFrame(pumpLoad);
 }
 
 function yieldPaint() {
@@ -308,7 +342,8 @@ function yieldPaint() {
 }
 
 function showFatal(message) {
-  loadCreep = false;
+  loadPace = false;
+  loading.classList.remove("is-leaving");
   loading.hidden = false;
   if (loadingLabel) loadingLabel.textContent = message;
   else loading.textContent = message;
@@ -316,8 +351,8 @@ function showFatal(message) {
 
 resize();
 renderer.clear();
-setLoadProgress(0.06);
-requestAnimationFrame(creepLoad);
+setLoadProgress(0.02);
+requestAnimationFrame(pumpLoad);
 
 function resize() {
   const w = window.innerWidth;
@@ -326,6 +361,7 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  placeGuestbook();
 }
 
 function setHover(index) {
@@ -443,6 +479,7 @@ function readLocalNotes() {
         name: String(row.name || "访客").slice(0, 12),
         text: String(row.text).slice(0, 120),
         at: Number(row.at) || 0,
+        parent: row.parent ? String(row.parent) : "",
       });
     }
     return out;
@@ -458,19 +495,685 @@ function noteWhen(at) {
   return (date.getMonth() + 1) + "-" + date.getDate() + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
 }
 
-function noteList() {
-  return (notesShared ? sharedNotes : localNotes).slice().reverse();
+function noteSource() {
+  return notesShared ? sharedNotes : localNotes;
+}
+
+const PLAN_NS = "http://www.w3.org/2000/svg";
+const PLAN_PITCH = 36;
+const PLAN_TOP = 28;
+const PLAN_DEPTH = 22;
+const PLAN_LABEL = 16;
+
+function planNode(name, attrs) {
+  const el = document.createElementNS(PLAN_NS, name);
+  if (attrs) {
+    const keys = Object.keys(attrs);
+    for (let i = 0; i < keys.length; i++) el.setAttribute(keys[i], attrs[keys[i]]);
+  }
+  return el;
+}
+
+function planPoints(points) {
+  let text = "";
+  for (let i = 0; i < points.length; i++) {
+    if (i) text += " ";
+    text += points[i][0].toFixed(1) + "," + points[i][1].toFixed(1);
+  }
+  return text;
+}
+
+function planProject(x, z, level) {
+  const shell = built.shell;
+  const spanX = shell.maxX - shell.minX || 1;
+  const spanZ = shell.maxZ - shell.minZ || 1;
+  const u = (x - shell.minX) / spanX;
+  const v = (shell.maxZ - z) / spanZ;
+  const sx = 18 + u * 132 + v * 46;
+  const sy = PLAN_TOP + (built.floors - level) * PLAN_PITCH - v * PLAN_DEPTH;
+  return [sx, sy];
+}
+
+function planQuad(x0, z0, x1, z1, level) {
+  return [
+    planProject(x0, z1, level),
+    planProject(x1, z1, level),
+    planProject(x1, z0, level),
+    planProject(x0, z0, level),
+  ];
+}
+
+function planWall(x0, z0, x1, z1, low, high) {
+  return [
+    planProject(x0, z0, low),
+    planProject(x1, z1, low),
+    planProject(x1, z1, high),
+    planProject(x0, z0, high),
+  ];
+}
+
+function planClamp(x, z, floor) {
+  const shell = built.shell;
+  const deck = built.deck;
+  const deckReach = deck ? deck.r + 0.8 : 2.4;
+  if (z > shell.maxZ) {
+    const limit = floor > 0 ? shell.maxZ + deckReach : shell.maxZ + 2.6;
+    if (z > limit) z = limit;
+  }
+  if (z < shell.minZ - 0.6) z = shell.minZ - 0.4;
+  if (x < shell.minX - 0.8) x = shell.minX - 0.4;
+  if (x > shell.maxX + 0.8) x = shell.maxX + 0.4;
+  return { x, z, floor };
+}
+
+function planFocus() {
+  return planClamp(px, pz, playerFloor());
+}
+
+function planOthers() {
+  if (!presence || !presence.linked() || presence.solo()) return [];
+  const list = presence.others();
+  const floors = built.floors || 1;
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const person = list[i];
+    if (!person) continue;
+    let floor = Math.round((person.y || 0) / STORY);
+    if (floor < 0) floor = 0;
+    if (floor > floors - 1) floor = floors - 1;
+    const at = planClamp(person.x || 0, person.z || 0, floor);
+    out.push({
+      id: person.id || String(i),
+      name: person.name || "访客",
+      x: at.x,
+      z: at.z,
+      floor,
+    });
+  }
+  return out;
+}
+
+function planLabel(floor) {
+  const names = built.floorNames && built.floorNames[floor];
+  const span = built.floorSpans && built.floorSpans[floor];
+  return liftFloorLabel(names, floor, hangSort, span);
+}
+
+function planSignature() {
+  let sig = hangSort + "|" + built.floors + "|" + playerFloor();
+  for (let f = 0; f < built.floors; f++) sig += "|" + planLabel(f);
+  return sig;
+}
+
+function scrollPlanTo(floor) {
+  const paneEl = guestbookPlanScroll || guestbookPlan;
+  if (!paneEl || !guestbookPlan || guestbookPlan.hidden) return;
+  const row = document.getElementById("plan-label-" + floor);
+  if (!row) return;
+  const pane = paneEl.getBoundingClientRect();
+  const box = row.getBoundingClientRect();
+  paneEl.scrollTop += box.top - pane.top - pane.height / 2 + box.height / 2;
+}
+
+function movePlanYou() {
+  const mark = document.getElementById("plan-you");
+  if (!mark || !built) return;
+  const at = planFocus();
+  const point = planProject(at.x, at.z, at.floor);
+  mark.setAttribute("transform", "translate(" + point[0].toFixed(1) + " " + point[1].toFixed(1) + ")");
+}
+
+function apronPiece() {
+  const shell = built.shell;
+  return {
+    points: [
+      planProject(shell.minX, shell.maxZ + 3.2, 0),
+      planProject(shell.maxX, shell.maxZ + 3.2, 0),
+      planProject(shell.maxX, shell.maxZ, 0),
+      planProject(shell.minX, shell.maxZ, 0),
+    ],
+    fill: "#efeae3",
+    stroke: "none",
+    width: 0,
+  };
+}
+
+function doorPiece() {
+  const shell = built.shell;
+  return {
+    points: planWall(-DOOR, shell.maxZ, DOOR, shell.maxZ, 0, 0.55),
+    fill: "none",
+    stroke: "#2c2926",
+    width: 1.4,
+  };
+}
+
+// 一层楼的斜向画法。示意图和右上角平面图都读这一份。
+function floorPieces(f, here) {
+  const shell = built.shell;
+  const stair = built.stair;
+  const deck = built.deck;
+  const top = f + 0.92;
+  const on = f === here;
+  const pieces = [
+    {
+      points: planWall(shell.minX, shell.minZ, shell.maxX, shell.minZ, f, top),
+      fill: on ? "rgba(232, 214, 196, 0.45)" : "rgba(244, 241, 236, 0.72)",
+      stroke: "rgba(44, 41, 38, 0.28)",
+      width: 1,
+    },
+    {
+      points: planWall(shell.minX, shell.minZ, shell.minX, shell.maxZ, f, top),
+      fill: "rgba(236, 232, 226, 0.55)",
+      stroke: "rgba(44, 41, 38, 0.28)",
+      width: 1,
+    },
+    {
+      points: planWall(shell.maxX, shell.minZ, shell.maxX, shell.maxZ, f, top),
+      fill: "rgba(236, 232, 226, 0.4)",
+      stroke: "rgba(44, 41, 38, 0.22)",
+      width: 1,
+    },
+    {
+      points: planQuad(shell.minX, shell.minZ, shell.maxX, shell.maxZ, f),
+      fill: on ? "#f4e2cc" : "rgba(255, 252, 248, 0.82)",
+      stroke: on ? "#2c2926" : "rgba(44, 41, 38, 0.45)",
+      width: on ? 1.4 : 1,
+    },
+    {
+      points: planQuad(LIFT.xRear, LIFT.z0, LIFT.xDoor, LIFT.z1, f),
+      fill: "rgba(183, 207, 224, 0.9)",
+      stroke: "#5d7e96",
+      width: 1,
+    },
+  ];
+  if (stair) {
+    pieces.push({
+      points: planQuad(
+        Math.min(stair.f1x0, stair.landX0),
+        Math.min(stair.f2z0, stair.landZ0),
+        Math.max(stair.f2x1, stair.landX1),
+        Math.max(stair.f1z1, stair.landZ1),
+        f,
+      ),
+      fill: "rgba(228, 203, 184, 0.95)",
+      stroke: "#8c6a52",
+      width: 1,
+    });
+  }
+  if (deck && f > 0) {
+    const arc = [];
+    for (let i = 0; i <= 8; i++) {
+      const a = Math.PI * i / 8;
+      arc.push(planProject(deck.x + Math.cos(a) * deck.r, deck.z + Math.sin(a) * deck.r, f));
+    }
+    pieces.push({
+      points: arc,
+      fill: "none",
+      stroke: "rgba(44, 41, 38, 0.35)",
+      width: 1,
+      open: true,
+    });
+  }
+  return pieces;
+}
+
+function appendPiece(svg, piece) {
+  svg.appendChild(planNode(piece.open ? "polyline" : "polygon", {
+    points: planPoints(piece.points),
+    fill: piece.fill || "none",
+    stroke: piece.stroke || "none",
+    "stroke-width": String(piece.width == null ? 1 : piece.width),
+  }));
+}
+
+function cornerPieces(here) {
+  const pieces = [];
+  if (here === 0) pieces.push(apronPiece());
+  const floors = floorPieces(here, here);
+  for (let i = 0; i < floors.length; i++) pieces.push(floors[i]);
+  if (here === 0) pieces.push(doorPiece());
+  return pieces;
+}
+
+function growBox(box, x, y) {
+  if (x < box.minX) box.minX = x;
+  if (y < box.minY) box.minY = y;
+  if (x > box.maxX) box.maxX = x;
+  if (y > box.maxY) box.maxY = y;
+}
+
+function piecesBox(pieces) {
+  const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (let i = 0; i < pieces.length; i++) {
+    const pts = pieces[i].points;
+    for (let p = 0; p < pts.length; p++) growBox(box, pts[p][0], pts[p][1]);
+  }
+  return box;
+}
+
+function labelPoints(here) {
+  const pts = [];
+  const liftMark = planProject((LIFT.xRear + LIFT.xDoor) / 2, LIFT.cz, here + 0.15);
+  const lx = Math.max(2, liftMark[0] - 28);
+  pts.push([lx, liftMark[1] - 10], [lx + 32, liftMark[1] + 6]);
+  const stair = built.stair;
+  if (stair) {
+    const stairMark = planProject(
+      (Math.min(stair.f1x0, stair.landX0) + Math.max(stair.f2x1, stair.landX1)) / 2,
+      (Math.min(stair.f2z0, stair.landZ0) + Math.max(stair.f1z1, stair.landZ1)) / 2,
+      here + 0.2,
+    );
+    pts.push([stairMark[0] - 14, stairMark[1] - 10], [stairMark[0] + 28, stairMark[1] + 6]);
+  }
+  return pts;
+}
+
+const CORNER_PAD = 16;
+
+function cornerPlanLayout(w) {
+  const here = playerFloor();
+  const pieces = cornerPieces(here);
+  const box = piecesBox(pieces);
+  const labels = labelPoints(here);
+  for (let i = 0; i < labels.length; i++) growBox(box, labels[i][0], labels[i][1]);
+  const bw = Math.max(1, box.maxX - box.minX);
+  const bh = Math.max(1, box.maxY - box.minY);
+  const innerW = Math.max(40, w - CORNER_PAD * 2);
+  const s = innerW / bw;
+  return { here, pieces, box, s, h: bh * s + CORNER_PAD * 2 };
+}
+
+function cornerPlanHeight(w) {
+  if (!built || !built.shell) return Math.round((w || 180) * 0.46);
+  return Math.ceil(cornerPlanLayout(w || 180).h);
+}
+
+function paintPiece(ctx, piece, map, s) {
+  const pts = piece.points;
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const p = map(pts[i]);
+    if (i) ctx.lineTo(p[0], p[1]);
+    else ctx.moveTo(p[0], p[1]);
+  }
+  if (!piece.open) ctx.closePath();
+  if (piece.fill && piece.fill !== "none") {
+    ctx.fillStyle = piece.fill;
+    ctx.fill();
+  }
+  if (piece.stroke && piece.stroke !== "none" && piece.width) {
+    ctx.strokeStyle = piece.stroke;
+    ctx.lineWidth = piece.width * s;
+    ctx.stroke();
+  }
+}
+
+function paintPin(ctx, x, y, s, you) {
+  const outer = (you ? 6.5 : 5.5) * s;
+  const inner = (you ? 2.4 : 2.1) * s;
+  const stroke = you ? "#c4503a" : "#3d5c73";
+  ctx.beginPath();
+  ctx.arc(x, y, outer, 0, Math.PI * 2);
+  ctx.fillStyle = "#fff";
+  ctx.fill();
+  ctx.lineWidth = (you ? 2 : 1.6) * s;
+  ctx.strokeStyle = stroke;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, inner, 0, Math.PI * 2);
+  ctx.fillStyle = stroke;
+  ctx.fill();
+}
+
+function paintCornerPlan(ctx, w) {
+  if (!built || !built.shell) return;
+  const lay = cornerPlanLayout(w);
+  const s = lay.s;
+  const box = lay.box;
+  const mapPt = (p) => [CORNER_PAD + (p[0] - box.minX) * s, CORNER_PAD + (p[1] - box.minY) * s];
+  const pieces = lay.pieces;
+  for (let i = 0; i < pieces.length; i++) paintPiece(ctx, pieces[i], mapPt, s);
+  const here = lay.here;
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+  ctx.font = (11 * s) + "px \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif";
+  const liftMark = planProject((LIFT.xRear + LIFT.xDoor) / 2, LIFT.cz, here + 0.15);
+  const liftLabel = mapPt([Math.max(2, liftMark[0] - 28), liftMark[1] + 4]);
+  ctx.fillStyle = "#3d5c73";
+  ctx.fillText("电梯", liftLabel[0], liftLabel[1]);
+  const stair = built.stair;
+  if (stair) {
+    const stairMark = planProject(
+      (Math.min(stair.f1x0, stair.landX0) + Math.max(stair.f2x1, stair.landX1)) / 2,
+      (Math.min(stair.f2z0, stair.landZ0) + Math.max(stair.f1z1, stair.landZ1)) / 2,
+      here + 0.2,
+    );
+    const stairLabel = mapPt([stairMark[0] - 12, stairMark[1] + 4]);
+    ctx.fillStyle = "#6d4c38";
+    ctx.fillText("楼梯", stairLabel[0], stairLabel[1]);
+  }
+  const people = planOthers();
+  ctx.font = (12 * s) + "px \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif";
+  ctx.textAlign = "center";
+  for (let i = 0; i < people.length; i++) {
+    if (people[i].floor !== here) continue;
+    const at = mapPt(planProject(people[i].x, people[i].z, people[i].floor));
+    paintPin(ctx, at[0], at[1], s, false);
+    ctx.fillStyle = "#3d5c73";
+    ctx.fillText(people[i].name, at[0], at[1] - 9 * s);
+  }
+  const youAt = planFocus();
+  const you = mapPt(planProject(youAt.x, youAt.z, youAt.floor));
+  paintPin(ctx, you[0], you[1], s, true);
+  ctx.font = (11 * s) + "px \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#c4503a";
+  ctx.fillText("你", you[0] + 8 * s, you[1] - 7 * s);
+}
+
+function drawMuseumPlan() {
+  if (!guestbookPlan || !built || !built.shell) return;
+  const shell = built.shell;
+  const floors = built.floors;
+  const here = playerFloor();
+  let widest = 4;
+  for (let f = 0; f < floors; f++) widest = Math.max(widest, planLabel(f).length);
+  const labelX = 18 + 132 + 46 + 28;
+  const width = Math.ceil(labelX + Math.min(360, widest * PLAN_LABEL) + 12);
+  const height = Math.ceil(PLAN_TOP + floors * PLAN_PITCH + 24);
+  const svg = planNode("svg", {
+    width: String(width),
+    height: String(height),
+    viewBox: "0 0 " + width + " " + height,
+    role: "img",
+    "aria-label": "博物馆示意图",
+  });
+  svg.style.display = "block";
+  svg.style.fontFamily = '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+  appendPiece(svg, apronPiece());
+  const stair = built.stair;
+  for (let f = 0; f < floors; f++) {
+    const pieces = floorPieces(f, here);
+    for (let i = 0; i < pieces.length; i++) appendPiece(svg, pieces[i]);
+  }
+  const roof = planNode("polygon", {
+    points: planPoints([
+      planProject(shell.minX - 0.7, shell.maxZ + 0.5, floors - 0.02),
+      planProject(shell.maxX + 0.7, shell.maxZ + 0.5, floors - 0.02),
+      planProject(shell.maxX + 0.7, shell.minZ - 0.5, floors - 0.02),
+      planProject(shell.minX - 0.7, shell.minZ - 0.5, floors - 0.02),
+    ]),
+    fill: "#e7e2db",
+    stroke: "#2c2926",
+    "stroke-width": "1.2",
+  });
+  svg.appendChild(roof);
+  appendPiece(svg, doorPiece());
+  const liftMark = planProject((LIFT.xRear + LIFT.xDoor) / 2, LIFT.cz, 0.15);
+  const liftText = planNode("text", {
+    x: String(Math.max(2, liftMark[0] - 28)),
+    y: String(liftMark[1] + 4),
+    fill: "#3d5c73",
+    "font-size": "11",
+  });
+  liftText.textContent = "电梯";
+  svg.appendChild(liftText);
+  if (stair) {
+    const stairMark = planProject(
+      (Math.min(stair.f1x0, stair.landX0) + Math.max(stair.f2x1, stair.landX1)) / 2,
+      (Math.min(stair.f2z0, stair.landZ0) + Math.max(stair.f1z1, stair.landZ1)) / 2,
+      0.2,
+    );
+    const stairText = planNode("text", {
+      x: String(stairMark[0] - 12),
+      y: String(stairMark[1] + 4),
+      fill: "#6d4c38",
+      "font-size": "11",
+    });
+    stairText.textContent = "楼梯";
+    svg.appendChild(stairText);
+  }
+  for (let f = 0; f < floors; f++) {
+    const anchor = planProject(shell.maxX, shell.maxZ, f);
+    const y = anchor[1].toFixed(1);
+    svg.appendChild(planNode("line", {
+      x1: anchor[0].toFixed(1),
+      y1: y,
+      x2: String(labelX - 8),
+      y2: y,
+      stroke: f === here ? "#2c2926" : "rgba(44, 41, 38, 0.4)",
+      "stroke-width": "1.25",
+    }));
+    const text = planNode("text", {
+      id: "plan-label-" + f,
+      x: String(labelX),
+      y,
+      fill: f === here ? "#2c2926" : "#6f6a64",
+      "font-size": String(PLAN_LABEL),
+      "font-weight": f === here ? "600" : "400",
+      "dominant-baseline": "middle",
+    });
+    text.textContent = planLabel(f);
+    svg.appendChild(text);
+  }
+  svg.appendChild(planNode("g", { id: "plan-people" }));
+  const youAt = planFocus();
+  const youPoint = planProject(youAt.x, youAt.z, youAt.floor);
+  const you = planNode("g", {
+    id: "plan-you",
+    transform: "translate(" + youPoint[0].toFixed(1) + " " + youPoint[1].toFixed(1) + ")",
+  });
+  you.appendChild(planNode("circle", { cx: "0", cy: "0", r: "6.5", fill: "#fff", stroke: "#c4503a", "stroke-width": "2" }));
+  you.appendChild(planNode("circle", { cx: "0", cy: "0", r: "2.4", fill: "#c4503a" }));
+  const youText = planNode("text", { x: "8", y: "-7", fill: "#c4503a", "font-size": "11" });
+  youText.textContent = "你";
+  you.appendChild(youText);
+  svg.appendChild(you);
+  const host = guestbookPlanScroll || guestbookPlan;
+  host.replaceChildren(svg);
+  planPeopleKey = "";
+}
+
+function syncPlanPeople() {
+  const group = document.getElementById("plan-people");
+  if (!group || !built) return;
+  const people = planOthers();
+  let key = "";
+  for (let i = 0; i < people.length; i++) key += people[i].id + "\t" + people[i].name + "\n";
+  if (key !== planPeopleKey) {
+    planPeopleKey = key;
+    group.replaceChildren();
+    for (let i = 0; i < people.length; i++) {
+      const node = planNode("g");
+      node.appendChild(planNode("circle", {
+        cx: "0",
+        cy: "0",
+        r: "5.5",
+        fill: "#fff",
+        stroke: "#3d5c73",
+        "stroke-width": "1.6",
+      }));
+      node.appendChild(planNode("circle", { cx: "0", cy: "0", r: "2.1", fill: "#3d5c73" }));
+      const label = planNode("text", {
+        x: "0",
+        y: "-9",
+        fill: "#3d5c73",
+        "font-size": "12",
+        "text-anchor": "middle",
+      });
+      label.textContent = people[i].name;
+      node.appendChild(label);
+      group.appendChild(node);
+    }
+  }
+  const nodes = group.children;
+  for (let i = 0; i < people.length && i < nodes.length; i++) {
+    const point = planProject(people[i].x, people[i].z, people[i].floor);
+    nodes[i].setAttribute("transform", "translate(" + point[0].toFixed(1) + " " + point[1].toFixed(1) + ")");
+  }
+}
+
+function placeGuestbook() {
+  if (!guestbook || guestbook.hidden) return;
+  const gap = 16;
+  const dayBox = document.getElementById("day");
+  const chat = document.getElementById("chatter");
+  const vh = window.innerHeight || 0;
+  let top = 160;
+  if (dayBox) {
+    const box = dayBox.getBoundingClientRect();
+    if (box.height > 0) top = Math.round(box.bottom + gap);
+  }
+  let bottom = 22 + gap;
+  if (chat) {
+    const box = chat.getBoundingClientRect();
+    const edge = box.height > 1 ? box.top : (box.bottom > 0 ? box.bottom : vh - 22);
+    bottom = Math.round(vh - edge + gap);
+  }
+  if (bottom < gap) bottom = gap;
+  const minH = 160;
+  if (vh - top - bottom < minH) bottom = Math.max(gap, vh - top - minH);
+  const key = top + "," + bottom;
+  if (key === guestPlaceKey) return;
+  guestPlaceKey = key;
+  guestbook.style.top = top + "px";
+  guestbook.style.bottom = bottom + "px";
+  guestbook.style.height = "auto";
+}
+
+function syncMuseumPlan(forceScroll) {
+  if (!built || !guestbookPlan || guestbook.hidden) return;
+  const sig = planSignature();
+  const floor = playerFloor();
+  if (sig !== planSig) {
+    const host = guestbookPlanScroll || guestbookPlan;
+    const keep = host.scrollTop;
+    planSig = sig;
+    drawMuseumPlan();
+    syncPlanPeople();
+    if (!forceScroll && floor === planSeenFloor) host.scrollTop = keep;
+  } else {
+    movePlanYou();
+    syncPlanPeople();
+  }
+  if (forceScroll || floor !== planSeenFloor) {
+    planSeenFloor = floor;
+    scrollPlanTo(floor);
+  }
+}
+
+function showGuestTab(which) {
+  const plan = which !== "notes";
+  if (guestbookTabPlan) guestbookTabPlan.setAttribute("aria-selected", plan ? "true" : "false");
+  if (guestbookTabNotes) guestbookTabNotes.setAttribute("aria-selected", plan ? "false" : "true");
+  if (guestbookPlan) guestbookPlan.hidden = !plan;
+  if (guestbookNotes) guestbookNotes.hidden = plan;
+  if (plan) syncMuseumPlan(true);
+}
+
+function noteFrom(raw) {
+  return {
+    id: String((raw && raw.id) || ""),
+    name: (raw && raw.name) || "访客",
+    text: (raw && raw.text) || "",
+    at: Number(raw && raw.at) || 0,
+    parent: raw && raw.parent ? String(raw.parent) : "",
+  };
+}
+
+function noteThreads(notes) {
+  const ordered = notes.slice().sort((a, b) => (a.at || 0) - (b.at || 0));
+  const ids = new Set();
+  for (let i = 0; i < ordered.length; i++) ids.add(ordered[i].id);
+  const kids = new Map();
+  const roots = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const note = ordered[i];
+    const parent = note.parent && ids.has(note.parent) ? note.parent : "";
+    if (!parent) {
+      roots.push(note);
+      continue;
+    }
+    let list = kids.get(parent);
+    if (!list) {
+      list = [];
+      kids.set(parent, list);
+    }
+    list.push(note);
+  }
+  roots.reverse();
+  return { roots, kids };
+}
+
+function placeReplyForm() {
+  if (!guestbookForm || !guestbookList) return;
+  if (guestbookReplying) guestbookReplying.hidden = !replyTo;
+  if (!replyTo) {
+    guestbookList.before(guestbookForm);
+    return;
+  }
+  let host = null;
+  const nodes = guestbookList.querySelectorAll("[data-note-id]");
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].dataset.noteId === replyTo) {
+      host = nodes[i];
+      break;
+    }
+  }
+  if (host) host.append(guestbookForm);
+  else guestbookList.before(guestbookForm);
+}
+
+function fillNote(note) {
+  const li = document.createElement("li");
+  li.dataset.noteId = note.id;
+  const body = document.createElement("div");
+  body.className = "note-body";
+  const meta = document.createElement("p");
+  meta.className = "note-meta";
+  meta.textContent = (note.name || "访客") + " · " + noteWhen(note.at);
+  const text = document.createElement("p");
+  text.className = "note-text";
+  text.textContent = note.text || "";
+  const reply = document.createElement("button");
+  reply.type = "button";
+  reply.className = "note-reply";
+  reply.textContent = "回复";
+  reply.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    replyTo = note.id;
+    placeReplyForm();
+    if (guestbookText) guestbookText.focus();
+  });
+  body.append(meta, text, reply);
+  li.append(body);
+  return li;
+}
+
+function appendThread(parent, note, kids) {
+  const li = fillNote(note);
+  const replies = kids.get(note.id);
+  if (replies && replies.length) {
+    const ol = document.createElement("ol");
+    ol.className = "note-replies";
+    for (let i = 0; i < replies.length; i++) appendThread(ol, replies[i], kids);
+    li.append(ol);
+  }
+  parent.append(li);
 }
 
 function renderGuestbook() {
+  if (guestbookForm && guestbookList) guestbookList.before(guestbookForm);
   guestbookHint.textContent = notesShared
-    ? "在趣站博物馆的体验您满意吗？"
+    ? "写下你对趣站的寄语或感受！你也可以在这里吐槽任何事！"
     : "还没连上展厅。这些话先记在这台浏览器上。";
-  const ordered = noteList();
-  const pages = Math.max(1, Math.ceil(ordered.length / NOTE_PAGE));
+  const threaded = noteThreads(noteSource());
+  const pages = Math.max(1, Math.ceil(threaded.roots.length / NOTE_PAGE));
   if (notePage > pages - 1) notePage = pages - 1;
   if (notePage < 0) notePage = 0;
-  const slice = ordered.slice(notePage * NOTE_PAGE, notePage * NOTE_PAGE + NOTE_PAGE);
+  const slice = threaded.roots.slice(notePage * NOTE_PAGE, notePage * NOTE_PAGE + NOTE_PAGE);
   guestbookList.replaceChildren();
   if (!slice.length) {
     const empty = document.createElement("li");
@@ -478,25 +1181,17 @@ function renderGuestbook() {
     empty.textContent = "还没有留言。";
     guestbookList.appendChild(empty);
   }
-  for (let i = 0; i < slice.length; i++) {
-    const note = slice[i];
-    const li = document.createElement("li");
-    const meta = document.createElement("p");
-    meta.className = "note-meta";
-    meta.textContent = (note.name || "访客") + " · " + noteWhen(note.at);
-    const body = document.createElement("p");
-    body.className = "note-text";
-    body.textContent = note.text || "";
-    li.append(meta, body);
-    guestbookList.appendChild(li);
-  }
+  for (let i = 0; i < slice.length; i++) appendThread(guestbookList, slice[i], threaded.kids);
   guestbookPage.textContent = (notePage + 1) + " / " + pages;
   guestbookPrev.disabled = notePage <= 0;
   guestbookNext.disabled = notePage >= pages - 1;
+  placeReplyForm();
 }
 
 function closeGuestbook(relock) {
+  const wasOpen = !guestbook.hidden;
   guestbook.hidden = true;
+  if (wasOpen && presence && presence.linked() && presence.sendRobotFaceOff) presence.sendRobotFaceOff();
   if (panel.hidden) document.body.classList.remove("reading");
   if (!relock || corner.classList.contains("nav-open")) return;
   requestWalk();
@@ -507,6 +1202,8 @@ function openGuestbook() {
   renderGuestbook();
   guestbook.hidden = false;
   document.body.classList.add("reading");
+  placeGuestbook();
+  showGuestTab("plan");
   guestbook.style.pointerEvents = "none";
   ignoreUntil = performance.now() + 420;
   window.setTimeout(() => {
@@ -522,8 +1219,11 @@ function submitNote(event) {
   const now = Date.now();
   if (now < noteWait) return;
   noteWait = now + 2500;
-  if (presence && presence.postNote(text)) {
+  const parent = replyTo;
+  if (presence && presence.postNote(text, parent)) {
     guestbookText.value = "";
+    replyTo = "";
+    placeReplyForm();
     return;
   }
   localNotes.push({
@@ -531,6 +1231,7 @@ function submitNote(event) {
     name: (presence && presence.name()) || "访客",
     text,
     at: now,
+    parent,
   });
   while (localNotes.length > 200) localNotes.shift();
   try {
@@ -539,7 +1240,8 @@ function submitNote(event) {
     /* 记不住就只留在这一页。 */
   }
   guestbookText.value = "";
-  notePage = 0;
+  replyTo = "";
+  if (!parent) notePage = 0;
   renderGuestbook();
 }
 
@@ -582,17 +1284,14 @@ function onNotesMessage(payload) {
   }
   notesShared = true;
   if (Array.isArray(payload)) {
-    sharedNotes = payload.slice();
+    sharedNotes = [];
+    for (let i = 0; i < payload.length; i++) sharedNotes.push(noteFrom(payload[i]));
     notePage = 0;
   } else if (payload && payload.text) {
-    sharedNotes.push({
-      id: payload.id,
-      name: payload.name,
-      text: payload.text,
-      at: payload.at,
-    });
+    const note = noteFrom(payload);
+    sharedNotes.push(note);
     if (sharedNotes.length > 200) sharedNotes.shift();
-    notePage = 0;
+    if (!note.parent) notePage = 0;
   }
   if (!guestbook.hidden) renderGuestbook();
 }
@@ -644,6 +1343,27 @@ function approachYaw(from, to, k) {
   return from + delta * k;
 }
 
+function guestStillHere(id) {
+  if (!presence || !id) return false;
+  const others = presence.others();
+  for (let i = 0; i < others.length; i++) {
+    if (others[i] && others[i].id === id) return true;
+  }
+  return false;
+}
+
+function onRobotFace(msg) {
+  if (!msg) return;
+  const mine = presence && presence.myId();
+  if (mine && msg.id === mine) return;
+  if (msg.off) {
+    if (remoteFace && msg.id === remoteFace.id) remoteFace = null;
+    return;
+  }
+  if (!Number.isFinite(msg.x) || !Number.isFinite(msg.z)) return;
+  remoteFace = { id: msg.id || "", x: msg.x, z: msg.z };
+}
+
 function showReception(now) {
   if (!reception) return;
   reception.group.visible = true;
@@ -657,14 +1377,36 @@ function updateReception(dt, now) {
   const mine = presence && presence.myId();
   // 没连上、房间还没指定司机、或司机就是这一页，才由这里往前走。
   const driving = !visitorOut && !document.hidden && (!linked || !receptionDriver || mine === receptionDriver);
-  // 留言板开着就停在原地。司机这边计时也不走，关上以后从原来的动作接着来。
-  if (!card && driving) {
+  if (remoteFace && !guestStillHere(remoteFace.id)) remoteFace = null;
+  const watchGuest = !!(driving && !card && remoteFace);
+  // 卡片开着，或有人正在看卡片：停在原地，慢慢转向那个人。关上后再转回点击前的方向。
+  const attending = (card && driving) || watchGuest;
+  if (attending) {
+    if (!robotLookHeld) rememberRobotHeading(receptionState);
+    const tx = card ? px : remoteFace.x;
+    const tz = card ? pz : remoteFace.z;
+    aimRobot(receptionState, tx, tz);
+    turnRobot(receptionState, dt);
+    receptionRender.x = receptionState.x;
+    receptionRender.z = receptionState.z;
+    receptionRender.yaw = receptionState.yaw;
+    if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
+    robotLookHeld = true;
+  } else if (driving && !card) {
+    if (robotLookHeld) {
+      releaseRobotHeading(receptionState);
+      robotLookHeld = false;
+    }
     stepReception(receptionState, dt, crowdHere());
     receptionRender.x = receptionState.x;
     receptionRender.z = receptionState.z;
     receptionRender.yaw = receptionState.yaw;
     if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
-  } else if (!card) {
+  } else if (card) {
+    if (linked && presence.sendRobotFace) presence.sendRobotFace(px, pz);
+    const face = yawAt(receptionRender.x, receptionRender.z, px, pz);
+    if (face != null) receptionRender.yaw = stepYaw(receptionRender.yaw, face, dt);
+  } else {
     const gap = Math.hypot(receptionFollow.x - receptionRender.x, receptionFollow.z - receptionRender.z);
     if (gap > 1.6) {
       receptionRender.x = receptionFollow.x;
@@ -677,7 +1419,11 @@ function updateReception(dt, now) {
       receptionRender.yaw = approachYaw(receptionRender.yaw, receptionFollow.yaw, k);
     }
   }
-  reception.place(receptionRender, now, card);
+  reception.place(receptionRender, now, card || watchGuest);
+  if (card) {
+    placeGuestbook();
+    syncMuseumPlan(false);
+  }
 }
 
 function openFrame(index) {
@@ -710,7 +1456,7 @@ function openFrame(index) {
 }
 
 function pickFrame() {
-  if (!built) {
+  if (!built || !framesReady) {
     framePickDist = Infinity;
     return -1;
   }
@@ -1535,7 +2281,29 @@ function bind() {
     event.stopPropagation();
     closeGuestbook(true);
   });
+  if (guestbookTabPlan) {
+    guestbookTabPlan.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showGuestTab("plan");
+    });
+  }
+  if (guestbookTabNotes) {
+    guestbookTabNotes.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showGuestTab("notes");
+    });
+  }
   guestbookForm.addEventListener("submit", submitNote);
+  if (guestbookReplyCancel) {
+    guestbookReplyCancel.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      replyTo = "";
+      placeReplyForm();
+    });
+  }
   guestbookPrev.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1889,59 +2657,131 @@ function nextFrame() {
 }
 
 async function shown() {
-  if (!vistaRun) return;
+  // 远景还没开时也要让出一帧，否则布置会在第一次开镜之前把主线程占死。
+  if (!vistaRun && !paceBoot) return;
   await nextFrame();
 }
 
-function warmAlongside(held) {
-  if (!held || !held.length) return;
-  // 只排队编译，不把室内画进远景。第一次绘制会把没编完的着色器等完，镜头就会顿一下。
-  try {
-    if (typeof renderer.compileAsync === "function") {
-      const pending = renderer.compileAsync(scene, camera);
-      if (pending && typeof pending.then === "function") pending.then(() => {}, () => {});
-      return;
+async function bootMark(value) {
+  setLoadProgress(value);
+  await shown();
+}
+
+// 一批做完就让一帧。单批不超过大约 6 毫秒，镜头才不会一顿一顿。
+async function paceRanges(total, visit, markFrom, markTo) {
+  if (!total) {
+    setLoadProgress(markTo);
+    await shown();
+    return;
+  }
+  let i = 0;
+  while (i < total) {
+    const t0 = performance.now();
+    const from = i;
+    let n = 0;
+    while (i < total && (n < 16 || performance.now() - t0 < 6)) {
+      i += 1;
+      n += 1;
     }
-    renderer.compile(scene, camera);
-  } catch {
-    /* 预热失败也要能进馆。 */
+    visit(from, i);
+    loadSpan(markFrom, markTo, i, total);
+    await shown();
+  }
+}
+
+const warmedKeys = new Set();
+
+function freshMeshes() {
+  const list = [];
+  scene.traverse((obj) => {
+    if (!(obj.isMesh || obj.isPoints || obj.isLine || obj.isSprite)) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    const keys = [];
+    for (let m = 0; m < mats.length; m++) {
+      const mat = mats[m];
+      if (!mat) continue;
+      const key = mat.uuid + ":" + (obj.isInstancedMesh ? "i" : "o");
+      if (!warmedKeys.has(key)) keys.push(key);
+    }
+    if (!keys.length) return;
+    for (let k = 0; k < keys.length; k++) warmedKeys.add(keys[k]);
+    list.push(obj);
+  });
+  return list;
+}
+
+// 一次只编一个网格的着色器。整场景 compile() 会在主线程里同步链接全部程序，
+// 没有并行编译扩展时会停很久，偶发就再也不回到昵称卡片。
+async function warmFresh(markFrom, markTo, intoView) {
+  const list = freshMeshes();
+  // 楼先于天空。第一帧就能看见外立面，清屏天色只留到这一下之前。
+  if (intoView) list.sort((a, b) => (b.renderOrder || 0) - (a.renderOrder || 0));
+  if (intoView) {
+    for (let i = 0; i < list.length; i++) list[i].visible = false;
+  }
+  if (!list.length) {
+    setLoadProgress(markTo);
+    if (intoView && !vistaRun) showVistaStill();
+    await shown();
+    return;
+  }
+  const probe = new THREE.Scene();
+  if (scene.fog) probe.fog = scene.fog;
+  const prevTarget = renderer.getRenderTarget();
+  const viewSize = new THREE.Vector2();
+  renderer.getDrawingBufferSize(viewSize);
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const obj = list[i];
+      const parent = obj.parent;
+      const index = parent ? parent.children.indexOf(obj) : -1;
+      const vis = obj.visible;
+      const culled = obj.frustumCulled;
+      if (parent) parent.remove(obj);
+      probe.add(obj);
+      obj.visible = true;
+      obj.frustumCulled = false;
+      // 画到屏幕左下角一个像素，着色器才和远景是同一份。整幅清掉的话，加载画面会闪一下。
+      renderer.setRenderTarget(null);
+      renderer.setScissorTest(true);
+      renderer.setScissor(0, 0, 1, 1);
+      renderer.setViewport(0, 0, 1, 1);
+      try { renderer.render(probe, camera); }
+      catch { /* 这一支编不过也继续。 */ }
+      finally {
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, viewSize.x, viewSize.y);
+        renderer.setRenderTarget(prevTarget);
+      }
+      probe.remove(obj);
+      obj.visible = vis;
+      obj.frustumCulled = culled;
+      if (parent) {
+        const kids = parent.children;
+        const at = index >= 0 && index <= kids.length ? index : kids.length;
+        kids.splice(at, 0, obj);
+        obj.parent = parent;
+      }
+      if (intoView) {
+        obj.visible = true;
+        // 远景还没开时，编完一个就整幅画出来。进度条后面先是楼，不是空天。
+        if (!vistaRun) showVistaStill();
+      }
+      loadSpan(markFrom, markTo, i + 1, list.length);
+      await shown();
+    }
+  } finally {
+    if (intoView) {
+      for (let i = 0; i < list.length; i++) list[i].visible = true;
+    }
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, viewSize.x, viewSize.y);
+    renderer.setRenderTarget(prevTarget);
   }
 }
 
 function knownVisitor() {
   return hasEnteredName() || params.has("noname") || nameCommitted;
-}
-
-// 布置阶段先把馆内、门口和轿厢各画一次到离屏目标，着色器和网格在进门前就编译好。
-function warmPrograms() {
-  const target = new THREE.WebGLRenderTarget(8, 8);
-  const prevTarget = renderer.getRenderTarget();
-  const pose = camera.position.clone();
-  const rx = camera.rotation.x;
-  const ry = camera.rotation.y;
-  const rz = camera.rotation.z;
-  const shots = [
-    [0, EYE, 1.1, 0, EYE, -12],
-    [0, EYE, 1.1, 0, EYE, 6],
-    [LIFT.xDoor + 1.1, EYE, LIFT.cz, LIFT.xInner + 0.4, EYE, LIFT.cz],
-  ];
-  try {
-    renderer.setRenderTarget(target);
-    for (let i = 0; i < shots.length; i++) {
-      const s = shots[i];
-      camera.position.set(s[0], s[1], s[2]);
-      camera.rotation.set(0, 0, 0);
-      camera.lookAt(s[3], s[4], s[5]);
-      camera.updateMatrixWorld();
-      renderer.render(scene, camera);
-    }
-  } finally {
-    camera.position.copy(pose);
-    camera.rotation.set(rx, ry, rz);
-    camera.updateMatrixWorld();
-    renderer.setRenderTarget(prevTarget);
-    target.dispose();
-  }
 }
 
 function refreshLiftNames() {
@@ -1958,10 +2798,8 @@ function refreshLiftNames() {
 }
 
 function rehangFrames() {
-  if (!built || !sites || !mats) {
-    location.reload();
-    return;
-  }
+  // 画框要进馆后才挂上。这时改排序就先记下，挂完再排，不整页重来。
+  if (!built || !sites || !mats) return;
   const ordered = hangOrder(sites, hangArrange, hangSort);
   if (!ordered || ordered.chosen.length !== built.frames.length) {
     location.reload();
@@ -1977,18 +2815,41 @@ function rehangFrames() {
   prefetchFloor = -2;
   pictureAim = -1;
   revealFloor = -1;
+  // 图集按旧顺序画在这一层。pictureFloor 还指着本层时，startBuild 会当成正在画而直接跳过。
+  pictureFloor = -2;
+  pictureDefer = null;
   place.textContent = "";
   trackPictures();
 }
 
 async function buildScene(data, arrange) {
   const directPose = params.has("selftest") || params.has("preview") || params.has("x") || params.has("z") || params.has("y") || params.has("yaw") || params.has("car");
+  paceBoot = true;
   sites = data.sites;
   hangArrange = arrange;
   hangSort = readSortMode();
+  const hangAtBoot = hangSort;
+  await bootMark(LOAD_ARRANGE);
   built = buildMuseum(sites, hangArrange, hangSort);
-  // 一楼配图从布置一开始拉，不等进门。
-  startBuild(0, false);
+  resetPose();
+  if (params.has("preview") && built.frames.length) {
+    const frame = built.frames[Math.min(24, built.frames.length - 1)];
+    px = frame.x;
+    pz = frame.z + frame.nz * 4.8;
+    py = frame.y - EYE;
+    camera.position.set(px, py + EYE, pz);
+    camera.lookAt(frame.x, frame.y, frame.z);
+  }
+  if (params.has("x")) px = Number(params.get("x"));
+  if (params.has("z")) pz = Number(params.get("z"));
+  if (params.has("y")) py = Number(params.get("y"));
+  if (params.has("x") || params.has("z") || params.has("y")) camera.position.set(px, py + EYE, pz);
+  if (params.has("yaw")) {
+    camera.rotation.y = Number(params.get("yaw")) * Math.PI / 180;
+    camera.rotation.x = Number(params.get("pitch") || 0) * Math.PI / 180;
+  }
+  entryView = captureView();
+  await bootMark(0.2);
   const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
   bodyRoom = {
     minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
@@ -2045,6 +2906,7 @@ async function buildScene(data, arrange) {
   sunMesh.frustumCulled = false;
   sunMesh.renderOrder = -1;
   scene.add(skyMesh, sunMesh);
+  await bootMark(LOAD_LAYOUT);
 
   const stoneColor = 0xe5e0d6;
   const stoneMat = lit(stoneColor, "open");
@@ -2115,15 +2977,26 @@ async function buildScene(data, arrange) {
     polygonOffsetUnits: -1,
   });
   const bandMesh = boxMesh(built.bandCorners, bandMat);
-  const inner = wallMesh(built.white.concat(built.liners), whiteMat);
   const curb = wallMesh(built.curb, curbMat);
   if (stone) scene.add(stone);
   if (cornerMesh) scene.add(cornerMesh);
   if (bandMesh) scene.add(bandMesh);
-  if (inner) scene.add(inner);
   if (curb) scene.add(curb);
   const level = floorAndCeiling(built.bounds, floorMat, ceilMat, null, roomMat);
   scene.add(level.floor);
+  // 外立面先出现在进度条后面。清屏天色只留到楼体网格交出去之前。
+  await warmFresh(0.3, LOAD_SHELL, true);
+  if (!directPose) startVista();
+  // 后补的楼先藏着。远景继续画已经露出来的外立面，编完一个再露一个。
+  const held = [];
+  const hold = (obj) => {
+    if (!obj) return;
+    obj.traverse((child) => {
+      if (child.isMesh || child.isPoints || child.isLine || child.isSprite) child.visible = false;
+    });
+    scene.add(obj);
+    held.push(obj);
+  };
   const plazaMark = 0xa8adb2;
   const pathMat = lit(plazaMark, "ground", {
     polygonOffset: true,
@@ -2151,8 +3024,9 @@ async function buildScene(data, arrange) {
     hill: lit(0xffffff, "open"),
     cloud: lit(0xf7f4ee, "open", { transparent: true, opacity: 0.78, depthWrite: false }),
   });
-  scene.add(horizon.root);
   fillCityShadows(horizon.blocks);
+  hold(horizon.root);
+  await bootMark(0.5);
   const yard = yardMeshes(
     built.yard,
     lit(0x6b5142, "open"),
@@ -2160,7 +3034,7 @@ async function buildScene(data, arrange) {
     lit(0x4f7c52, "open"),
     lit(0xa68462, "open"),
   );
-  if (yard) scene.add(yard);
+  if (yard) hold(yard);
   const stepMat = lit(0xd9d0c4, "room");
   const railMat = lit(0x5e6764, "open");
   const woodMat = lit(0xa67c52, "room");
@@ -2180,9 +3054,12 @@ async function buildScene(data, arrange) {
     const kind = kinds[k];
     const items = built.dress.filter((item) => item.kind === kind);
     const mesh = kind === "glass" ? paneMesh(items, byKind[kind]) : boxMesh(items, byKind[kind]);
-    if (!mesh) continue;
-    if (kind === "glass") mesh.renderOrder = 3;
-    scene.add(mesh);
+    if (mesh) {
+      if (kind === "glass") mesh.renderOrder = 3;
+      hold(mesh);
+    }
+    loadSpan(0.5, 0.56, k + 1, kinds.length);
+    await shown();
   }
   const plateMat = lit(storyFloor, "room", {
     polygonOffset: true,
@@ -2197,8 +3074,8 @@ async function buildScene(data, arrange) {
   nightCeilPlateMat = ceilPlateMat;
   const storySlabs = plateMesh(built.floorPlates, plateMat);
   const storyCeils = plateMesh(built.ceilPlates, ceilPlateMat, plateMat);
-  if (storySlabs) scene.add(storySlabs);
-  if (storyCeils) scene.add(storyCeils);
+  if (storySlabs) hold(storySlabs);
+  if (storyCeils) hold(storyCeils);
   const props = lobbyPropMeshes(built.extinguishers, built.tables, {
     red: lit(0xc52828, "room"),
     metal: lit(0x2a2c2e, "room"),
@@ -2208,62 +3085,110 @@ async function buildScene(data, arrange) {
     stem: leafMat,
     flowers: [lit(0xd24b4b, "room"), lit(0xe7c14a, "room"), lit(0xf4f1ea, "room"), lit(0xd46a8c, "room")],
   });
-  if (props) scene.add(props);
+  if (props) hold(props);
   const deckShellMat = lit(stoneColor, "open", {
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
   });
   const lobes = lobeMeshes(built.lobes, plateMat, deckShellMat);
-  if (lobes) scene.add(lobes);
+  if (lobes) hold(lobes);
   const hands = handrailMesh(built.handrails, woodMat);
-  if (hands) scene.add(hands);
+  if (hands) hold(hands);
   const labels = labelMeshes(built.signs);
-  if (labels) scene.add(labels);
+  if (labels) hold(labels);
   const deckRail = deckRailMesh(built.lobes, glassMat, railMat);
-  if (deckRail) scene.add(deckRail);
+  if (deckRail) hold(deckRail);
   doorOpen = new Array(built.floors).fill(0);
   doorHeld = new Array(built.floors).fill(false);
   doors = doorRig(doorGlass, doorFrame, built.floors);
   doors.update(doorOpen);
-  scene.add(doors.root);
+  hold(doors.root);
   lift = createLift(built.floors, STORY);
   liftDoors = liftRig(doorGlass, doorFrame, roomMat, ceilMat, built.floors, plateMat);
   liftDoors.update(doorOpen, 0);
-  scene.add(liftDoors.root);
+  hold(liftDoors.root);
   fillLiftPad();
+  if (params.has("car") && lift) {
+    const level = Number(params.get("car"));
+    if (Number.isFinite(level)) {
+      lift.place(level);
+      if (!params.has("y")) {
+        py = lift.y;
+        if (entryView) {
+          entryView.py = py;
+          entryView.pos.y = py + EYE;
+        }
+      }
+    }
+  }
+  const inner = wallMesh(built.white.concat(built.liners), whiteMat);
+  if (inner) hold(inner);
+  await bootMark(0.6);
+  // 门、屋顶和内墙补上时，远景已经在走。一次只编一个，编完再露出来。
+  await warmFresh(0.6, 0.74, true);
+  for (let h = 0; h < held.length; h++) {
+    held[h].traverse((child) => {
+      if (child.isMesh || child.isPoints || child.isLine || child.isSprite) child.visible = true;
+    });
+  }
+  if (!vistaRun) showVistaStill();
   const parked = [];
   const stage = (obj) => {
     if (!obj) return;
-    if (vistaRun) {
+    // 远景不画这些。进馆之后再亮，着色器已经编过。
+    if (!directPose && !hallReady) {
       obj.visible = false;
       parked.push(obj);
     }
     scene.add(obj);
   };
-  // 外立面先动。室内网格先别画进这一镜，布置让出每一帧，镜头才连得上。
-  if (directPose) showVistaStill();
-  else startVista();
-  await shown();
-  const framePair = allocFrameMeshes(built.frames, borderMat, matMat);
-  for (let i = 0; i < built.frames.length; i += 24) {
-    writeFrameMeshes(built.frames, framePair, i, i + 24);
-    await shown();
+  async function hangFrames() {
+    paceBoot = true;
+    try {
+      await shown();
+      if (!built.frames.length) {
+        framesReady = true;
+        return;
+      }
+      const framePair = allocFrameMeshes(built.frames, borderMat, matMat);
+      await paceRanges(built.frames.length, (from, to) => {
+        writeFrameMeshes(built.frames, framePair, from, to);
+      }, 1, 1);
+      finishFrameMeshes(framePair);
+      stage(framePair.border);
+      stage(framePair.mat);
+      mats = framePair.mat;
+      const white = new THREE.Color("#f7f3ec");
+      baseColors = new Array(built.frames.length);
+      hoverColors = new Array(built.frames.length);
+      await paceRanges(built.frames.length, (from, to) => {
+        for (let i = from; i < to; i++) {
+          baseColors[i] = new THREE.Color(built.frames[i].color);
+          hoverColors[i] = baseColors[i].clone().lerp(white, 0.55);
+        }
+      }, 1, 1);
+      framesReady = true;
+      const indoorShadow = softShadowMaterial(0.55);
+      let frameShade = null;
+      await paceRanges(built.frames.length, (from, to) => {
+        frameShade = frameShadowMesh(built.frames, indoorShadow, from, to, frameShade);
+      }, 1, 1);
+      if (frameShade) stage(frameShade);
+      await shown();
+      try { await prepareAtlases(); }
+      catch (err) { console.error(err); }
+      await warmFresh(1, 1, false);
+      if (hangSort !== hangAtBoot) rehangFrames();
+    } finally {
+      paceBoot = false;
+    }
   }
-  finishFrameMeshes(framePair);
-  stage(framePair.border);
-  stage(framePair.mat);
-  mats = framePair.mat;
-  const white = new THREE.Color("#f7f3ec");
-  baseColors = new Array(built.frames.length);
-  hoverColors = new Array(built.frames.length);
-  for (let i = 0; i < built.frames.length; i++) {
-    baseColors[i] = new THREE.Color(built.frames[i].color);
-    hoverColors[i] = baseColors[i].clone().lerp(white, 0.55);
-    if ((i + 1) % 24 === 0) await shown();
-  }
-  await shown();
-  const indoorShadow = softShadowMaterial(0.55);
+  beginHang = () => {
+    if (beginHang.started) return;
+    beginHang.started = true;
+    hangFrames().catch((err) => console.error(err));
+  };
   if (built.plants.length) {
     const plants = plantMeshes(built.plants, potMat, leafMat);
     if (plants.pots) stage(plants.pots);
@@ -2275,10 +3200,7 @@ async function buildScene(data, arrange) {
       stage(shadowMesh);
     }
   }
-  await shown();
-  const frameShade = frameShadowMesh(built.frames, indoorShadow);
-  if (frameShade) stage(frameShade);
-  await shown();
+  await bootMark(0.7);
   const contactShadow = softShadowMaterial(0.55, true);
   const indoorDrops = [];
   for (let i = 0; i < built.extinguishers.length; i++) {
@@ -2356,7 +3278,7 @@ async function buildScene(data, arrange) {
   if (leds) stage(leds);
   if (sconces) stage(sconces);
   if (params.has("debug")) scene.add(colliderLines(built.walls));
-  await shown();
+  await bootMark(LOAD_INDOOR);
 
   legendEl.replaceChildren();
   for (let i = 0; i < built.legend.length; i++) {
@@ -2371,32 +3293,6 @@ async function buildScene(data, arrange) {
   parkFresh = stage;
   applyDay(openingDay());
   parkFresh = null;
-  resetPose();
-  if (params.has("preview") && built.frames.length) {
-    const frame = built.frames[Math.min(24, built.frames.length - 1)];
-    px = frame.x;
-    pz = frame.z + frame.nz * 4.8;
-    py = frame.y - EYE;
-    camera.position.set(px, py + EYE, pz);
-    camera.lookAt(frame.x, frame.y, frame.z);
-  }
-  if (params.has("x")) px = Number(params.get("x"));
-  if (params.has("z")) pz = Number(params.get("z"));
-  if (params.has("car") && lift) {
-    const level = Number(params.get("car"));
-    if (Number.isFinite(level)) {
-      lift.place(level);
-      if (!params.has("y")) py = lift.y;
-    }
-  }
-  if (params.has("y")) py = Number(params.get("y"));
-  if (params.has("x") || params.has("z") || params.has("y") || params.has("car")) camera.position.set(px, py + EYE, pz);
-  if (params.has("yaw")) {
-    camera.rotation.y = Number(params.get("yaw")) * Math.PI / 180;
-    camera.rotation.x = Number(params.get("pitch") || 0) * Math.PI / 180;
-  }
-  entryView = captureView();
-  placeApproach(vistaRun ? vistaE(vistaNow) : 0);
   await shown();
   const visitorMat = new THREE.MeshBasicMaterial({ vertexColors: true, color: 0xffffff });
   attachSun(visitorMat, sunShared, sunRoles.body);
@@ -2407,27 +3303,16 @@ async function buildScene(data, arrange) {
   await shown();
   reception = createReception(scene, sunShared, sunRoles.body);
   reception.place(receptionRender, performance.now());
-  // 远景不画接待机器人。先在离屏编好着色器，进馆再显出来。
-  const robotWarm = new THREE.WebGLRenderTarget(8, 8);
-  const prevRobotTarget = renderer.getRenderTarget();
-  try {
-    renderer.setRenderTarget(robotWarm);
-    renderer.render(scene, camera);
-  } catch {
-    /* 预热失败也继续。 */
-  } finally {
-    renderer.setRenderTarget(prevRobotTarget);
-    robotWarm.dispose();
-  }
+  // 远景不画接待机器人。着色器留到后面逐个编，不在这里整场景画一帧。
   reception.group.visible = false;
   await shown();
   presence = mountPresence({
     scene,
     material: visitorMat,
     shadowMaterial: visitorShadow,
-    bounds: built.bounds,
-    interior: built.interior,
     zones: built.zones,
+    paintPlan: paintCornerPlan,
+    planHeight: cornerPlanHeight,
     onReleaseLook: releaseLook,
     getPose: () => {
       planarBasis(lookSource(), fwd, right);
@@ -2463,6 +3348,7 @@ async function buildScene(data, arrange) {
     },
     onSign: applySign,
     onRobot: onRobotMessage,
+    onRobotFace,
     onNotes: onNotesMessage,
     onUnlink: onDeskUnlink,
     onExclusive: (which) => {
@@ -2492,10 +3378,10 @@ async function buildScene(data, arrange) {
   });
   const nameGate = document.getElementById("name-gate");
   const holdGate = !!(nameGate && !nameGate.hidden);
-  if (holdGate) nameGate.hidden = true;
-  await prepareAtlases(() => {
-    if (vistaRun) warmAlongside(parked);
-  });
+  if (holdGate) {
+    nameGate.classList.remove("is-shown");
+    nameGate.hidden = true;
+  }
   resize();
   shownFloor = playerFloor();
   if (params.get("person") === "3") thirdPerson = true;
@@ -2505,36 +3391,15 @@ async function buildScene(data, arrange) {
   }
   ambience = createAmbience();
   await shown();
-  if (!vistaRun) {
-    try {
-      warmPrograms();
-    } catch {
-      /* 预热失败也要能进馆。 */
-    }
-  }
-  if (holdGate) {
-    for (let i = 0; i < 6; i++) await shown();
-    nameGate.hidden = false;
-    const nameInput = document.getElementById("name-input");
-    requestAnimationFrame(() => {
-      if (nameGate.hidden || !nameInput) return;
-      try { nameInput.focus({ preventScroll: true }); }
-      catch { nameInput.focus(); }
-    });
-  }
-  let warmed = Promise.resolve();
-  try {
-    if (typeof renderer.compileAsync === "function") warmed = renderer.compileAsync(scene, camera);
-  } catch {
-    warmed = Promise.resolve();
-  }
-  const cap = new Promise((resolve) => window.setTimeout(resolve, 5000));
-  let compileDone = false;
-  const compiled = Promise.race([Promise.resolve(warmed), cap]).then(() => {
-    compileDone = true;
-  });
+  // 远景已经在画楼。剩下的室内着色器逐个编，进度条继续往前走。
+  await warmFresh(LOAD_INDOOR, 1, false);
+  if (directPose) showVistaStill();
+  else if (!vistaRun) startVista();
+  setLoadProgress(1);
+  await shown();
   function settleHall() {
-    loadCreep = false;
+    loadPace = false;
+    paceBoot = false;
     hallReady = true;
     for (let i = 0; i < parked.length; i++) parked[i].visible = true;
     stopVista();
@@ -2542,14 +3407,60 @@ async function buildScene(data, arrange) {
     renderer.setRenderTarget(null);
     resize();
     setLoadProgress(1);
-    loading.classList.remove("name-hold");
+    loading.classList.remove("name-hold", "is-leaving");
     loading.hidden = true;
   }
 
-  function holdNameChrome() {
-    loadCreep = false;
-    loading.hidden = false;
-    loading.classList.add("name-hold");
+  function fadeLoadingOut() {
+    if (!loading || loading.hidden) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      loading.classList.remove("name-hold", "is-leaving");
+      loading.hidden = true;
+      return;
+    }
+    loading.classList.add("is-leaving");
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      loading.hidden = true;
+      loading.classList.remove("is-leaving", "name-hold");
+    };
+    const timer = window.setTimeout(finish, 1100);
+    loading.addEventListener("transitionend", function onEnd(event) {
+      if (event.target !== loading || event.propertyName !== "opacity") return;
+      window.clearTimeout(timer);
+      loading.removeEventListener("transitionend", onEnd);
+      finish();
+    });
+  }
+
+  function showOpeningGate() {
+    if (!holdGate || !nameGate) return;
+    nameGate.classList.remove("is-shown");
+    nameGate.hidden = false;
+    const nameInput = document.getElementById("name-input");
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const revealGate = () => {
+      if (nameGate.hidden) return;
+      nameGate.classList.add("is-shown");
+      if (!nameInput) return;
+      try { nameInput.focus({ preventScroll: true }); }
+      catch { nameInput.focus(); }
+    };
+    if (reduced) revealGate();
+    else requestAnimationFrame(revealGate);
+  }
+
+  // 夜空加载层淡出后，昵称和南立面远景一起出现。横移从西边重新起。
+  function unveilOpening() {
+    loadPace = false;
+    paceBoot = false;
+    if (!vistaRun) startVista();
+    vistaT0 = vistaNow;
+    fadeLoadingOut();
+    showOpeningGate();
   }
 
   function showPlayHud() {
@@ -2653,51 +3564,27 @@ async function buildScene(data, arrange) {
     requestAnimationFrame(beginArrival);
   }
 
-  setLoadProgress(0.7);
-  const creepFrom = loadProgress;
-  const creepAt = performance.now();
-  const creepCompile = () => {
-    if (compileDone || reveal.done) return;
-    const u = Math.min(1, (performance.now() - creepAt) / 5000);
-    setLoadProgress(creepFrom + (0.84 - creepFrom) * u);
-    requestAnimationFrame(creepCompile);
-  };
-  requestAnimationFrame(creepCompile);
-  compiled.then(() => {
-    hallReady = true;
-    setLoadProgress(1);
-    if (directPose) {
-      reveal();
-      return;
-    }
-    if (arriveFromGate) {
-      stopVista();
-      scheduleArrival();
-      return;
-    }
-    if (hasEnteredName()) {
-      arriveFromLoad();
-      return;
-    }
-    if (knownVisitor()) reveal();
-    else holdNameChrome();
-  }, () => {
-    hallReady = true;
-    if (directPose) {
-      reveal();
-      return;
-    }
-    if (arriveFromGate) {
-      stopVista();
-      scheduleArrival();
-      return;
-    }
-    if (hasEnteredName()) {
-      arriveFromLoad();
-      return;
-    }
+  hallReady = true;
+  if (directPose) {
+    if (holdGate && !hasEnteredName()) showOpeningGate();
     reveal();
-  });
+    return;
+  }
+  if (arriveFromGate) {
+    stopVista();
+    scheduleArrival();
+    return;
+  }
+  if (holdGate) {
+    unveilOpening();
+    return;
+  }
+  if (hasEnteredName()) {
+    arriveFromLoad();
+    return;
+  }
+  if (knownVisitor()) reveal();
+  else unveilOpening();
 }
 
 function yieldTurn(fn) {
@@ -2790,7 +3677,34 @@ function blankUv() {
   return uv;
 }
 
-async function prepareAtlases(whenMapped) {
+async function uploadAtlas(slot, note) {
+  const texture = slot.texture;
+  const canvas = slot.canvas;
+  // 只分配显存，不把整张画布一次传上去。dataReady 保持为假，渲染器才不会回头再传整张。
+  if (texture.source) texture.source.dataReady = false;
+  texture.needsUpdate = true;
+  try { renderer.initTexture(texture); }
+  catch { /* 分配失败也继续，画芯先留白。 */ }
+  texture.needsUpdate = false;
+  const strip = atlasSlots.strip;
+  const stripTex = atlasSlots.stripTex;
+  const sctx = atlasSlots.stripCtx;
+  if (!strip || !sctx || !stripTex) return;
+  const band = 64;
+  for (let y = 0; y < canvas.height; y += band) {
+    const row = Math.min(band, canvas.height - y);
+    if (strip.height !== row) strip.height = row;
+    sctx.drawImage(canvas, 0, y, canvas.width, row, 0, 0, canvas.width, row);
+    try {
+      renderer.copyTextureToTexture(stripTex, texture, null, { x: 0, y: canvas.height - y - row });
+    } catch {
+      break;
+    }
+    await note();
+  }
+}
+
+async function prepareAtlases() {
   let most = 1;
   for (let f = 0; f < built.floors; f++) {
     const n = floorPictureJobs(f).length;
@@ -2803,7 +3717,14 @@ async function prepareAtlases(whenMapped) {
   atlasGridSize = grid;
   const w = grid.cols * grid.cellW;
   const h = grid.rows * grid.cellH;
+  const cpuBand = 128;
+  const gpuBand = 64;
+  // 图集在进馆之后才铺。这里只让帧，不再推加载条。
+  const note = async () => {
+    await nextFrame();
+  };
   for (let s = 0; s < 2; s++) {
+    await note();
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
@@ -2816,7 +3737,7 @@ async function prepareAtlases(whenMapped) {
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
     atlasSlots.push({ canvas, ctx, texture, w, h });
-    await shown();
+    await note();
   }
   const strip = document.createElement("canvas");
   strip.width = w;
@@ -2835,32 +3756,26 @@ async function prepareAtlases(whenMapped) {
   mats.material.needsUpdate = true;
   const white = new THREE.Color("#ffffff");
   if (built.frames.length) mats.setColorAt(0, white);
-  await shown();
-  if (whenMapped) await whenMapped();
-  await shown();
+  await note();
   for (let s = 0; s < atlasSlots.length; s++) {
     const slot = atlasSlots[s];
     slot.ctx.fillStyle = "#f7f5f2";
-    const band = 128;
-    for (let y = 0; y < h; y += band) {
-      slot.ctx.fillRect(0, y, w, Math.min(band, h - y));
-      await shown();
+    for (let y = 0; y < h; y += cpuBand) {
+      slot.ctx.fillRect(0, y, w, Math.min(cpuBand, h - y));
+      await note();
     }
-    slot.texture.needsUpdate = true;
-    renderer.initTexture(slot.texture);
-    slot.texture.needsUpdate = false;
-    await shown();
+    await uploadAtlas(slot, note);
   }
   for (let i = 0; i < built.frames.length; i++) {
     baseColors[i].copy(white);
     hoverColors[i].copy(white);
     mats.setColorAt(i, white);
-    if ((i + 1) % 64 === 0) await shown();
+    if ((i + 1) % 64 === 0) await note();
   }
   mats.instanceColor.needsUpdate = true;
   shownAtlas = 0;
   pictureGrid = grid;
-  await shown();
+  await nextFrame();
   flushPictureDefer();
 }
 
@@ -2905,22 +3820,12 @@ function uploadBands(token, canvas, texture, done) {
   yieldTurn(step);
 }
 
-function drawCover(ctx, img, ox, oy, cellW, cellH) {
+function drawContain(ctx, img, ox, oy, cellW, cellH) {
   const srcW = img.naturalWidth || img.width;
   const srcH = img.naturalHeight || img.height;
-  const fit = coverRect(srcW, srcH, cellW, cellH);
-  const dx = ox + fit.x;
-  const dy = oy + fit.y;
-  const x0 = Math.max(dx, ox);
-  const y0 = Math.max(dy, oy);
-  const x1 = Math.min(dx + fit.w, ox + cellW);
-  const y1 = Math.min(dy + fit.h, oy + cellH);
-  if (x1 - x0 < 0.5 || y1 - y0 < 0.5) return;
-  const sx = ((x0 - dx) / fit.w) * srcW;
-  const sy = ((y0 - dy) / fit.h) * srcH;
-  const sw = ((x1 - x0) / fit.w) * srcW;
-  const sh = ((y1 - y0) / fit.h) * srcH;
-  ctx.drawImage(img, sx, sy, sw, sh, x0, y0, x1 - x0, y1 - y0);
+  if (srcW < 1 || srcH < 1) return;
+  const fit = containRect(srcW, srcH, cellW, cellH);
+  ctx.drawImage(img, 0, 0, srcW, srcH, ox + fit.x, oy + fit.y, fit.w, fit.h);
 }
 
 function paintIntoSlot(token, floor, pictures, fallback) {
@@ -2948,7 +3853,7 @@ function paintIntoSlot(token, floor, pictures, fallback) {
     }
     // 第 0 格是占位图。没配图或没拉下来的画框都指着它，不各占一格。
     if (!planted) {
-      drawCover(holder.ctx, fallback, 0, 0, grid.cellW, grid.cellH);
+      drawContain(holder.ctx, fallback, 0, 0, grid.cellW, grid.cellH);
       planted = true;
       yieldTurn(step);
       return;
@@ -2958,7 +3863,7 @@ function paintIntoSlot(token, floor, pictures, fallback) {
       const cell = cursor + 1;
       const col = cell % grid.cols;
       const row = Math.floor(cell / grid.cols);
-      drawCover(holder.ctx, picture.img, col * grid.cellW, row * grid.cellH, grid.cellW, grid.cellH);
+      drawContain(holder.ctx, picture.img, col * grid.cellW, row * grid.cellH, grid.cellW, grid.cellH);
       uv.set(cellUv(col, row, grid.cols, grid.rows), picture.index * 4);
       cursor += 1;
       yieldTurn(step);
@@ -3060,6 +3965,7 @@ function commitPlain(floor) {
 
 function trackPictures() {
   if (!built) return;
+  beginHang();
   const riding = !!(lift && inLiftCar(px, pz) && lift.phase === "moving");
   if (riding) {
     const dest = lift.dest;
@@ -3117,12 +4023,16 @@ fetch("data/sites.json")
     return res.json();
   })
   .then((data) => {
-    setLoadProgress(0.28);
+    setLoadProgress(LOAD_LIST);
+    loadCeil = 0.13;
     return yieldPaint().then(() => loadArrange().then((arrange) => ({ data, arrange })));
   })
   .then((packed) => {
-    loadCreep = false;
-    setLoadProgress(0.36);
+    loadPace = false;
+    setLoadProgress(LOAD_ARRANGE);
     return yieldPaint().then(() => buildScene(packed.data, packed.arrange));
   })
-  .catch(() => showFatal("展品清单没有读到。请先运行 node tools/fetch-sites.mjs"));
+  .catch((err) => {
+    const missed = err && String(err.message || "").indexOf("sites.json") >= 0;
+    showFatal(missed ? "展品清单没有读到。请先运行 node tools/fetch-sites.mjs" : "展厅没有布置完。请刷新再试。");
+  });

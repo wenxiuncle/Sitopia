@@ -1,5 +1,4 @@
-import { PLAZA, STORY, occupiesHall, zoneAt } from "./layout.js";
-import { forwardFromYaw } from "./basis.js";
+import { STORY, occupiesHall, zoneAt } from "./layout.js";
 import { createCrowd } from "./avatar.js";
 
 // 线上页面经 lobby.youquhome.com 转到 Cloudflare 房间。本机仍走自己的 /lobby。
@@ -53,6 +52,9 @@ function writeSortMode(mode) {
 const KICK_KEY = "quzhan-museum-kicked";
 const BEAT_MS = 30000;
 const BUBBLE_LIFE = 6000;
+// 左下角只留五行。每一行从显示起算一分钟，最下面到点就去掉，上面各行下降一档。
+const CHATTER_MAX = 5;
+const CHATTER_LIFE = 60 * 1000;
 // 点画框白卡上的链接，或把这一页放到后台：人先留在在线名单里。十分钟后还没回来，再从馆里请出。
 // 关掉页面不等这十分钟。
 const HOLD_MS = 10 * 60 * 1000;
@@ -106,9 +108,9 @@ export function mountPresence(options) {
     scene,
     material,
     shadowMaterial,
-    bounds,
-    interior,
     getPose,
+    paintPlan,
+    planHeight,
     zones,
     onTyping,
     onNav,
@@ -119,6 +121,7 @@ export function mountPresence(options) {
     onMusic,
     onSign,
     onRobot,
+    onRobotFace,
     onNotes,
     onUnlink,
     onSort,
@@ -164,7 +167,6 @@ export function mountPresence(options) {
   const crowd = createCrowd(scene, material, shadowMaterial);
   const roster = new Map();
   const seat = readSeat();
-  const planFwd = { set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }, x: 0, y: 0, z: -1 };
   const ctx = mapCanvas.getContext("2d");
   let me = null;
   let myName = readStoredName();
@@ -197,7 +199,6 @@ export function mountPresence(options) {
   let kickedUntil = 0;
   let beatTimer = 0;
   let kickClock = 0;
-  let planAt = 0;
   let peopleAt = 0;
   let holdUntil = 0;
   let holdTimer = 0;
@@ -477,31 +478,86 @@ export function mountPresence(options) {
     li.dataset.sayAt = String(stamp);
   }
 
-  function pushChatter(msg, stamp) {
+  function setFade(li, level) {
+    li.dataset.fade = String(level);
+    li.className = "fade-" + level;
+  }
+
+  // 现有各行下降一档。落到第五档下面的删掉。
+  function shiftChatter() {
+    const items = chatterEl.children;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const level = Number(items[i].dataset.fade || 0) + 1;
+      if (level >= CHATTER_MAX) items[i].remove();
+      else setFade(items[i], level);
+    }
+  }
+
+  // 删掉中间某行后，按第一行所在的档把下面排紧，不额外再降一档。
+  function packChatter() {
+    const items = chatterEl.children;
+    if (!items.length) return;
+    let level = Number(items[0].dataset.fade || 0);
+    for (let i = 0; i < items.length; i++) {
+      if (level >= CHATTER_MAX) {
+        while (items.length > i) items[i].remove();
+        break;
+      }
+      setFade(items[i], level);
+      level += 1;
+    }
+  }
+
+  function pushChatter(msg, stamp, shownAt) {
     if (!chatterEl || !msg || !msg.text) return;
+    const first = chatterEl.firstChild;
+    const topTaken = first && Number(first.dataset.fade || 0) === 0;
+    if (topTaken) shiftChatter();
     const li = document.createElement("li");
     li.textContent = msg.name + "：" + msg.text;
     stampSay(li, msg, stamp);
+    li.dataset.shownAt = String(shownAt == null ? performance.now() : shownAt);
+    setFade(li, 0);
     chatterEl.prepend(li);
-    while (chatterEl.children.length > 5) chatterEl.lastChild.remove();
+    while (chatterEl.children.length > CHATTER_MAX) chatterEl.lastChild.remove();
+    const second = chatterEl.children[1];
+    if (second && Number(second.dataset.fade || 0) > 1) packChatter();
+  }
+
+  function sweepChatter(now) {
+    if (!chatterEl) return;
+    while (chatterEl.lastChild) {
+      const born = Number(chatterEl.lastChild.dataset.shownAt || 0);
+      if (!born || now - born < CHATTER_LIFE) break;
+      chatterEl.lastChild.remove();
+      shiftChatter();
+    }
   }
 
   function removeSay(msg) {
     const id = msg.id || "";
     const at = String(msg.at);
     const roots = [logEl, chatterEl];
+    let chatterChanged = false;
     for (let r = 0; r < roots.length; r++) {
       const root = roots[r];
       if (!root) continue;
       const items = root.children;
       for (let i = items.length - 1; i >= 0; i--) {
         const li = items[i];
-        if (li.dataset.sayId === id && li.dataset.sayAt === at) li.remove();
+        if (li.dataset.sayId !== id || li.dataset.sayAt !== at) continue;
+        li.remove();
+        if (root === chatterEl) chatterChanged = true;
       }
     }
+    if (chatterChanged) packChatter();
   }
 
-  function appendSay(msg) {
+  function sayStamp(msg) {
+    return typeof msg.at === "number" && Number.isFinite(msg.at) ? msg.at : Date.now();
+  }
+
+  function appendLogged(msg, stamp) {
     const li = document.createElement("li");
     const meta = document.createElement("div");
     meta.className = "chat-meta";
@@ -509,7 +565,6 @@ export function mountPresence(options) {
     who.textContent = msg.name || "";
     const when = document.createElement("time");
     when.className = "chat-time";
-    const stamp = typeof msg.at === "number" && Number.isFinite(msg.at) ? msg.at : Date.now();
     when.dateTime = new Date(stamp).toISOString();
     when.textContent = formatWhen(stamp);
     meta.append(who, when);
@@ -519,7 +574,23 @@ export function mountPresence(options) {
     li.append(meta, body);
     stampSay(li, msg, stamp);
     appendLine(li);
+  }
+
+  function appendSay(msg) {
+    const stamp = sayStamp(msg);
+    appendLogged(msg, stamp);
     pushChatter(msg, stamp);
+  }
+
+  // 进馆带回的旧记录：满一分钟的不再进左下角。还没满的只显示剩下的时间。
+  function appendHistory(msg) {
+    const hasAt = typeof msg.at === "number" && Number.isFinite(msg.at);
+    const stamp = hasAt ? msg.at : sayStamp(msg);
+    appendLogged(msg, stamp);
+    if (!hasAt || !msg || !msg.text) return;
+    const age = Date.now() - stamp;
+    if (!(age >= 0 && age < CHATTER_LIFE)) return;
+    pushChatter(msg, stamp, performance.now() - age);
   }
 
   function appendSys(text) {
@@ -566,8 +637,9 @@ export function mountPresence(options) {
       renderPeople();
       if (!quiet) {
         logEl.replaceChildren();
+        if (chatterEl) chatterEl.replaceChildren();
         const history = msg.log || [];
-        for (let i = 0; i < history.length; i++) appendSay(history[i]);
+        for (let i = 0; i < history.length; i++) appendHistory(history[i]);
         if (!document.hidden) {
           if (others.length) toast("你进入了展厅，馆里已有 " + others.length + " 人");
           else toast("你进入了展厅");
@@ -642,6 +714,10 @@ export function mountPresence(options) {
     if (msg.t === "robot") {
       takeSign(msg.sign);
       if (onRobot) onRobot(msg);
+      return;
+    }
+    if (msg.t === "robot-face") {
+      if (onRobotFace) onRobotFace(msg);
       return;
     }
     if (msg.t === "note" || msg.t === "note-drop") {
@@ -837,26 +913,16 @@ export function mountPresence(options) {
     });
   }
 
+  let gateLeaving = false;
+
   function showNameGate() {
     syncNameInputs(myName);
+    nameGate.classList.remove("is-shown");
     nameGate.hidden = false;
-    nameInput.focus();
     if (onGate) onGate(true);
   }
 
-  function commitName(raw) {
-    if (composing) return;
-    const name = String(raw || "").trim().slice(0, 12);
-    if (!name) {
-      if (!nameGate.hidden) nameInput.focus();
-      else navName.focus();
-      return;
-    }
-    const changed = !me || me.name !== name;
-    const wasGate = !nameGate.hidden;
-    rememberName(name);
-    syncNameInputs(name);
-    nameGate.hidden = true;
+  function afterName(wasGate, changed) {
     if (wasGate && onGate) onGate(false);
     if (solo) {
       online.textContent = stillKicked() ? "已请出" : "单人";
@@ -868,7 +934,55 @@ export function mountPresence(options) {
       else arm();
       return;
     }
-    if (changed) send({ t: "name", name });
+    if (changed) send({ t: "name", name: myName });
+  }
+
+  function dismissNameGate(done) {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      nameGate.classList.remove("is-shown");
+      nameGate.hidden = true;
+      done();
+      return;
+    }
+    nameGate.classList.remove("is-shown");
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      nameGate.hidden = true;
+      done();
+    };
+    const timer = window.setTimeout(finish, 800);
+    nameGate.addEventListener("transitionend", function onEnd(event) {
+      if (event.target !== nameGate || event.propertyName !== "opacity") return;
+      window.clearTimeout(timer);
+      nameGate.removeEventListener("transitionend", onEnd);
+      finish();
+    });
+  }
+
+  function commitName(raw) {
+    if (composing || gateLeaving) return;
+    const name = String(raw || "").trim().slice(0, 12);
+    if (!name) {
+      if (!nameGate.hidden) nameInput.focus();
+      else navName.focus();
+      return;
+    }
+    const changed = !me || me.name !== name;
+    const wasGate = !nameGate.hidden;
+    rememberName(name);
+    syncNameInputs(name);
+    if (!wasGate) {
+      afterName(false, changed);
+      return;
+    }
+    gateLeaving = true;
+    dismissNameGate(() => {
+      gateLeaving = false;
+      afterName(true, changed);
+    });
   }
 
   function openChat() {
@@ -1195,7 +1309,7 @@ export function mountPresence(options) {
     window.clearTimeout(holdTimer);
     holdUntil = 0;
     shelved = false;
-    if (dead || !confirmed || !myName) return;
+    if (dead || !confirmed || !myName || !nameGate.hidden) return;
     if (solo) {
       online.textContent = "单人";
       if (!beatTimer) startBeat();
@@ -1256,64 +1370,31 @@ export function mountPresence(options) {
   }
 
   syncNameInputs(myName);
+  const openingSearch = new URLSearchParams(location.search);
+  const poseSkip = openingSearch.has("selftest") || openingSearch.has("preview") || openingSearch.has("x") || openingSearch.has("z") || openingSearch.has("y") || openingSearch.has("yaw") || openingSearch.has("car");
   if (kickedUntil) {
     showKick(kickedUntil);
-  } else if (confirmed && myName) {
+  } else if (openingSearch.has("noname") || (confirmed && myName && poseSkip)) {
     nameGate.hidden = true;
-    if (solo) {
-      online.textContent = "单人";
-      startBeat();
-      pollMusic();
-    } else if (document.hidden) online.textContent = "未连接";
-    else arm();
-  } else if (new URLSearchParams(location.search).has("noname")) {
-    nameGate.hidden = true;
-    online.textContent = "先起个名字";
+    if (confirmed && myName) {
+      if (solo) {
+        online.textContent = "单人";
+        startBeat();
+        pollMusic();
+      } else if (document.hidden) online.textContent = "未连接";
+      else arm();
+    } else online.textContent = "先起个名字";
   } else {
     online.textContent = "先起个名字";
     showNameGate();
   }
 
-  function drawDot(x, y, yaw, self, name) {
-    forwardFromYaw(yaw, planFwd);
-    ctx.save();
-    ctx.translate(x, y);
-    if (self) {
-      const len = 8;
-      const dx = planFwd.x * len;
-      const dy = planFwd.z * len;
-      const px = -planFwd.z;
-      const py = planFwd.x;
-      ctx.beginPath();
-      ctx.moveTo(dx, dy);
-      ctx.lineTo(-dx * 0.45 + px * 4.5, -dy * 0.45 + py * 4.5);
-      ctx.lineTo(-dx * 0.45 - px * 4.5, -dy * 0.45 - py * 4.5);
-      ctx.closePath();
-      ctx.fillStyle = "#c4552a";
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.arc(0, 0, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = "#2c2926";
-      ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.lineTo(planFwd.x * 9, planFwd.z * 9);
-      ctx.strokeStyle = "#2c2926";
-      ctx.lineWidth = 1.25;
-      ctx.stroke();
-    }
-    ctx.restore();
-    if (name) {
-      ctx.font = "11px Microsoft YaHei, PingFang SC, sans-serif";
-      ctx.fillStyle = "#6f6a64";
-      ctx.fillText(name, x + 6, y - 4);
-    }
-  }
-
-  function drawPlan(pose) {
+  function drawPlan() {
+    if (!paintPlan) return;
     const w = mapCanvas.clientWidth || 180;
-    const h = mapCanvas.clientHeight || 210;
+    const h = planHeight ? planHeight(w) : Math.round(w * 0.46);
+    const pxH = h + "px";
+    if (mapCanvas.style.height !== pxH) mapCanvas.style.height = pxH;
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     const bw = Math.round(w * ratio);
     const bh = Math.round(h * ratio);
@@ -1323,38 +1404,15 @@ export function mountPresence(options) {
     }
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    const pad = 12;
-    const spanX = bounds.maxX - bounds.minX;
-    const spanZ = bounds.maxZ - bounds.minZ;
-    const s = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanZ);
-    const ox = pad + ((w - pad * 2) - s * spanX) / 2;
-    const oy = pad + ((h - pad * 2) - s * spanZ) / 2;
-    const X = (x) => ox + (x - bounds.minX) * s;
-    const Y = (z) => oy + (z - bounds.minZ) * s;
-
-    ctx.fillStyle = "#e6e1d8";
-    ctx.fillRect(X(PLAZA.minX), Y(PLAZA.minZ), (PLAZA.maxX - PLAZA.minX) * s, (PLAZA.maxZ - PLAZA.minZ) * s);
-    ctx.fillStyle = "#d4c6b4";
-    ctx.fillRect(
-      X(interior.minX),
-      Y(interior.minZ),
-      (interior.maxX - interior.minX) * s,
-      (interior.maxZ - interior.minZ) * s,
-    );
-
-    const others = crowd.list();
-    const myFloor = Math.round((pose.y || 0) / STORY);
-    for (let i = 0; i < others.length; i++) {
-      const person = others[i];
-      if (Math.round((person.y || 0) / STORY) !== myFloor) continue;
-      drawDot(X(person.x), Y(person.z), person.yaw, false, person.name);
-    }
-    drawDot(X(pose.x), Y(pose.z), pose.yaw, true, "你");
+    paintPlan(ctx, w, h);
   }
 
   musicTimer = window.setInterval(pollMusic, 4000);
 
   let robotSentAt = 0;
+  let faceSentAt = 0;
+  let faceSentX = NaN;
+  let faceSentZ = NaN;
 
   return {
     others() { return crowd.list(); },
@@ -1369,9 +1427,29 @@ export function mountPresence(options) {
       robotSentAt = now + 100;
       send({ t: "robot", x: pose.x, z: pose.z, yaw: pose.yaw });
     },
-    postNote(text) {
+    sendRobotFace(x, z) {
+      if (!linked) return;
+      const now = performance.now();
+      const moved = Math.hypot(x - faceSentX, z - faceSentZ) > 0.04;
+      if (Number.isFinite(faceSentX) && !moved) return;
+      if (now < faceSentAt) return;
+      faceSentAt = now + 120;
+      faceSentX = x;
+      faceSentZ = z;
+      send({ t: "robot-face", x, z });
+    },
+    sendRobotFaceOff() {
+      faceSentAt = 0;
+      faceSentX = NaN;
+      faceSentZ = NaN;
+      if (!linked) return;
+      send({ t: "robot-face", off: 1 });
+    },
+    postNote(text, parent) {
       if (!linked) return false;
-      send({ t: "note", text });
+      const msg = { t: "note", text };
+      if (parent) msg.parent = String(parent).slice(0, 48);
+      send(msg);
       return true;
     },
     closeRoster() { setRoster(false); },
@@ -1385,10 +1463,9 @@ export function mountPresence(options) {
       crowd.update(dt, now);
       const pose = getPose();
       if (!document.hidden) watchHall(pose);
-      if (showMap && (!planAt || now - planAt > 140)) {
-        planAt = now;
-        drawPlan(pose);
-      }
+      // 跟人每一帧的位置走。原先约 140 毫秒才重画，人标会一跳一跳。
+      if (showMap) drawPlan();
+      sweepChatter(now);
       if (showOnline && !rosterEl.hidden && (!peopleAt || now - peopleAt > 280)) {
         peopleAt = now;
         renderPeople();

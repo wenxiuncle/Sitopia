@@ -184,15 +184,19 @@ export function createReception(scene, sunShared, sunRole) {
       placed = true;
       group.position.set(pose.x, 0, pose.z);
       group.rotation.y = pose.yaw;
-      screen.paint(now);
-      // 留言板开着时停在这一帧：不摆臂，也不眨眼。
-      if (paused) return;
-      if (dist < 1.2) travel += dist;
-      const walking = dist > 0.0004;
-      const pace = walking ? Math.sin(travel * 7) * 0.35 : 0;
       const rest = 0.2;
-      armL.rotation.x += (rest + pace - armL.rotation.x) * 0.3;
-      armR.rotation.x += (rest - pace - armR.rotation.x) * 0.3;
+      // 卡片开着时不往前走，手臂收回。眼睛照常眨。
+      if (paused) {
+        armL.rotation.x += (rest - armL.rotation.x) * 0.3;
+        armR.rotation.x += (rest - armR.rotation.x) * 0.3;
+      } else {
+        if (dist < 1.2) travel += dist;
+        const walking = dist > 0.0004;
+        const pace = walking ? Math.sin(travel * 7) * 0.35 : 0;
+        armL.rotation.x += (rest + pace - armL.rotation.x) * 0.3;
+        armR.rotation.x += (rest - pace - armR.rotation.x) * 0.3;
+      }
+      screen.paint(now);
       const blink = lidAmount(now);
       const show = blink > 0.05;
       const scale = 0.08 + blink;

@@ -31,7 +31,7 @@ import {
 } from "../js/layout.js";
 import { DAYS, dropShadowPose, findDay, floorLamps, groundShadow, lampAt, openingQuads, sunVector } from "../js/day.js";
 import { createLift } from "../js/lift.js";
-import { atlasGrid, cellUv, coverRect, doorRig, FALLBACK_FRAME_IMAGE, floorAndCeiling, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
+import { atlasGrid, cellUv, containRect, doorRig, FALLBACK_FRAME_IMAGE, floorAndCeiling, FRAME_MAT, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
 import { bakeLoop, museumImpulse } from "../js/ambience.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
@@ -210,16 +210,23 @@ function checkParser() {
   assert(usableFrameImage("https://evil.example/a.webp") === "", "other hosts are not frame images");
   assert(usableFrameImage("http://img.youquhome.com/a.webp") === "", "picture url stays https");
   assert(usableFrameImage(FALLBACK_FRAME_IMAGE) === FALLBACK_FRAME_IMAGE, "fallback picture is usable");
-  const wide = coverRect(1000, 200, 370, 180);
-  assert(Math.abs(wide.h - 180) < 1e-6 && wide.w > 370, "wide image covers the frame");
+  const wide = containRect(1000, 200, 370, 180);
+  assert(Math.abs(wide.w - 370) < 1e-6 && wide.h < 180, "wide image fits inside the frame");
   assert(Math.abs(wide.w / wide.h - 5) < 1e-6, "wide image keeps its ratio");
-  const tall = coverRect(200, 1000, 370, 180);
-  assert(Math.abs(tall.w - 370) < 1e-6 && tall.h > 180, "tall image covers the frame");
+  assert(Math.abs(wide.x) < 1e-6 && Math.abs(wide.y - (180 - wide.h) / 2) < 1e-6, "wide image stays centered");
+  const tall = containRect(200, 1000, 370, 180);
+  assert(Math.abs(tall.h - 180) < 1e-6 && tall.w < 370, "tall image fits inside the frame");
   assert(Math.abs(tall.w / tall.h - 0.2) < 1e-6, "tall image keeps its ratio");
+  assert(Math.abs(tall.y) < 1e-6 && Math.abs(tall.x - (370 - tall.w) / 2) < 1e-6, "tall image stays centered");
+  const shot = containRect(3.7, 1.8, FRAME_MAT.w, FRAME_MAT.h);
+  assert(Math.abs(FRAME_MAT.w / FRAME_MAT.h - 3.7 / 1.8) < 1e-9, "picture core keeps the picture ratio");
+  assert(Math.abs((FRAME.w - FRAME_MAT.w) / 2 - 0.06) < 1e-9, "left and right frame margin is 6cm");
+  assert(Math.abs((FRAME.h - FRAME_MAT.h) / 2 - 0.06) < 1e-9, "top and bottom frame margin is 6cm");
+  assert(Math.abs(shot.w - FRAME_MAT.w) < 1e-6 && Math.abs(shot.h - FRAME_MAT.h) < 1e-6, "picture-ratio image fills the core");
   const grid = atlasGrid(101, 4096);
   assert(grid.cols * grid.cellW <= 4096 && grid.rows * grid.cellH <= 4096, "atlas fits");
   assert(grid.cols * grid.rows >= 101, "atlas has a cell per picture");
-  assert(Math.abs(grid.cellW / grid.cellH - 3.7 / 1.8) < 1e-9, "atlas cell matches the frame");
+  assert(Math.abs(grid.cellW / grid.cellH - FRAME_MAT.w / FRAME_MAT.h) < 1e-9, "atlas cell matches the picture");
   checkPictureFacing();
 }
 
@@ -657,7 +664,8 @@ function checkBuild(sites, label) {
       assert(northN === 42 && northMin < -13.5 && northMin > -15.2 && northMax > 13.5 && northMax < 15.2, `${label} floor ${floor} north wall side margin ${northMin}..${northMax} n=${northN}`);
     }
   }
-  assert(Math.abs(FRAME.w / FRAME.h - 3.7 / 1.8) < 1e-9, `${label} frame ratio`);
+  assert(Math.abs(FRAME_MAT.w / FRAME_MAT.h - 3.7 / 1.8) < 1e-9, `${label} picture core ratio`);
+  assert(Math.abs((FRAME.w - FRAME_MAT.w) / 2 - 0.06) < 1e-9 && Math.abs((FRAME.h - FRAME_MAT.h) / 2 - 0.06) < 1e-9, `${label} frame margin`);
   const rows = new Map();
   for (let i = 0; i < built.frames.length; i++) {
     const frame = built.frames[i];

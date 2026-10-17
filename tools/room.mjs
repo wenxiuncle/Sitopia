@@ -397,6 +397,35 @@ export function restoreRobot(saved) {
   return robot;
 }
 
+export function clearRobotFace(robot, id) {
+  if (!robot || !robot.faceBy || robot.faceBy !== id) return null;
+  robot.faceBy = "";
+  robot.faceX = 0;
+  robot.faceZ = 0;
+  return { t: "robot-face", id, off: 1 };
+}
+
+export function takeRobotFace(robot, person, msg, now) {
+  if (!robot || !person || person.away) return null;
+  if (msg && msg.off) {
+    const note = clearRobotFace(robot, person.id);
+    return note ? { who: "others", obj: note } : null;
+  }
+  const x = Number(msg && msg.x);
+  const z = Number(msg && msg.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  if (x < -80 || x > 80 || z < -80 || z > 80) return null;
+  if (now - (person.lastFace || 0) < 80) return null;
+  const rx = Math.round(x * 100) / 100;
+  const rz = Math.round(z * 100) / 100;
+  if (robot.faceBy === person.id && robot.faceX === rx && robot.faceZ === rz) return null;
+  person.lastFace = now;
+  robot.faceBy = person.id;
+  robot.faceX = rx;
+  robot.faceZ = rz;
+  return { who: "others", obj: { t: "robot-face", id: person.id, x: rx, z: rz } };
+}
+
 export function robotView(robot) {
   return {
     t: "robot",
@@ -459,31 +488,48 @@ export function restoreNotes(saved) {
     const text = cleanNote(row.text);
     const at = Number(row.at);
     if (!text || !Number.isFinite(at)) continue;
-    out.push({
+    const kept = {
       id: String(row.id || at).slice(0, 48),
       name: cleanName(row.name),
       text,
       at,
-    });
+    };
+    const parent = String(row.parent || "").slice(0, 48);
+    if (parent) kept.parent = parent;
+    out.push(kept);
   }
   return out;
 }
 
-export function addNote(notes, person, text, now) {
+export function addNote(notes, person, text, now, parent) {
   if (!notes || !person || person.away) return null;
   if (now - (person.lastNote || 0) < 2500) return null;
   const clean = cleanNote(text);
   if (!clean) return null;
   person.lastNote = now;
+  let parentId = String(parent || "").slice(0, 48);
+  if (parentId) {
+    let found = false;
+    for (let i = 0; i < notes.length; i++) {
+      if (notes[i] && String(notes[i].id) === parentId) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) parentId = "";
+  }
   const note = {
     id: String(person.id) + "-" + now,
     name: person.name,
     text: clean,
     at: now,
   };
+  if (parentId) note.parent = parentId;
   notes.push(note);
   while (notes.length > NOTE_MAX) notes.shift();
-  return { t: "note", id: note.id, name: note.name, text: note.text, at: note.at };
+  const out = { t: "note", id: note.id, name: note.name, text: note.text, at: note.at };
+  if (parentId) out.parent = parentId;
+  return out;
 }
 
 export function deskView(log, notes) {
@@ -504,12 +550,14 @@ export function deskView(log, notes) {
   for (let i = rows.length - 1; i >= 0; i--) {
     const note = rows[i];
     if (!note || !note.text) continue;
-    board.push({
+    const row = {
       id: String(note.id || ""),
       name: note.name || "",
       text: note.text || "",
       at: Number(note.at) || 0,
-    });
+    };
+    if (note.parent) row.parent = String(note.parent);
+    board.push(row);
   }
   return { chat, notes: board };
 }
@@ -911,8 +959,13 @@ export function onClientMessage(people, log, person, msg, now, room) {
     if (ev) out.push(ev);
     return { close: false, out };
   }
+  if (msg.t === "robot-face") {
+    const ev = room && room.robot ? takeRobotFace(room.robot, person, msg, now) : null;
+    if (ev) out.push(ev);
+    return { close: false, out };
+  }
   if (msg.t === "note") {
-    const note = room && room.notes ? addNote(room.notes, person, msg.text, now) : null;
+    const note = room && room.notes ? addNote(room.notes, person, msg.text, now, msg.parent) : null;
     if (note) out.push({ who: "all", obj: note });
     return { close: false, out };
   }

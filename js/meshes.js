@@ -41,9 +41,15 @@ import {
   shadowHull,
   softenCastSun,
 } from "./day.js";
-import { CEIL_TILT, FLOOR_TILT, FRAME, FRAME_WALL_GAP, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, STAIR_LAMP_H, STAIR_LAMP_R, STAIR_LIGHT, STORY, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
+import { CEIL_TILT, FLOOR_TILT, FRAME, FRAME_MARGIN, FRAME_WALL_GAP, LIFT, PLAZA, PLAZA_CROSS_Z, PLAZA_PATH, STAIR_LAMP_H, STAIR_LAMP_R, STAIR_LIGHT, STORY, WALL_H, doorBoxes, liftLeaves } from "./layout.js";
 
 const dummy = new THREE.Object3D();
+
+// 画芯是画框向内收一圈边距。格子跟画芯走。整张原图按自身比例放进格子，不裁切、不拉伸。
+export const FRAME_MAT = {
+  w: FRAME.w - FRAME_MARGIN * 2,
+  h: FRAME.h - FRAME_MARGIN * 2,
+};
 
 function commit(mesh) {
   mesh.instanceMatrix.needsUpdate = true;
@@ -87,7 +93,7 @@ export function boxMesh(boxes, material) {
 export function allocFrameMeshes(frames, borderMat, matMat) {
   const border = new THREE.InstancedMesh(new THREE.BoxGeometry(FRAME.w, FRAME.h, FRAME.d), borderMat, frames.length);
   const mat = new THREE.InstancedMesh(
-    new THREE.PlaneGeometry(FRAME.w * MAT_INSET, FRAME.h * MAT_INSET),
+    new THREE.PlaneGeometry(FRAME_MAT.w, FRAME_MAT.h),
     matMat,
     frames.length,
   );
@@ -129,38 +135,33 @@ export function frameMeshes(frames, borderMat, matMat) {
   return finishFrameMeshes(meshes);
 }
 
-// 宽图按画框高度放大，高图按画框宽度放大。多出来的在画框外，不拉变形。
-export function coverRect(srcW, srcH, dstW, dstH) {
+// 整张原图放进画芯。比画芯宽则上下留白，比画芯高则左右留白。
+export function containRect(srcW, srcH, dstW, dstH) {
   const srcRatio = srcW / srcH;
   const dstRatio = dstW / dstH;
   if (srcRatio >= dstRatio) {
-    const h = dstH;
-    const w = dstH * srcRatio;
-    return { x: (dstW - w) / 2, y: 0, w, h };
+    const w = dstW;
+    const h = dstW / srcRatio;
+    return { x: 0, y: (dstH - h) / 2, w, h };
   }
-  const w = dstW;
-  const h = dstW / srcRatio;
-  return { x: 0, y: (dstH - h) / 2, w, h };
+  const h = dstH;
+  const w = dstH * srcRatio;
+  return { x: (dstW - w) / 2, y: 0, w, h };
 }
 
 export function atlasGrid(count, maxSize) {
   const limit = Math.max(64, maxSize || 4096);
   for (let cellH = 360; cellH >= 18; cellH -= 18) {
-    const cellW = (cellH * 37) / 18;
+    const cellW = cellH * (FRAME_MAT.w / FRAME_MAT.h);
     if (cellW > limit) continue;
     const cols = Math.max(1, Math.floor(limit / cellW));
     const rows = Math.ceil(count / cols);
     if (rows * cellH <= limit) return { cols, rows, cellW, cellH };
   }
-  return { cols: count, rows: 1, cellW: 37, cellH: 18 };
+  return { cols: count, rows: 1, cellW: 18 * (FRAME_MAT.w / FRAME_MAT.h), cellH: 18 };
 }
 
 const FRAME_EXT = /\.(webp|jpe?g|png|gif|avif)$/i;
-
-// 画芯按比例内缩，给边框让出一条。原来四边各减 0.14 是等量内缩，把画芯比例从
-// 37:18 改成 2.25，而图集格子按 37:18 裁图，配图因此被横向拉伸约 9.5%。
-// 等比内缩后画芯比例与画框、与图集格子都是 37:18，四个边各留约 0.038 的边。
-const MAT_INSET = 0.9148;
 
 // 没配图，或配图拉不下来时，画芯共用这一张。地址仍要过 usableFrameImage。
 export const FALLBACK_FRAME_IMAGE = "https://img.youquhome.com/wupeitu.webp";
@@ -857,11 +858,18 @@ export function placePlantShadows(mesh, plants, spread) {
   mesh.instanceMatrix.needsUpdate = true;
 }
 
-export function frameShadowMesh(frames, material) {
-  if (!frames.length) return null;
-  const geo = new THREE.PlaneGeometry(FRAME.w + 0.18, FRAME.h + 0.24);
-  const mesh = new THREE.InstancedMesh(geo, material, frames.length);
-  for (let i = 0; i < frames.length; i++) {
+export function frameShadowMesh(frames, material, from = 0, to = frames.length, mesh = null) {
+  if (!frames.length) return mesh;
+  const end = Math.min(frames.length, to);
+  if (!mesh) {
+    const geo = new THREE.PlaneGeometry(FRAME.w + 0.18, FRAME.h + 0.24);
+    mesh = new THREE.InstancedMesh(geo, material, frames.length);
+    mesh.renderOrder = 1;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+  }
+  for (let i = from; i < end; i++) {
     const f = frames[i];
     dummy.rotation.order = "XYZ";
     dummy.rotation.set(0, f.nz < 0 ? Math.PI : 0, 0);
@@ -870,9 +878,11 @@ export function frameShadowMesh(frames, material) {
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
   }
-  const done = commit(mesh);
-  done.renderOrder = 1;
-  return done;
+  if (end >= frames.length) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }
+  return mesh;
 }
 
 let shadowBlob = null;

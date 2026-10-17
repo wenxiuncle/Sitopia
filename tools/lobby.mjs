@@ -40,6 +40,7 @@ import {
   deskView,
   dropNote,
   dropSay,
+  clearRobotFace,
 } from "./room.mjs";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -172,6 +173,8 @@ export function attachLobby(server) {
       return;
     }
     const out = onLeave(people, person);
+    const faceOff = clearRobotFace(room.robot, person.id);
+    if (faceOff) out.push({ who: "all", obj: faceOff });
     const turned = syncRobot(room.robot, people);
     if (turned) out.push({ who: "all", obj: turned });
     if (person.named && person.seat) depart(person.seat, person.seen, Date.now());

@@ -9,7 +9,16 @@ export const WALL_T = 0.4;
 export const STORY = 5.4;
 export const FLOOR_TILT = -Math.PI / 2;
 export const CEIL_TILT = Math.PI / 2;
-export const FRAME = { w: (0.9 * 3.7) / 1.8, h: 0.9, d: 0.06 };
+// 画芯宽 1.65 米，高按 3.7:1.8。画框四边离画芯 6 厘米。
+export const FRAME_MARGIN = 0.06;
+const PICTURE_RATIO = 3.7 / 1.8;
+const coreW = 1.65;
+const coreH = coreW / PICTURE_RATIO;
+export const FRAME = {
+  w: coreW + FRAME_MARGIN * 2,
+  h: coreH + FRAME_MARGIN * 2,
+  d: 0.06,
+};
 // 画框背面离结构墙面的空隙。北墙内衬还要再凸出 8 毫米，留 2 厘米才不和衬皮贴在同一张面上。
 export const FRAME_WALL_GAP = 0.02;
 export const PLAZA = { minX: -42, maxX: 42, minZ: 4.4, maxZ: 46 };
@@ -24,7 +33,7 @@ const MARGIN = 0.5;
 const ROW_GAP = 0.36;
 const ROW_BASE = 0.82;
 const INNER = 18;
-const DOOR = 2.2;
+export const DOOR = 2.2;
 const DOOR_H = 2.88;
 const DOOR_D = 0.06;
 const DOOR_GAP = 0.002;

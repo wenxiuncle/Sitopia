@@ -9,11 +9,18 @@
 <body class="opening">
   <canvas id="view" tabindex="-1"></canvas>
   <div id="loading" role="status">
-    <p id="loading-title">趣站博物馆</p>
-    <div id="loading-foot">
-      <p id="loading-label">正在布置展厅…</p>
-      <div id="loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="6" aria-label="布置进度">
-        <div id="loading-track"><span id="loading-bar"></span></div>
+    <div id="loading-sky" aria-hidden="true">
+      <div class="load-earth"></div>
+      <div class="load-stars"></div>
+    </div>
+    <div id="loading-center">
+      <p id="loading-title">趣站博物馆</p>
+      <p id="loading-credit">有趣网址之家 出品</p>
+      <div id="loading-foot">
+        <p id="loading-label">正在布置展厅…</p>
+        <div id="loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="6" aria-label="布置进度">
+          <div id="loading-track"><span id="loading-bar"></span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -29,7 +36,7 @@
   <div id="boot" hidden>
     <h1>欢迎来到趣站博物馆</h1>
     <p class="boot-sub">有趣网址之家荣誉出品</p>
-    <p>这里是有趣网址之家3D虚拟展厅，你可以在这个三维空间里走动，像参观博物馆一样浏览各种有趣的网站；走近画框单击左键即可看到趣站的介绍和链接；馆内左侧有电梯，可以快速到达指定层，虽然可能走楼栏更快。。。如果有多人在线，还可以和小伙伴一起浏览、聊天。</p>
+    <p>这里是有趣网址之家3D虚拟展厅，你可以在这个三维空间里走动，像参观博物馆一样浏览各种有趣的网站；走近画框单击左键即可看到趣站的介绍和链接；馆内左侧有电梯，可以快速到达指定层，虽然可能走楼梯更快。。。如果有多人在线，还可以和小伙伴一起浏览、聊天。</p>
     <ol id="legend"></ol>
   </div>
   <ol id="chatter"></ol>
@@ -55,7 +62,7 @@
     <div id="dock">
       <div id="rail">
         <div id="map-card">
-          <canvas id="map" width="360" height="420"></canvas>
+          <canvas id="map" width="360" height="156"></canvas>
         </div>
         <div id="hud-row">
           <button id="lift-toggle" type="button" hidden aria-expanded="false" aria-controls="lift-pad">1F</button>
@@ -154,18 +161,27 @@
     <button id="panel-close" type="button">关闭</button>
   </aside>
   <aside id="guestbook" hidden>
-    <p id="guestbook-kicker">一楼门厅</p>
-    <h2>访客留言簿</h2>
-    <p id="guestbook-hint"></p>
-    <form id="guestbook-form">
-      <textarea id="guestbook-text" maxlength="120" rows="4"></textarea>
-      <button id="guestbook-send" type="submit">留下这句话</button>
-    </form>
-    <ol id="guestbook-list"></ol>
-    <div id="guestbook-pages">
-      <button id="guestbook-prev" type="button">上一页</button>
-      <span id="guestbook-page"></span>
-      <button id="guestbook-next" type="button">下一页</button>
+    <div id="guestbook-tabs" role="tablist">
+      <button id="guestbook-tab-plan" type="button" role="tab" aria-selected="true" aria-controls="guestbook-plan">博物馆示意图</button>
+      <button id="guestbook-tab-notes" type="button" role="tab" aria-selected="false" aria-controls="guestbook-notes">访客留言簿</button>
+    </div>
+    <div id="guestbook-plan" role="tabpanel">
+      <p id="guestbook-plan-key">蓝块是电梯，褐块是楼梯，红点是你。</p>
+      <div id="guestbook-plan-scroll"></div>
+    </div>
+    <div id="guestbook-notes" role="tabpanel" hidden>
+      <p id="guestbook-hint"></p>
+      <form id="guestbook-form">
+        <p id="guestbook-replying" hidden><button id="guestbook-reply-cancel" type="button">取消回复</button></p>
+        <textarea id="guestbook-text" maxlength="120" rows="4"></textarea>
+        <button id="guestbook-send" type="submit">留下这句话</button>
+      </form>
+      <ol id="guestbook-list"></ol>
+      <div id="guestbook-pages">
+        <button id="guestbook-prev" type="button">上一页</button>
+        <span id="guestbook-page"></span>
+        <button id="guestbook-next" type="button">下一页</button>
+      </div>
     </div>
     <button id="guestbook-close" type="button">关闭</button>
   </aside>

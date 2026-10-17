@@ -7,6 +7,7 @@ import {
   adminPeople,
   beginVisit,
   cleanArrange,
+  clearRobotFace,
   blankPerson,
   cleanDay,
   cleanHeight,
@@ -775,6 +776,8 @@ export class SitopiaLobby extends DurableObject {
     people.set(person.id, person);
     const now = Date.now();
     const out = onLeave(people, person);
+    const faceOff = clearRobotFace(this.robot, person.id);
+    if (faceOff) out.push({ who: "all", obj: faceOff });
     const turned = syncRobot(this.robot, people);
     if (turned) out.push({ who: "all", obj: turned });
     if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, now));
