@@ -126,6 +126,8 @@ export class SitopiaLobby extends DurableObject {
     this.musicSavedAt = 0;
     this.robot = blankRobot();
     this.robotSavedAt = 0;
+    this.robotWriting = false;
+    this.robotDirty = false;
     this.lift = createSharedLift(Date.now());
     this.liftSavedAt = 0;
     this.liftStoredKey = "";
@@ -347,16 +349,28 @@ export class SitopiaLobby extends DurableObject {
 
   async persistRobot(now, force) {
     const at = now || Date.now();
-    if (!force && at - this.robotSavedAt < 5000) return;
-    const chest = signState(this.robot);
-    await this.ctx.storage.put("robot", {
-      x: this.robot.x,
-      z: this.robot.z,
-      yaw: this.robot.yaw,
-      sign: chest.sign,
-      speed: chest.speed,
-    });
-    this.robotSavedAt = at;
+    if (!force && !this.robotDirty && at - this.robotSavedAt < 5000) return;
+    // 写入会让出。先记下「还有更新」，正在写的那一笔结束时再把当前速度写进去，避免旧的 20 后写完盖掉新的。
+    this.robotDirty = true;
+    if (this.robotWriting) return;
+    this.robotWriting = true;
+    try {
+      while (this.robotDirty) {
+        this.robotDirty = false;
+        const chest = signState(this.robot);
+        await this.ctx.storage.put("robot", {
+          x: this.robot.x,
+          z: this.robot.z,
+          yaw: this.robot.yaw,
+          sign: chest.sign,
+          speed: chest.speed,
+        });
+      }
+      this.robotSavedAt = Date.now();
+    } finally {
+      this.robotWriting = false;
+      if (this.robotDirty) await this.persistRobot(Date.now(), true);
+    }
   }
 
   roster() {

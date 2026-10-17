@@ -381,6 +381,10 @@ export const adminHtml = `<!DOCTYPE html>
     const signStatus = document.getElementById("sign-status");
     const signInput = document.getElementById("sign-text");
     const signSpeedInput = document.getElementById("sign-speed");
+    let signStamp = 0;
+    let signDirty = false;
+    signInput.addEventListener("input", () => { signDirty = true; });
+    signSpeedInput.addEventListener("input", () => { signDirty = true; });
     const musicVolumeInput = document.getElementById("music-volume");
     const musicSave = document.getElementById("music-save");
     let musicOrder = [];
@@ -443,13 +447,16 @@ export const adminHtml = `<!DOCTYPE html>
       try { return await res.json(); } catch { return null; }
     }
 
-    function paint(data) {
+    function paint(data, stamp) {
       const people = data.people || [];
       const now = data.now || Date.now();
       maxInput.max = String(data.cap || 24);
       if (document.activeElement !== maxInput) maxInput.value = String(data.max || 24);
-      if (typeof data.sign === "string" && document.activeElement !== signInput) signInput.value = data.sign;
-      if (Number.isInteger(data.speed) && document.activeElement !== signSpeedInput) signSpeedInput.value = String(data.speed);
+      // 名单每 5 秒拉一次。改字或改速度之后，旧的那一响不能把输入盖回保存前的值。
+      if (!signDirty && stamp === signStamp) {
+        if (typeof data.sign === "string" && document.activeElement !== signInput) signInput.value = data.sign;
+        if (Number.isInteger(data.speed) && document.activeElement !== signSpeedInput) signSpeedInput.value = String(data.speed);
+      }
       let solo = 0;
       let away = 0;
       for (let i = 0; i < people.length; i++) {
@@ -489,6 +496,7 @@ export const adminHtml = `<!DOCTYPE html>
     }
 
     async function refresh() {
+      const stamp = signStamp;
       const res = await fetch("/admin/api/state", { cache: "no-store", credentials: "same-origin" });
       if (res.status === 401) {
         showLogin("");
@@ -500,7 +508,7 @@ export const adminHtml = `<!DOCTYPE html>
         return;
       }
       showApp();
-      paint(data);
+      paint(data, stamp);
       if (!boardLoaded) {
         boardLoaded = true;
         refreshBoard();
@@ -1331,13 +1339,19 @@ export const adminHtml = `<!DOCTYPE html>
         signStatus.textContent = "速度要填 0 到 100 的整数";
         return;
       }
+      const text = signInput.value.trim();
+      const speed = Number(raw);
+      signStamp += 1;
+      const stamp = signStamp;
+      signDirty = true;
       signStatus.textContent = "正在保存…";
       const res = await fetch("/admin/api/sign", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: signInput.value.trim(), speed: Number(raw) }),
+        body: JSON.stringify({ text: text, speed: speed }),
       });
+      if (stamp !== signStamp) return;
       if (res.status === 401) {
         showLogin("口令已失效");
         return;
@@ -1350,6 +1364,8 @@ export const adminHtml = `<!DOCTYPE html>
       }
       signInput.value = data.sign;
       signSpeedInput.value = String(data.speed);
+      signStamp += 1;
+      signDirty = false;
       signStatus.textContent = data.speed === 0
         ? "已保存。正在馆里的人胸前这行字会停住"
         : "已保存。正在馆里的人胸前会按这个速度滚";
