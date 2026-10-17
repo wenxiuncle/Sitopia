@@ -703,7 +703,7 @@ export const adminHtml = `<!DOCTYPE html>
     }
 
     function parsePins(text) {
-      const parts = String(text || "").split(/[\s,，]+/);
+      const parts = String(text || "").split(/[\\s,，]+/);
       const pins = [];
       const seen = new Set();
       for (let i = 0; i < parts.length && pins.length < PIN_CAP; i++) {
@@ -1294,7 +1294,7 @@ export const adminHtml = `<!DOCTYPE html>
     document.getElementById("music-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const raw = musicVolumeInput.value.trim();
-      if (!/^\d{1,3}$/.test(raw) || Number(raw) > 100) {
+      if (!/^[0-9]{1,3}$/.test(raw) || Number(raw) > 100) {
         musicStatus.textContent = "音量要填 0 到 100 的整数";
         return;
       }
@@ -1335,7 +1335,7 @@ export const adminHtml = `<!DOCTYPE html>
     document.getElementById("sign-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const raw = signSpeedInput.value.trim();
-      if (!/^\d{1,3}$/.test(raw) || Number(raw) > 100) {
+      if (!/^[0-9]{1,3}$/.test(raw) || Number(raw) > 100) {
         signStatus.textContent = "速度要填 0 到 100 的整数";
         return;
       }
