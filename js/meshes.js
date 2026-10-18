@@ -2623,7 +2623,8 @@ function pleatGeometry(spec) {
   const y0 = spec.y0;
   const y1 = spec.y1;
   const rows = spec.rows;
-  const cols = spec.pleats * 2;
+  // 一褶至少八个点。只取两个点时，采样正好落在正弦的零点上，整面布是平的。
+  const cols = spec.pleats * 8;
   const face = spec.face;
   const height = Math.max(0.2, y1 - y0);
   const count = (cols + 1) * rows;
@@ -2643,11 +2644,22 @@ function pleatGeometry(spec) {
       const dzdx = dWave * (spec.pleats * tau / width) * amp;
       let y = y0 + tv * height;
       if (spec.scallop) y += (1 - tv) * spec.scallop * Math.sin(u * spec.scallops * tau);
+      let z = spec.z + wave * amp + spec.gap;
+      let slope = dzdx;
+      if (spec.sealZ != null && spec.hemSpan > 0) {
+        const dist = y - y0;
+        const k = Math.min(1, Math.max(0, dist / spec.hemSpan));
+        const ease = k * k * (3 - 2 * k);
+        const keep = spec.hemKeep == null ? 0.2 : spec.hemKeep;
+        const sealed = spec.sealZ + wave * amp * keep;
+        z = sealed + (z - sealed) * ease;
+        slope = dzdx * keep + (dzdx - dzdx * keep) * ease;
+      }
       const i3 = (r * (cols + 1) + c) * 3;
       pos[i3] = (u - 0.5) * width;
       pos[i3 + 1] = y;
-      pos[i3 + 2] = spec.z + wave * amp + spec.gap;
-      const nx = -face * dzdx;
+      pos[i3 + 2] = z;
+      const nx = -face * slope;
       const nz = face;
       const len = Math.hypot(nx, nz) || 1;
       nrm[i3] = nx / len;
@@ -2688,8 +2700,8 @@ function curtainMesh(curtain, outsideMat, insideMat) {
   const band = Math.min(0.48, (y1 - y0) * 0.1);
   const group = new THREE.Group();
   const sheets = [
-    { y0, y1, pleats, amp0: 0.078, amp1: 0.04, rows: 34, gap: 0.012, face: 1 },
-    { y0, y1, pleats, amp0: 0.078, amp1: 0.04, rows: 34, gap: -0.012, face: -1 },
+    { y0, y1, pleats, amp0: 0.078, amp1: 0.04, rows: 48, gap: 0.012, face: 1, seal: true },
+    { y0, y1, pleats, amp0: 0.078, amp1: 0.04, rows: 48, gap: -0.012, face: -1, seal: true },
     {
       y0: y1 - band, y1, pleats: pleats + 16, amp0: 0.05, amp1: 0.034, rows: 12,
       gap: 0.034, face: 1, scallop: 0.055, scallops: 8, heading: true,
@@ -2703,6 +2715,12 @@ function curtainMesh(curtain, outsideMat, insideMat) {
     const spec = sheets[i];
     spec.width = width;
     spec.z = curtain.z;
+    if (spec.seal && Number.isFinite(curtain.floorJoin)) {
+      // 朝厅内的下摆收到接缝北侧，朝门厅的收到南侧。整条下摆都压过这条线。
+      spec.sealZ = curtain.floorJoin + (spec.face > 0 ? 0.06 : -0.06);
+      spec.hemSpan = 0.6;
+      spec.hemKeep = 0.22;
+    }
     const material = spec.face < 0 && insideMat ? insideMat : outsideMat;
     const mesh = new THREE.Mesh(pleatGeometry(spec), material);
     mesh.castShadow = false;
@@ -2763,7 +2781,8 @@ function footlightRig(lamps) {
     const fx = Math.sin(yaw);
     const fz = Math.cos(yaw);
     across.set(fz * 0.82, 0, -fx * 0.82);
-    along.set(fx * 1.2, 0, fz * 1.2);
+    // 椭圆沿朝向只伸出 0.7 米，远端停在墙皮内侧，不铺进墙和地面的交缝。
+    along.set(fx * 0.7, 0, fz * 0.7);
     dummy.matrix.makeBasis(across, along, up);
     dummy.matrix.setPosition(lamp.x + fx * 0.78, (lamp.y || 0) + 0.062, lamp.z + fz * 0.78);
     pool.setMatrixAt(i, dummy.matrix);
@@ -2801,6 +2820,16 @@ function starHashGlsl() {
       vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.93, 0.78), starHash(id + 4.4));
       return tint * (core + halo) * step(keep, n) * starBreathe(id, n, twinkle) * gain;
     }
+    float starValue(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      float a = starHash(i);
+      float b = starHash(i + vec2(1.0, 0.0));
+      float c = starHash(i + vec2(0.0, 1.0));
+      float d = starHash(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
   `;
 }
 
@@ -2817,7 +2846,7 @@ function starCeiling(list) {
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-  mat.customProgramCacheKey = () => "museum-star-ceil";
+  mat.customProgramCacheKey = () => "museum-star-field";
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uStarTime = time;
     shader.uniforms.uStarTwinkle = twinkle;
@@ -2838,12 +2867,13 @@ function starCeiling(list) {
         float milky = exp(-(band * band));
         vec3 space = vec3(0.0032, 0.0042, 0.014);
         space += vec3(0.011, 0.013, 0.028) * milky;
-        space += vec3(0.004, 0.005, 0.012) * starHash(floor(p * 0.18));
+        float wash = starValue(p * 0.045) * 0.65 + starValue(p * 0.11 + 19.0) * 0.35;
+        space += vec3(0.004, 0.005, 0.012) * wash;
         vec3 stars = space;
         stars += starLayer(p, 5.2, 0.38, 0.07, 0.5, 0.0, 0.0);
         stars += starLayer(p, 1.6, 0.58, 0.075, 1.0, 0.22, 1.0);
         stars += starLayer(p, 0.55, 0.7, 0.11, 1.4, 0.55, 1.0);
-        outgoingLight = stars;
+        outgoingLight = stars * 0.3;
       }`,
     );
     if (fragment === shader.fragmentShader) throw new Error("星空片元着色器没有对上");
@@ -2917,6 +2947,39 @@ export function artHallMeshes(art, mats) {
     grille.position.set(0, 0, sp.d / 2 + 0.001);
     cab.add(grille);
     root.add(cab);
+  }
+  const panels = art.panels || [];
+  if (panels.length) {
+    // 箱体是边框色。正面画面盖在箱体朝外的那一面上，侧面和背面只看见箱体。
+    const sample = panels[0];
+    const cabinetGeo = new THREE.BoxGeometry(sample.w + sample.lipX * 2, sample.h + sample.lipTop, sample.d);
+    const faceGeo = new THREE.PlaneGeometry(sample.w, sample.h);
+    const cabinetMat = new THREE.MeshBasicMaterial({ color: 0x2c2e34 });
+    const panelMat = new THREE.MeshBasicMaterial({
+      color: 0x101218,
+      side: THREE.FrontSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    for (let i = 0; i < panels.length; i++) {
+      const spec = panels[i];
+      const back = spec.d / 2;
+      const cabinet = new THREE.Mesh(cabinetGeo, cabinetMat);
+      cabinet.position.set(
+        spec.x - Math.sin(spec.yaw) * back,
+        spec.y + spec.lipTop / 2,
+        spec.z - Math.cos(spec.yaw) * back,
+      );
+      cabinet.rotation.y = spec.yaw;
+      cabinet.name = "art-panel-box";
+      root.add(cabinet);
+      const face = new THREE.Mesh(faceGeo, panelMat);
+      face.position.set(spec.x, spec.y, spec.z);
+      face.rotation.y = spec.yaw;
+      face.name = "art-panel";
+      root.add(face);
+    }
   }
   return { root, screen: picture, sky };
 }

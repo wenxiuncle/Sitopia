@@ -3326,7 +3326,11 @@ async function buildScene(data, arrange) {
   if (built.art) {
     const artRig = artHallMeshes(built.art, {
       // 墙和门帘内侧只吃脚灯。天花是星空，不吃脚灯。门帘朝门厅的那一面仍走大厅的灯。
-      walls: lit(0x2c2c31, "artWall"),
+      walls: lit(0x2c2c31, "artWall", {
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
       curtain: lit(0xffffff, "room", { vertexColors: true }),
       curtainIn: lit(0xffffff, "artCurtain", { vertexColors: true }),
       screen: new THREE.MeshBasicMaterial({ color: 0x101218 }),
@@ -3567,6 +3571,9 @@ async function buildScene(data, arrange) {
       if (ambience) ambience.follow(view);
     },
     onSign: applySign,
+    onVideos: (urls, seed) => {
+      if (artHall && artHall.setClips) artHall.setClips(urls, seed);
+    },
     onRobot: onRobotMessage,
     onRobotFace,
     onNotes: onNotesMessage,

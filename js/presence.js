@@ -120,6 +120,7 @@ export function mountPresence(options) {
     onKick,
     onMusic,
     onSign,
+    onVideos,
     onRobot,
     onRobotFace,
     onNotes,
@@ -240,6 +241,12 @@ export function mountPresence(options) {
     if (typeof value === "string" && onSign) onSign(value, speed);
   }
 
+  function takeVideos(payload) {
+    if (!onVideos || !payload || !Array.isArray(payload.urls)) return;
+    const seed = Number(payload.seed);
+    onVideos(payload.urls, Number.isFinite(seed) ? seed : 1);
+  }
+
   function beatAddress() {
     const address = lobbyAddress();
     if (!address) return "";
@@ -353,6 +360,7 @@ export function mountPresence(options) {
       else if (data) {
         takeSign(data.sign, data.speed);
         if (data.music && onMusic) onMusic(data.music);
+        if (data.videos) takeVideos(data.videos);
       }
     }).catch(() => {
       /* 下一轮心跳再试。 */
@@ -382,6 +390,7 @@ export function mountPresence(options) {
         if (!data) return;
         takeSign(data.sign, data.speed);
         if (data.t === "music" && onMusic) onMusic(data);
+        if (data.videos) takeVideos(data.videos);
       })
       .catch(() => {});
   }
@@ -622,6 +631,10 @@ export function mountPresence(options) {
       takeSign(msg.text, msg.speed);
       return;
     }
+    if (msg.t === "videos") {
+      takeVideos(msg);
+      return;
+    }
     if (msg.t === "welcome") {
       const quiet = msg.resume === true && !!me;
       me = { id: msg.id, name: msg.name };
@@ -650,6 +663,7 @@ export function mountPresence(options) {
       else if (msg.away) send({ t: "back" });
       takeSign(msg.sign, msg.speed);
       if (msg.music && onMusic) onMusic(msg.music);
+      if (msg.videos) takeVideos(msg.videos);
       if (msg.robot && onRobot) {
         takeSign(msg.robot.sign, msg.robot.speed);
         onRobot(msg.robot);

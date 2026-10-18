@@ -534,6 +534,7 @@ body.dark-sky #chatter li {
   left: 50%;
   top: calc(50% + 22px);
   transform: translateX(-50%);
+  z-index: 9;
   max-width: min(520px, calc(100% - 40px));
   padding: 4px 8px;
   background: var(--plate);
@@ -1427,6 +1428,47 @@ body.dark-sky #tab-hint {
 }
 
 #screen-mount[hidden] { display: none; }
+
+.art-panel {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  transform-style: preserve-3d;
+  pointer-events: none;
+  background: #2c2e34;
+}
+
+.art-panel-face {
+  position: absolute;
+  overflow: hidden;
+  background: #101218;
+  pointer-events: none;
+}
+
+.art-panel-face img,
+.art-panel-face iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  object-fit: contain;
+  background: #101218;
+  pointer-events: none;
+  filter: brightness(0.5);
+}
+
+.art-panel.is-playing .art-panel-face iframe { filter: brightness(1); }
+
+.art-panel img:not([src]),
+.art-panel img[hidden],
+.art-panel.has-frame img,
+.art-panel.is-playing img { display: none; }
+
+.art-panel-face iframe {
+  position: absolute;
+  inset: 0;
+}
 
 #screen-view {
   position: absolute;

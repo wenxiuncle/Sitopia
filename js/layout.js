@@ -1322,6 +1322,45 @@ function pushBlock(blocks, box) {
   });
 }
 
+// 长轴在图上的角度换成画面朝向。本地 +Z 在 rotation.y = θ 之后指向 (sin θ, 0, cos θ)。
+// 法线先取长轴左转 90°，再翻到指向厅心（nx、ny 都往 0.5）。
+function panelYaw(nx, ny, deg) {
+  const th = deg * Math.PI / 180;
+  const ix = 0.5 - nx;
+  const iz = 0.5 - ny;
+  let nxn = -Math.sin(th);
+  let nzn = Math.cos(th);
+  if (nxn * ix + nzn * iz < 0) {
+    nxn = -nxn;
+    nzn = -nzn;
+  }
+  return Math.atan2(nxn, nzn);
+}
+
+// 碰撞盒用和画面同一套 yaw。本地 +X 到 (cos θ, 0, -sin θ)，本地 +Z 到 (sin θ, 0, cos θ)。
+function panelAabb(x, z, yaw, w, thick, y0, y1) {
+  const hx = w / 2;
+  const hz = thick / 2;
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  const corners = [[hx, hz], [hx, -hz], [-hx, hz], [-hx, -hz]];
+  for (let i = 0; i < corners.length; i++) {
+    const lx = corners[i][0];
+    const lz = corners[i][1];
+    const wx = x + lx * c + lz * s;
+    const wz = z - lx * s + lz * c;
+    if (wx < minX) minX = wx;
+    if (wx > maxX) maxX = wx;
+    if (wz < minZ) minZ = wz;
+    if (wz > maxZ) maxZ = wz;
+  }
+  return artSlab(minX, maxX, y0, y1, minZ, maxZ);
+}
+
 // 艺术厅只描述这一层。门帘无碰撞。牌子和屏幕挡人。天花、墙皮、喇叭不挡人。
 // 喇叭正面是物体本地 +Z。有 aim 时朝地面中心，否则 yaw 0 朝 +Z（南）。
 function describeArt(floor, blocks, cones) {
@@ -1332,7 +1371,7 @@ function describeArt(floor, blocks, cones) {
   // 天棚底面在 WALL_H 往下 6 厘米。星空贴在这张底面下，不再另吊一层。
   const soffit = base + WALL_H - 0.06;
   const starY = soffit - 0.02;
-  // 厅内地面和门厅地面的交接线。主褶朝北最远约 8.7 厘米，帘心南移，北侧褶边压过这条线。
+  // 厅内地面和门厅地面的交接线。帘身挂在门洞里，下摆收到这条线的两侧，把接缝盖住。
   const floorJoin = HALL_A - 0.04;
   const curtainZ = floorJoin + 0.068;
   const roomZ0 = NORTH + 0.008;
@@ -1355,7 +1394,8 @@ function describeArt(floor, blocks, cones) {
   const ceiling = [
     artSlab(xInL - 0.02, xInR + 0.02, starY, starY + 0.012, zInN - 0.02, faceN + 0.02),
   ];
-  const wallY0 = walk - bury;
+  // 墙皮只埋进地面 1 厘米，避免底边穿出楼板。顶上仍埋进天花。
+  const wallY0 = walk - 0.01;
   const wallY1 = soffit + bury;
   const walls = [
     artSlab(xInL - skin, xInL, wallY0, wallY1, northZ0, zInS + skin),
@@ -1366,9 +1406,10 @@ function describeArt(floor, blocks, cones) {
   ];
   const curtain = {
     z: curtainZ,
-    y0: walk - 0.04,
+    y0: walk - 0.1,
     y1: soffit - 0.02,
     width: DOOR * 2 + 0.16,
+    floorJoin,
   };
   const signZ = faceS + 0.02 + 2;
   const board = [artSlab(-0.9, 0.9, base + 1.32, base + 2.18, signZ - 0.03, signZ + 0.03)];
@@ -1386,6 +1427,49 @@ function describeArt(floor, blocks, cones) {
     h: screenH,
   };
   pushBlock(blocks, artSlab(-screenW / 2, screenW / 2, screenBottom, screenBottom + screenH, screen.z - 0.1, screen.z + 0.05));
+  // 图上红条的中心。nx 左到右，ny 上到下（上是北墙大屏幕）。deg 是长轴：0 朝图右（世界 +X），正角朝图下（世界 +Z）。
+  // 条的长短只是示意图。每块屏幕都是 2.25 米宽、4 米高。画面本地 +Z 朝厅心。
+  const panelMarks = [
+    { nx: 0.081, ny: 0.170, deg: -56.8 },
+    { nx: 0.915, ny: 0.170, deg: 56.8 },
+    { nx: 0.177, ny: 0.388, deg: 90 },
+    { nx: 0.818, ny: 0.388, deg: 90 },
+    { nx: 0.051, ny: 0.458, deg: 90 },
+    { nx: 0.945, ny: 0.458, deg: 90 },
+    { nx: 0.250, ny: 0.653, deg: 90 },
+    { nx: 0.745, ny: 0.653, deg: 90 },
+    { nx: 0.085, ny: 0.724, deg: 46.8 },
+    { nx: 0.910, ny: 0.724, deg: -46.8 },
+    { nx: 0.208, ny: 0.890, deg: 25 },
+    { nx: 0.788, ny: 0.890, deg: -25 },
+  ];
+  const panelW = 2.25;
+  const panelH = 4;
+  const panelY = screenBottom + panelH / 2;
+  const spanX = xInR - xInL;
+  const spanZ = zInS - zInN;
+  const panels = [];
+  for (let i = 0; i < panelMarks.length; i++) {
+    const mark = panelMarks[i];
+    const x = xInL + mark.nx * spanX;
+    const z = zInN + mark.ny * spanZ;
+    const yaw = panelYaw(mark.nx, mark.ny, mark.deg);
+    // 箱体厚 10 厘米，只在画面背后。底边和画面齐。左右各 4 厘米，顶上 4 厘米，是边框。
+    const panelD = 0.1;
+    const lipX = 0.04;
+    const lipTop = 0.04;
+    panels.push({ x, y: panelY, z, w: panelW, h: panelH, yaw, d: panelD, lipX, lipTop });
+    const recess = panelD / 2;
+    pushBlock(blocks, panelAabb(
+      x - Math.sin(yaw) * recess,
+      z - Math.cos(yaw) * recess,
+      yaw,
+      panelW + lipX * 2,
+      panelD,
+      screenBottom,
+      screenBottom + panelH + lipTop,
+    ));
+  }
   // 脚灯贴在厅内墙皮上。北墙在屏幕两侧各居中一盏；东西墙按整面宽三等分；门两侧墙各居中一盏。
   // 灯心离地半米，光只落在地面。
   const footLift = 0.5;
@@ -1447,6 +1531,7 @@ function describeArt(floor, blocks, cones) {
     board,
     post,
     screen,
+    panels,
     speakers,
     // 厅内地面和天花只认这只盒子。竖向的门帘不走这里，内外两面各用自己的材质。
     lit: {
@@ -1559,8 +1644,11 @@ export function buildMuseum(sites, arrange, sortMode) {
     const base = f * STORY;
     const h = f === floorCount - 1 ? WALL_H : STORY;
     const hallList = f === artIndex ? ceilWalls : white;
-    pushBox(hallList, -INNER, -DOOR, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
-    pushBox(hallList, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
+    // 艺术厅这面门墙从楼板顶面附近起，不再从层底穿出地面。
+    const jambBase = f === artIndex ? base + 0.032 : base;
+    const jambH = f === artIndex ? h - 0.032 : h;
+    pushBox(hallList, -INNER, -DOOR, HALL_A - T / 2, HALL_A + T / 2, jambH, "white", jambBase);
+    pushBox(hallList, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, jambH, "white", jambBase);
     pushBox(white, COL_IN, COL_OUT, COL_Z0, COL_Z1, WALL_H, "white", base);
     pushBox(white, -COL_OUT, -COL_IN, COL_Z0, COL_Z1, WALL_H, "white", base);
     if (f === artIndex) continue;
