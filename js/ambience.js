@@ -168,6 +168,8 @@ export function createAmbience() {
   let playlist = SCORE;
   let playlistKey = "";
   let volumePct = 100;
+  let duckAmt = 1;
+  let hushAt = 0;
   const audio = new Audio();
   audio.preload = "auto";
   audio.loop = false;
@@ -184,7 +186,7 @@ export function createAmbience() {
 
   function target() {
     if (!enabled || document.hidden) return 0;
-    return LEVEL * (volumePct / 100) * blend;
+    return LEVEL * (volumePct / 100) * blend * duckAmt;
   }
 
   function applyGain() {
@@ -318,6 +320,8 @@ export function createAmbience() {
   function align() {
     if (!started || !lastView || !ctx || ctx.state !== "running") return;
     if (!audible || !lastView.playing || !enabled || !playlist.length) {
+      const fading = !audible && enabled && lastView && lastView.playing && playlist.length && hushAt && performance.now() - hushAt < 2400;
+      if (fading) return;
       quiet();
       return;
     }
@@ -422,7 +426,10 @@ export function createAmbience() {
     },
     hear(amount) {
       blend = Math.min(1, Math.max(0, amount || 0));
-      audible = blend > 0.02;
+      const live = blend > 0.02;
+      if (live) hushAt = 0;
+      else if (!hushAt) hushAt = performance.now();
+      audible = live;
       applyGain();
       if (started) align();
     },
@@ -436,6 +443,17 @@ export function createAmbience() {
     press() {
       unlock();
       if (sounds) sounds.press();
+    },
+    context() {
+      ensure();
+      return ctx;
+    },
+    duck(amount) {
+      const next = amount == null ? 1 : amount;
+      if (Math.abs(next - duckAmt) < 0.001) return;
+      duckAmt = next;
+      applied = -1;
+      applyGain();
     },
   };
 }

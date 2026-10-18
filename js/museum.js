@@ -1,5 +1,6 @@
 import * as THREE from "../vendor/three.module.js";
 import { createAmbience } from "./ambience.js";
+import { createArtHall } from "./arthall.js";
 import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
 import { CITY_SHADOW_MAX, DAYS, dayIndex, findDay, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
@@ -36,6 +37,7 @@ import { hasEnteredName, mountPresence, readSortMode } from "./presence.js";
 import { aimRobot, createReceptionState, receptionBody, releaseRobotHeading, rememberRobotHeading, stepReception, stepYaw, turnRobot, yawAt } from "./reception.js";
 import { createReception } from "./robot.js";
 import {
+  allowSunIndexLoops,
   attachFramePicture,
   attachSun,
   atlasGrid,
@@ -80,6 +82,7 @@ import {
   wallMesh,
   yardMeshes,
   horizonMeshes,
+  artHallMeshes,
 } from "./meshes.js";
 
 const WALK = 6.2;
@@ -172,7 +175,11 @@ let py = 0;
 let pz = 0;
 let airborne = false;
 let takeoffY = 0;
+let liftPassenger = false;
 let ambience = null;
+let artHall = null;
+let artSky = null;
+let screenHover = false;
 let heardGesture = false;
 let dayCursor = dayIndex(params.get("time"));
 let sunShared = null;
@@ -219,6 +226,7 @@ let pictureAim = -1;
 let prefetchFloor = -2;
 let floorLoaded = -2;
 let thirdPerson = false;
+let thirdRestore = false;
 let orbiting = false;
 let orbitYaw = 0;
 let orbitPitch = 0;
@@ -265,6 +273,8 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = false;
+// WebGL2 用循环取灯和城市影子。逐段展开的着色器第一次编译会把进馆卡住。
+allowSunIndexLoops(typeof WebGL2RenderingContext !== "undefined" && renderer.getContext() instanceof WebGL2RenderingContext);
 document.body.classList.add("opening");
 
 const scene = new THREE.Scene();
@@ -367,6 +377,7 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   placeGuestbook();
+  if (artHall) artHall.resize(w, h);
 }
 
 function setHover(index) {
@@ -450,7 +461,7 @@ function closePanel(relock) {
 
 function interactiveTarget(target) {
   return !!(target && target.closest && target.closest(
-    "#panel, #guestbook, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
+    "#panel, #guestbook, #screen-gate, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
   ));
 }
 
@@ -459,6 +470,7 @@ function enterWalk() {
   if (presence) presence.dismiss(true);
   closePanel(false);
   closeGuestbook(false);
+  if (artHall) artHall.closeDialog();
   requestWalk();
 }
 
@@ -1339,6 +1351,20 @@ function lookMin() {
 function aimHover() {
   const index = pickFrame();
   const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
+  const screenDist = artHall ? artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz }) : -1;
+  const onScreen = screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist);
+  if (onScreen) {
+    if (hoverIndex >= 0) setHover(-1);
+    hoverEl.textContent = artHall.hoverLabel();
+    hoverEl.hidden = false;
+    screenHover = true;
+    hoverRobot = false;
+    return;
+  }
+  if (screenHover) {
+    screenHover = false;
+    hoverEl.hidden = true;
+  }
   const onRobot = robotDist >= 0 && robotDist < framePickDist;
   if (onRobot) {
     if (hoverIndex >= 0) setHover(-1);
@@ -1361,11 +1387,6 @@ function crowdHere() {
     for (let i = 0; i < others.length; i++) people.push(others[i]);
   }
   return people;
-}
-
-function approachYaw(from, to, k) {
-  const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
-  return from + delta * k;
 }
 
 function guestStillHere(id) {
@@ -1436,13 +1457,14 @@ function updateReception(dt, now) {
     if (gap > 1.6) {
       receptionRender.x = receptionFollow.x;
       receptionRender.z = receptionFollow.z;
-      receptionRender.yaw = receptionFollow.yaw;
     } else {
       const k = 1 - Math.exp(-Math.min(dt, 0.05) * 8);
       receptionRender.x += (receptionFollow.x - receptionRender.x) * k;
       receptionRender.z += (receptionFollow.z - receptionRender.z) * k;
-      receptionRender.yaw = approachYaw(receptionRender.yaw, receptionFollow.yaw, k);
     }
+    // 朝向跟现场同一套慢转。位置可以快追，朝向不能跟着追。
+    // 两个人同时开着卡片时，这一页先对着自己转；关上后若一下子对齐房间朝向，转身就会很快。
+    receptionRender.yaw = stepYaw(receptionRender.yaw, receptionFollow.yaw, dt);
   }
   reception.place(receptionRender, now, card || watchGuest);
   if (card) {
@@ -1523,6 +1545,7 @@ function resetPose() {
   vz = 0;
   airborne = false;
   takeoffY = 0;
+  liftPassenger = false;
   camera.rotation.set(0, 0, 0);
   camera.position.set(px, py + EYE, pz);
   closePanel();
@@ -1680,19 +1703,19 @@ function surfaceBelow(sample) {
 }
 
 function settleFeet(dt) {
-  const inCar = lift && inLiftCar(px, pz);
-  const riding = inCar && (Math.abs(py - lift.y) < 1.15 || lift.phase === "moving");
-  if (inCar && lift.phase === "moving") {
+  const inCar = !!(lift && inLiftCar(px, pz));
+  const gap = inCar ? Math.abs(py - lift.y) : Infinity;
+  // 切到别的页面时，房间里的轿厢仍会开到目标层。人还在轿厢里就跟着落在那一层，不要从井道掉回一楼。
+  const passenger = inCar && (liftPassenger || gap < 1.15 || lift.phase === "moving");
+  const carried = liftPassenger && gap >= 1.15;
+  if (passenger && (lift.phase === "moving" || !airborne || carried)) {
     airborne = false;
     vy = 0;
     py = lift.y;
+    liftPassenger = true;
     return;
   }
-  if (!airborne && riding) {
-    py = lift.y;
-    vy = 0;
-    return;
-  }
+  if (!inCar) liftPassenger = false;
   if (airborne) {
     vy -= GRAVITY * dt;
     if (vy < -12) vy = -12;
@@ -1907,7 +1930,23 @@ function poseSelf(pulled) {
   }
 }
 
+function syncArtPerson() {
+  if (!artHall) return;
+  const inside = artHall.contains({ x: px, y: py, z: pz });
+  if (inside) {
+    if (thirdPerson) {
+      thirdRestore = true;
+      endOrbit();
+      thirdPerson = false;
+    }
+  } else if (thirdRestore) {
+    thirdPerson = true;
+    thirdRestore = false;
+  }
+}
+
 function placeCamera() {
+  syncArtPerson();
   const eyeY = py + EYE;
   const aimY = py + EYE * 0.7;
   if (thirdPerson && orbiting) {
@@ -2021,7 +2060,7 @@ function step(dt, now) {
   }
   if (ambience && built) {
     const indoors = hallBlend(px, pz, built.interior);
-    ambience.hear(indoors);
+    ambience.hear(artHall && artHall.isInside() ? 0 : indoors);
     ambience.place({
       outdoor: 1 - indoors,
       surface: footSurface(),
@@ -2035,6 +2074,7 @@ function step(dt, now) {
       hallNear,
     });
   }
+  if (artHall) artHall.tick(camera, { x: px, y: py, z: pz, third: thirdPerson }, ambience);
 }
 
 function openingNow() {
@@ -2145,6 +2185,7 @@ function animate(now) {
   const dt = Math.min(MAX_STEP, seconds(now));
   step(dt, now);
   if (horizon) horizon.drift(now);
+  if (artSky) artSky.tick(now);
   renderer.render(scene, camera);
   if (params.has("selftest") && !animate.done) {
     const ready = document.documentElement.dataset.frames === "ready";
@@ -2209,7 +2250,9 @@ function bind() {
     if (document.pointerLockElement !== view) return;
     const index = pickFrame();
     const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
-    if (robotDist >= 0 && robotDist < framePickDist) openGuestbook();
+    const screenDist = artHall ? artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz }) : -1;
+    if (screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist)) artHall.open();
+    else if (robotDist >= 0 && robotDist < framePickDist) openGuestbook();
     else if (index >= 0) openFrame(index);
   });
   document.addEventListener("click", (event) => {
@@ -2258,6 +2301,12 @@ function bind() {
     }
     noteGesture();
     if (event.code === "Tab") return;
+    if (event.code === "Escape" && artHall && artHall.dialogOpen()) {
+      event.preventDefault();
+      artHall.closeDialog();
+      requestWalk();
+      return;
+    }
     const typing = event.target;
     if (typing && typing.closest && typing.closest("input, textarea, select")) return;
     if (typing && typing !== view && typing !== document.body && typing.blur && document.pointerLockElement === view) {
@@ -2294,6 +2343,7 @@ function bind() {
     if (event.code === "KeyV") {
       if (event.repeat) return;
       event.preventDefault();
+      if (artHall && artHall.contains({ x: px, y: py, z: pz })) return;
       if (thirdPerson) endOrbit();
       thirdPerson = !thirdPerson;
       if (thirdPerson && event.altKey) beginOrbit();
@@ -2864,6 +2914,35 @@ async function warmFresh(markFrom, markTo, intoView) {
   }
 }
 
+// 整馆着色器一起提交。支持并行编译时主线程只轮询，不在每一次绘制里等着编完。
+async function warmScene(markFrom, markTo) {
+  const gl = renderer.getContext();
+  const parallel = gl.getExtension("KHR_parallel_shader_compile");
+  if (!parallel) {
+    await warmFresh(markFrom, markTo, false);
+    return;
+  }
+  let finished = false;
+  let failed = false;
+  try {
+    renderer.compileAsync(scene, camera).then(() => {
+      finished = true;
+    }, () => {
+      failed = true;
+    });
+  } catch {
+    failed = true;
+  }
+  const started = performance.now();
+  while (!finished && !failed && performance.now() - started < 12000) {
+    const u = Math.min(0.98, (performance.now() - started) / 2000);
+    loadSpan(markFrom, markTo, u, 1);
+    await nextFrame();
+  }
+  if (!finished) await warmFresh(markFrom, markTo, false);
+  setLoadProgress(markTo);
+}
+
 function knownVisitor() {
   return hasEnteredName() || params.has("noname") || nameCommitted;
 }
@@ -2935,7 +3014,7 @@ async function buildScene(data, arrange) {
   }
   entryView = captureView();
   await bootMark(0.2);
-  const lamps = lampTexture(built.cones.concat(built.leds, built.sconces));
+  const lamps = lampTexture(built.cones.concat(built.leds, built.sconces, (built.art && built.art.foots) || []));
   bodyRoom = {
     minX: Math.min(built.interior.minX, LIFT.xRear) - 0.35,
     maxX: built.interior.maxX + 0.25,
@@ -2958,9 +3037,31 @@ async function buildScene(data, arrange) {
     story: { value: STORY },
     lampTint: { value: new THREE.Color(0xfff4e4) },
     roomBox: { value: new THREE.Vector4(bodyRoom.minX, bodyRoom.maxX, bodyRoom.minZ, bodyRoom.maxZ) },
+    artBox: { value: new THREE.Vector4(1, -1, 0, 0) },
+    artY: { value: new THREE.Vector2(0, -1) },
+    artFill: { value: 0.12 },
   };
+  if (built.art && built.art.lit) {
+    const box = built.art.lit;
+    sunShared.artBox.value.set(box.minX, box.maxX, box.minZ, box.maxZ);
+    sunShared.artY.value.set(box.minY, box.maxY);
+  }
   const role = () => ({ fill: { value: 1 }, gain: { value: 0 }, cast: { value: 0 }, lamps: { value: 0 } });
-  sunRoles = { ground: role(), open: role(), room: role(), glass: role(), body: role() };
+  const artRole = (fill) => {
+    const row = role();
+    row.lamps.value = 3;
+    row.footFill = { value: fill };
+    return row;
+  };
+  sunRoles = {
+    ground: role(),
+    open: role(),
+    room: role(),
+    glass: role(),
+    body: role(),
+    artWall: artRole(0.42),
+    artCurtain: artRole(0.32),
+  };
   sunRoles.room.tint = { value: new THREE.Color(0xfff4e4) };
   sunRoles.glass.tint = { value: new THREE.Color(0xffffff) };
   sunRoles.body.fill = sunRoles.open.fill;
@@ -3069,10 +3170,8 @@ async function buildScene(data, arrange) {
   if (curb) scene.add(curb);
   const level = floorAndCeiling(built.bounds, floorMat, ceilMat, null, roomMat);
   scene.add(level.floor);
-  // 外立面先出现在进度条后面。清屏天色只留到楼体网格交出去之前。
-  await warmFresh(0.3, LOAD_SHELL, true);
-  if (!directPose) startVista();
-  // 后补的楼先藏着。远景继续画已经露出来的外立面，编完一个再露一个。
+  await bootMark(LOAD_SHELL);
+  // 后补的楼先藏着。着色器等楼摆完一起编，不在这里逐个画进屏幕。
   const held = [];
   const hold = (obj) => {
     if (!obj) return;
@@ -3157,10 +3256,23 @@ async function buildScene(data, arrange) {
     polygonOffsetUnits: 1,
   });
   nightCeilPlateMat = ceilPlateMat;
-  const storySlabs = plateMesh(built.floorPlates, plateMat);
-  const storyCeils = plateMesh(built.ceilPlates, ceilPlateMat, plateMat);
-  if (storySlabs) hold(storySlabs);
-  if (storyCeils) hold(storyCeils);
+  // 楼板逐层挤出，避免十几层叠在同一帧里把进度条冻住。
+  const storySlabs = new THREE.Group();
+  const storyCeils = new THREE.Group();
+  const plateCount = Math.max(built.floorPlates.length, built.ceilPlates.length);
+  for (let p = 0; p < plateCount; p++) {
+    if (p < built.floorPlates.length) {
+      const slab = plateMesh([built.floorPlates[p]], plateMat);
+      if (slab) storySlabs.add(slab);
+    }
+    if (p < built.ceilPlates.length) {
+      const ceil = plateMesh([built.ceilPlates[p]], ceilPlateMat, plateMat);
+      if (ceil) storyCeils.add(ceil);
+    }
+    if ((p + 1) % 4 === 0) await shown();
+  }
+  if (storySlabs.children.length) hold(storySlabs);
+  if (storyCeils.children.length) hold(storyCeils);
   const props = lobbyPropMeshes(built.extinguishers, built.tables, {
     red: lit(0xc52828, "room"),
     metal: lit(0x2a2c2e, "room"),
@@ -3209,15 +3321,38 @@ async function buildScene(data, arrange) {
   }
   const inner = wallMesh(built.white.concat(built.liners), whiteMat);
   if (inner) hold(inner);
+  const ceilInner = wallMesh(built.ceilWalls || [], ceilMat);
+  if (ceilInner) hold(ceilInner);
+  if (built.art) {
+    const artRig = artHallMeshes(built.art, {
+      // 墙和门帘内侧只吃脚灯。天花是星空，不吃脚灯。门帘朝门厅的那一面仍走大厅的灯。
+      walls: lit(0x2c2c31, "artWall"),
+      curtain: lit(0xffffff, "room", { vertexColors: true }),
+      curtainIn: lit(0xffffff, "artCurtain", { vertexColors: true }),
+      screen: new THREE.MeshBasicMaterial({ color: 0x101218 }),
+      frame: new THREE.MeshBasicMaterial({ color: 0x2c2e34 }),
+      speaker: new THREE.MeshBasicMaterial({ color: 0x141518 }),
+      grille: new THREE.MeshBasicMaterial({ color: 0x07080a }),
+      board: lit(0xd8d4cc, "room"),
+      post: lit(0x8d8882, "room"),
+    });
+    hold(artRig.root);
+    artSky = artRig.sky;
+    artHall = createArtHall(built.art, artRig.screen, {
+      releaseLook,
+      requestWalk,
+      onOpen() {
+        closePanel(false);
+        closeGuestbook(false);
+      },
+    });
+  }
   await bootMark(0.6);
-  // 门、屋顶和内墙补上时，远景已经在走。一次只编一个，编完再露出来。
-  await warmFresh(0.6, 0.74, true);
   for (let h = 0; h < held.length; h++) {
     held[h].traverse((child) => {
       if (child.isMesh || child.isPoints || child.isLine || child.isSprite) child.visible = true;
     });
   }
-  if (!vistaRun) showVistaStill();
   const parked = [];
   const stage = (obj) => {
     if (!obj) return;
@@ -3477,8 +3612,8 @@ async function buildScene(data, arrange) {
   }
   ambience = createAmbience();
   await shown();
-  // 远景已经在画楼。剩下的室内着色器逐个编，进度条继续往前走。
-  await warmFresh(LOAD_INDOOR, 1, false);
+  // 楼已经摆完。有并行编译就在后台编，进度条继续走；没有再逐个画到一个像素上。
+  await warmScene(LOAD_INDOOR, 1);
   if (directPose) showVistaStill();
   else if (!vistaRun) startVista();
   setLoadProgress(1);

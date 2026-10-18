@@ -24,10 +24,17 @@ export const LAMP_AMBI_FAR = 14;
 export const LAMP_AMBI_NEAR = 0.25;
 export const LAMP_CONE_IN = 0.02;
 export const LAMP_CONE_OUT = 0.48;
-// 贴图透明度同时当灯种：1 射灯，0.8 吸顶灯，0.6 壁灯。空位是 0。
+// 贴图透明度同时当灯种：1 射灯，0.8 吸顶灯，0.6 壁灯，0.4 脚灯。空位是 0。
+// 着色器只认大于 0.25 的灯。脚灯不带 14 米余光，只打在朝上的地面，不洗墙。
+// 艺术厅里地面、天花、墙和门帘内侧不用大厅那一层的填充光。
 export const LAMP_SPOT = 1;
 export const LAMP_LED = 0.8;
 export const LAMP_SCONCE = 0.6;
+export const LAMP_FOOT = 0.4;
+export const LAMP_FOOT_DIRECT = 0.72;
+export const LAMP_FOOT_FAR = 2.35;
+export const LAMP_FOOT_NEAR = 0.16;
+export const LAMP_ART_FILL = 0.12;
 export const LAMP_LED_DIRECT = 0.32;
 export const LAMP_LED_CONE = 0.22;
 export const LAMP_LED_WASH = 0.18;
@@ -668,7 +675,7 @@ export function floorLamps(cones, story, apexLift) {
     const y = base + (item.lift != null ? item.lift : apexLift);
     const floor = Math.max(0, Math.floor((y + 1e-4) / story));
     if (!rows[floor]) rows[floor] = [];
-    const kind = item.role === "led" ? LAMP_LED : item.role === "sconce" ? LAMP_SCONCE : (item.kind || LAMP_SPOT);
+    const kind = item.role === "led" ? LAMP_LED : item.role === "sconce" ? LAMP_SCONCE : item.role === "foot" ? LAMP_FOOT : (item.kind || LAMP_SPOT);
     rows[floor].push({
       x: item.x,
       y,
@@ -775,6 +782,13 @@ function lampSum(list, x, y, z, nx, ny, nz) {
     const atten = 1 / (1 + dist2 * LAMP_ATTEN);
     const ambi = smoothstep(LAMP_AMBI_FAR, LAMP_AMBI_NEAR, dist) * LAMP_AMBI;
     const kind = L.kind == null ? LAMP_SPOT : L.kind;
+    if (kind < 0.5) {
+      const pool = smoothstep(LAMP_FOOT_FAR, LAMP_FOOT_NEAR, dist);
+      const below = smoothstep(-0.08, 0.42, ly);
+      const upFace = smoothstep(0.45, 0.85, ny);
+      lamp += below * pool * LAMP_FOOT_DIRECT * upFace;
+      continue;
+    }
     let add = wrap * down * atten * LAMP_DIRECT;
     if (kind < 0.9) {
       const face = smoothstep(LAMP_WASH_IN, LAMP_WASH_OUT, wrap);

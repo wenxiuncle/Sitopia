@@ -46,6 +46,9 @@ const HALL_A = SOUTH - FOYER;
 const BAY = 12;
 const HALL_B = HALL_A - BAY;
 const NORTH = HALL_B - BAY;
+// 数字艺术厅叠在展品楼层之上，并且不低于这一层（0 起算）。展品再往上加时，艺术厅跟着上移。
+const ART_HOME = 14;
+const ART_NAME = "数字艺术厅";
 
 // 一楼进门后的两根柱。内侧夹出的走廊是接待机器人的东西范围。
 const COL_IN = 8.2;
@@ -448,8 +451,13 @@ function floorYearSpans(frames, sites, floorCount) {
   return spans;
 }
 
+function isArtName(names) {
+  return !!(names && names.length === 1 && names[0] === ART_NAME);
+}
+
 function floorLabel(names, floor, sortMode, span) {
   const level = (floor + 1) + "楼";
+  if (isArtName(names)) return ART_NAME + " · " + level;
   // 时间排序按发布时间铺开。层名用这一层最早到最晚的年份，不挂分类。
   if (sortMode === "time") return span ? span + " · " + level : level;
   return (names.length ? names.join("、") : "展厅") + " · " + level;
@@ -457,6 +465,10 @@ function floorLabel(names, floor, sortMode, span) {
 
 // 分类排序时电梯按钮在数字和「楼」之间多一个空格。时间排序是「6楼 · 2016年 - 2017年」。
 export function liftFloorLabel(names, floor, sortMode, span) {
+  if (isArtName(names)) {
+    if (sortMode === "time") return (floor + 1) + "楼 · " + ART_NAME;
+    return (floor + 1) + " 楼 · " + ART_NAME;
+  }
   if (sortMode === "time") {
     const level = (floor + 1) + "楼";
     return span ? level + " · " + span : level;
@@ -470,6 +482,7 @@ export function retitleFloors(built, sortMode, sites) {
   if (!built || !built.frames || !built.hangCat) return;
   const floorNames = floorTitles(built.frames, built.hangCat, built.floors);
   const floorSpans = floorYearSpans(built.frames, sites, built.floors);
+  if (built.art) floorNames[built.art.floor] = [ART_NAME];
   built.floorNames = floorNames;
   built.floorSpans = floorSpans;
   const zones = built.zones || [];
@@ -480,7 +493,7 @@ export function retitleFloors(built, sortMode, sites) {
     if (floor < 0 || floor >= floorNames.length) continue;
     const names = floorNames[floor];
     zone.legend = names;
-    if (zone.rank === 4) zone.name = "观景台 · " + (floor + 1) + "楼";
+    if (zone.rank === 4) zone.name = isArtName(names) ? "观景台 · " + ART_NAME : "观景台 · " + (floor + 1) + "楼";
     else if (zone.rank === 3) zone.name = floorLabel(names, floor, sortMode, floorSpans[floor]);
   }
 }
@@ -1267,7 +1280,7 @@ function addRoomLights(floors) {
   return { leds, sconces };
 }
 
-function addPlants(plants, floors) {
+function addPlants(plants, floors, artFloor) {
   const spots = [
     { x: -10.2, z: -8.2 },
     { x: 6.4, z: -13.6 },
@@ -1278,10 +1291,13 @@ function addPlants(plants, floors) {
     const ox = (floor % 3) * 0.65;
     const oz = (floor % 4) * 0.32;
     for (let i = 0; i < spots.length; i++) {
+      const z = spots[i].z - oz;
+      // 艺术厅门帘以北不摆植物。门厅那一棵 z 仍在门帘南侧。
+      if (floor === artFloor && z < HALL_A) continue;
       const kind = (i + floor) % 3;
       plants.push({
         x: spots[i].x + ox,
-        z: spots[i].z - oz,
+        z,
         y: floor * STORY,
         s: scales[kind] * (0.94 + (floor % 3) * 0.04),
         kind,
@@ -1289,6 +1305,179 @@ function addPlants(plants, floors) {
       });
     }
   }
+}
+
+function artSlab(minX, maxX, minY, maxY, minZ, maxZ) {
+  return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
+function pushBlock(blocks, box) {
+  blocks.push({
+    minX: box.minX,
+    maxX: box.maxX,
+    minZ: box.minZ,
+    maxZ: box.maxZ,
+    h: box.maxY - box.minY,
+    base: box.minY,
+  });
+}
+
+// 艺术厅只描述这一层。门帘无碰撞。牌子和屏幕挡人。天花、墙皮、喇叭不挡人。
+// 喇叭正面是物体本地 +Z。有 aim 时朝地面中心，否则 yaw 0 朝 +Z（南）。
+function describeArt(floor, blocks, cones) {
+  const base = floor * STORY;
+  const faceN = HALL_A - WALL_T / 2;
+  const faceS = HALL_A + WALL_T / 2;
+  const walk = base + 0.04;
+  // 天棚底面在 WALL_H 往下 6 厘米。星空贴在这张底面下，不再另吊一层。
+  const soffit = base + WALL_H - 0.06;
+  const starY = soffit - 0.02;
+  // 厅内地面和门厅地面的交接线。主褶朝北最远约 8.7 厘米，帘心南移，北侧褶边压过这条线。
+  const floorJoin = HALL_A - 0.04;
+  const curtainZ = floorJoin + 0.068;
+  const roomZ0 = NORTH + 0.008;
+  const roomZ1 = faceN - 0.01;
+  const roomX0 = -INNER + 0.008;
+  const roomX1 = INNER - 0.008;
+  // 东西内衬凸进厅内 5 厘米。墙皮盖在衬皮前面，四角互相埋进对方，端面不露在厅里。
+  const xInL = -INNER + 0.09;
+  const xInR = INNER - 0.09;
+  const zInN = NORTH + 0.04;
+  const zInS = faceN - 0.04;
+  const skin = 0.05;
+  const bury = 0.04;
+  // 北墙皮伸进东西墙和墙角柱，但停在外墙皮里面。远处贴着北墙看两个墙角时，先碰到灰墙。
+  const wrap = WALL_T - 0.02;
+  const northX0 = -INNER - wrap;
+  const northX1 = INNER + wrap;
+  const northZ0 = NORTH - wrap;
+  // 底面交给星空。范围只写在这里。南边埋进门墙，不伸进门厅。
+  const ceiling = [
+    artSlab(xInL - 0.02, xInR + 0.02, starY, starY + 0.012, zInN - 0.02, faceN + 0.02),
+  ];
+  const wallY0 = walk - bury;
+  const wallY1 = soffit + bury;
+  const walls = [
+    artSlab(xInL - skin, xInL, wallY0, wallY1, northZ0, zInS + skin),
+    artSlab(xInR, xInR + skin, wallY0, wallY1, northZ0, zInS + skin),
+    artSlab(northX0, northX1, wallY0, wallY1, northZ0, zInN),
+    artSlab(xInL - skin, -DOOR + 0.02, wallY0, wallY1, zInS, zInS + skin),
+    artSlab(DOOR - 0.02, xInR + skin, wallY0, wallY1, zInS, zInS + skin),
+  ];
+  const curtain = {
+    z: curtainZ,
+    y0: walk - 0.04,
+    y1: soffit - 0.02,
+    width: DOOR * 2 + 0.16,
+  };
+  const signZ = faceS + 0.02 + 2;
+  const board = [artSlab(-0.9, 0.9, base + 1.32, base + 2.18, signZ - 0.03, signZ + 0.03)];
+  const post = [artSlab(-0.07, 0.07, walk, base + 1.32, signZ - 0.05, signZ + 0.05)];
+  pushBlock(blocks, board[0]);
+  pushBlock(blocks, post[0]);
+  const screenW = 7.11;
+  const screenH = 4;
+  const screenBottom = walk + 0.04;
+  const screen = {
+    x: 0,
+    y: screenBottom + screenH / 2,
+    z: NORTH + 0.28,
+    w: screenW,
+    h: screenH,
+  };
+  pushBlock(blocks, artSlab(-screenW / 2, screenW / 2, screenBottom, screenBottom + screenH, screen.z - 0.1, screen.z + 0.05));
+  // 脚灯贴在厅内墙皮上。北墙在屏幕两侧各居中一盏；东西墙按整面宽三等分；门两侧墙各居中一盏。
+  // 灯心离地半米，光只落在地面。
+  const footLift = 0.5;
+  const zSpan = zInS - zInN;
+  const foots = [
+    { role: "foot", x: (xInL - screenW / 2) / 2, z: zInN, y: base, lift: footLift, yaw: 0 },
+    { role: "foot", x: (screenW / 2 + xInR) / 2, z: zInN, y: base, lift: footLift, yaw: 0 },
+    { role: "foot", x: xInR, z: zInN + zSpan / 3, y: base, lift: footLift, yaw: -Math.PI / 2 },
+    { role: "foot", x: xInR, z: zInN + zSpan * 2 / 3, y: base, lift: footLift, yaw: -Math.PI / 2 },
+    { role: "foot", x: xInL, z: zInN + zSpan / 3, y: base, lift: footLift, yaw: Math.PI / 2 },
+    { role: "foot", x: xInL, z: zInN + zSpan * 2 / 3, y: base, lift: footLift, yaw: Math.PI / 2 },
+    { role: "foot", x: (xInL - DOOR) / 2, z: zInS, y: base, lift: footLift, yaw: Math.PI },
+    { role: "foot", x: (DOOR + xInR) / 2, z: zInS, y: base, lift: footLift, yaw: Math.PI },
+  ];
+  const cabW = 0.52;
+  const cabH = 0.8;
+  const cabD = 0.4;
+  const hang = 0.62;
+  const margin = 0.6;
+  const xL = roomX0 + margin;
+  const xR = roomX1 - margin;
+  const zN = roomZ0 + margin;
+  const zS = roomZ1 - margin;
+  const ySp = starY - hang;
+  const aimX = 0;
+  const aimY = walk;
+  const aimZ = (roomZ0 + roomZ1) / 2;
+  function corner(id, x, z, feed, gain, delay) {
+    const dx = aimX - x;
+    const dy = aimY - ySp;
+    const dz = aimZ - z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    return {
+      id, x, y: ySp, z,
+      w: cabW, h: cabH, d: cabD,
+      aimX, aimY, aimZ,
+      ox: dx / len, oy: dy / len, oz: dz / len,
+      gain, delay, feed,
+    };
+  }
+  const speakers = [
+    corner("FL", xL, zN, "L", 0.7, 0),
+    corner("FR", xR, zN, "R", 0.7, 0),
+    corner("BL", xL, zS, "RL", 0.46, 0.02),
+    corner("BR", xR, zS, "RR", 0.46, 0.02),
+  ];
+  cones.push(
+    { x: -5.5, z: -7.6, y: base },
+    { x: 5.5, z: -7.6, y: base },
+  );
+  return {
+    floor,
+    baseY: base,
+    curtainZ,
+    ceiling,
+    walls,
+    curtain,
+    foots,
+    board,
+    post,
+    screen,
+    speakers,
+    // 厅内地面和天花只认这只盒子。竖向的门帘不走这里，内外两面各用自己的材质。
+    lit: {
+      minX: -INNER - 0.05,
+      maxX: INNER + 0.05,
+      minZ: NORTH - 0.05,
+      maxZ: floorJoin,
+      minY: base - 0.08,
+      maxY: base + WALL_H + 0.12,
+    },
+    sign: {
+      text: "正在施工",
+      x: 0,
+      y: base + 1.75,
+      z: signZ + 0.05,
+      yaw: 0,
+      w: 1.6,
+      h: 0.34,
+    },
+    // 厅门墙朝门厅的那一面，门东侧居中。字背贴墙，朝南挤出。
+    nameSign: {
+      text: ART_NAME,
+      x: (DOOR + INNER) / 2,
+      y: base + 2.5,
+      z: faceS + 0.03,
+      yaw: 0,
+      h: 0.78,
+      depth: 0.1,
+      backlight: true,
+    },
+  };
 }
 
 export function buildMuseum(sites, arrange, sortMode) {
@@ -1312,6 +1501,9 @@ export function buildMuseum(sites, arrange, sortMode) {
     floorCount += 1;
   }
   if (floorCount < 1) floorCount = 1;
+  const exhibitFloors = floorCount;
+  const artIndex = Math.max(ART_HOME, exhibitFloors);
+  floorCount = artIndex + 1;
   const top = (floorCount - 1) * STORY;
   const totalH = top + 6.9;
   const shellH = totalH;
@@ -1362,15 +1554,18 @@ export function buildMuseum(sites, arrange, sortMode) {
   pushBox(curb, PLAZA.minX - T, PLAZA.minX, SOUTH + T, PLAZA.maxZ + T, 0.45, "curb");
   pushBox(curb, PLAZA.minX - T, PLAZA.maxX + T, PLAZA.maxZ, PLAZA.maxZ + T, 0.45, "curb");
 
+  const ceilWalls = [];
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
     const h = f === floorCount - 1 ? WALL_H : STORY;
-    pushBox(white, -INNER, -DOOR, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
-    pushBox(white, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
-    pushBox(white, -INNER, -DOOR, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
-    pushBox(white, DOOR, INNER, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
+    const hallList = f === artIndex ? ceilWalls : white;
+    pushBox(hallList, -INNER, -DOOR, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
+    pushBox(hallList, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, h, "white", base);
     pushBox(white, COL_IN, COL_OUT, COL_Z0, COL_Z1, WALL_H, "white", base);
     pushBox(white, -COL_OUT, -COL_IN, COL_Z0, COL_Z1, WALL_H, "white", base);
+    if (f === artIndex) continue;
+    pushBox(white, -INNER, -DOOR, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
+    pushBox(white, DOOR, INNER, HALL_B - T / 2, HALL_B + T / 2, h, "white", base);
     pushBox(white, 10.1, 10.85, NORTH + 5.6, NORTH + 6.35, WALL_H, "white", base);
     pushBox(white, -10.85, -10.1, NORTH + 5.6, NORTH + 6.35, WALL_H, "white", base);
   }
@@ -1477,7 +1672,11 @@ export function buildMuseum(sites, arrange, sortMode) {
 
   const beamZ = beamRun(SOUTH, HALL_A, 2).concat(beamRun(HALL_A, HALL_B, 2), beamRun(HALL_B, NORTH, 2));
   for (let f = 0; f < floorCount; f++) {
-    for (let i = 0; i < beamZ.length; i++) addBeam(dress, beamZ[i], 0.22, f * STORY);
+    for (let i = 0; i < beamZ.length; i++) {
+      // 艺术厅天棚不要梁。门厅那一段仍留着。
+      if (f === artIndex && beamZ[i] < HALL_A) continue;
+      addBeam(dress, beamZ[i], 0.22, f * STORY);
+    }
   }
   const handrails = [];
   addStair(blocks, dress, handrails, floorCount);
@@ -1582,7 +1781,7 @@ export function buildMuseum(sites, arrange, sortMode) {
   }
 
   const plants = [];
-  addPlants(plants, floorCount);
+  addPlants(plants, floorCount, artIndex);
   for (let f = 1; f < floorCount; f++) addTurnPlant(plants, f);
   const props = addLobbyDress(blocks, floorCount);
   const roomLights = addRoomLights(floorCount);
@@ -1591,6 +1790,7 @@ export function buildMuseum(sites, arrange, sortMode) {
 
   const floorNames = floorTitles(frames, hangCat, floorCount);
   const floorSpans = floorYearSpans(frames, sites, floorCount);
+  floorNames[artIndex] = [ART_NAME];
 
   const zones = [];
   for (let f = 0; f < floorCount; f++) {
@@ -1609,7 +1809,7 @@ export function buildMuseum(sites, arrange, sortMode) {
     });
     if (f > 0) {
       zones.push({
-        name: "观景台 · " + (f + 1) + "楼",
+        name: isArtName(names) ? "观景台 · " + ART_NAME : "观景台 · " + (f + 1) + "楼",
         legend: names,
         rank: 4,
         minX: -DECK_R - 0.45,
@@ -1679,8 +1879,11 @@ export function buildMuseum(sites, arrange, sortMode) {
       h: 0.34,
     });
   }
+  const art = describeArt(artIndex, blocks, cones);
+  signs.push(art.sign);
+  if (art.nameSign) signs.push(art.nameSign);
 
-  const walls = stone.concat(corners, white, curb, blocks);
+  const walls = stone.concat(corners, white, ceilWalls, curb, blocks);
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
@@ -1699,6 +1902,7 @@ export function buildMuseum(sites, arrange, sortMode) {
     corners,
     bandCorners,
     white,
+    ceilWalls,
     curb,
     liners,
     blocks,
@@ -1720,6 +1924,7 @@ export function buildMuseum(sites, arrange, sortMode) {
     handrails,
     zones,
     floors: floorCount,
+    art,
     floorNames,
     floorSpans,
     hangCat,

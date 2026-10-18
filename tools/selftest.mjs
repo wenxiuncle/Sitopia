@@ -776,7 +776,8 @@ function checkBuild(sites, label) {
     const plant = built.plants[i];
     if (plant.floor < 2) kinds[plant.floor].add(plant.kind);
   }
-  assert(built.plants.length === built.floors * 3 + Math.max(0, built.floors - 1), `${label} plants ${built.plants.length}`);
+  const artPlantCut = built.art ? 2 : 0;
+  assert(built.plants.length === built.floors * 3 + Math.max(0, built.floors - 1) - artPlantCut, `${label} plants ${built.plants.length}`);
   assert(built.yard && built.yard.filter((item) => item.kind === "tree").length >= 12, `${label} plaza trees`);
   assert(built.yard.every((item) => Math.abs(item.x) > 6 || item.z > 12), `${label} plaza dress blocks the door`);
   const liftFace = LIFT.xDoor + 0.12;

@@ -124,7 +124,7 @@
             <li><kbd>回车</kbd> 聊天</li>
             <li><kbd>E</kbd> 叫电梯、开门</li>
             <li><kbd>F</kbd> 在电梯里选层，点好就继续走</li>
-            <li><kbd>V</kbd> 切换第一人称和第三人称</li>
+            <li><kbd>V</kbd> 切换第一人称和第三人称，艺术厅内只用第一人称</li>
             <li><kbd>Alt</kbd> 第三人称时按住环视</li>
             <li><kbd>Tab</kbd> 打开或关上菜单</li>
             <li><kbd>Esc</kbd> 松开鼠标，看说明</li>
@@ -159,6 +159,43 @@
       <a id="panel-article" target="_blank" rel="noopener noreferrer">看原文</a>
     </div>
     <button id="panel-close" type="button">关闭</button>
+  </aside>
+  <div id="screen-mount" hidden>
+    <div id="screen-view">
+      <div id="screen-plane">
+        <iframe id="screen-frame" title="数字艺术厅画面" referrerpolicy="unsafe-url" allow="autoplay; fullscreen; encrypted-media"></iframe>
+        <video id="screen-video" playsinline hidden></video>
+      </div>
+      <div id="screen-reflect" hidden>
+        <div id="screen-reflect-glow"></div>
+        <iframe id="screen-reflect-frame" title="" tabindex="-1" aria-hidden="true" referrerpolicy="unsafe-url" allow="autoplay; encrypted-media" hidden></iframe>
+        <canvas id="screen-reflect-canvas" hidden></canvas>
+      </div>
+    </div>
+  </div>
+  <aside id="screen-gate" hidden>
+    <h2>数字艺术厅</h2>
+    <p id="screen-lead">贴上 B 站或 YouTube 的视频链接。一行一条，上一首和下一首就在这组里换。</p>
+    <form id="screen-form">
+      <textarea id="screen-url" rows="4" autocomplete="off" placeholder="https://www.bilibili.com/video/BV...&#10;https://www.youtube.com/watch?v=..."></textarea>
+      <p id="screen-error" hidden></p>
+      <p id="screen-now"></p>
+      <div id="screen-transport">
+        <button id="screen-prev" type="button">上一首</button>
+        <button id="screen-play" type="button">播放</button>
+        <button id="screen-pause" type="button">暂停</button>
+        <button id="screen-next" type="button">下一首</button>
+      </div>
+      <div id="screen-seek-row">
+        <span id="screen-time">0:00</span>
+        <input id="screen-seek" type="range" min="0" max="1000" value="0" step="1" disabled>
+        <span id="screen-dur">0:00</span>
+      </div>
+      <div id="screen-actions">
+        <button id="screen-stop" type="button">停止</button>
+        <button id="screen-close" type="button">关闭</button>
+      </div>
+    </form>
   </aside>
   <aside id="guestbook" hidden>
     <div id="guestbook-tabs" role="tablist">
