@@ -512,6 +512,22 @@ body.dark-sky #chatter li {
   color: #fff;
 }
 
+#lift-pad button.passing,
+#lift-pad button.passing:hover,
+#lift-pad button.passing:focus-visible {
+  background: #e4e1dc;
+  border-color: #c8c4be;
+  color: #2c2926;
+}
+
+#lift-pad button.chosen.passing,
+#lift-pad button.chosen.passing:hover,
+#lift-pad button.chosen.passing:focus-visible {
+  background: #e4e1dc;
+  border-color: #3e3a36;
+  color: #2c2926;
+}
+
 #lift-hint {
   position: fixed;
   left: 50%;

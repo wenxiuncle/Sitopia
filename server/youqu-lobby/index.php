@@ -87,6 +87,8 @@ if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
 $data = loadState($statePath);
 if (!isset($data["robot"]) || !is_array($data["robot"])) $data["robot"] = blankRobot();
 else $data["robot"] = normalizeRobot($data["robot"]);
+if (!isset($data["videos"]) || !is_array($data["videos"])) $data["videos"] = blankVideos();
+else $data["videos"] = normalizeVideos($data["videos"]);
 if (!isset($data["notes"]) || !is_array($data["notes"])) $data["notes"] = [];
 $now = (int) round(microtime(true) * 1000);
 if (!isset($data["lift"]) || !is_array($data["lift"])) $data["lift"] = blankLift($now);
@@ -166,6 +168,7 @@ foreach ($msgs as $msg) {
         $ev = syncMusic($data, $now);
         if ($ev) $result["out"][] = ["who" => "all", "obj" => $ev];
         stampMusic($result["out"], $data, $now);
+        stampVideos($result["out"], $data);
         attachDesk($result["out"], $data);
     }
     deliver($data, $id, $result["out"]);
@@ -492,6 +495,43 @@ function syncMusic(array &$data, int $now): ?array {
     $data["music"]["playing"] = $want;
     $data["music"]["at"] = $now;
     return musicView($data["music"], $now);
+}
+
+function blankVideos(): array {
+    return ["urls" => [], "seed" => 1];
+}
+
+function normalizeVideos($saved): array {
+    $videos = blankVideos();
+    if (!is_array($saved)) return $videos;
+    $urls = [];
+    $raw = $saved["urls"] ?? [];
+    if (is_array($raw)) {
+        foreach ($raw as $line) {
+            if (!is_string($line)) continue;
+            $text = trim($line);
+            if ($text === "" || strlen($text) > 400) continue;
+            if (!preg_match('/^https?:\\/\\//i', $text)) continue;
+            $urls[] = $text;
+            if (count($urls) >= 20) break;
+        }
+    }
+    $videos["urls"] = $urls;
+    $seed = isset($saved["seed"]) ? (int) $saved["seed"] : 1;
+    if ($seed < 1) $seed = 1;
+    $videos["seed"] = $seed;
+    return $videos;
+}
+
+function stampVideos(array &$events, array &$data): void {
+    if (!isset($data["videos"]) || !is_array($data["videos"])) $data["videos"] = blankVideos();
+    else $data["videos"] = normalizeVideos($data["videos"]);
+    $pack = ["urls" => $data["videos"]["urls"], "seed" => $data["videos"]["seed"]];
+    foreach ($events as &$ev) {
+        if (!is_array($ev) || !isset($ev["obj"]) || !is_array($ev["obj"])) continue;
+        if (($ev["obj"]["t"] ?? "") === "welcome") $ev["obj"]["videos"] = $pack;
+    }
+    unset($ev);
 }
 
 function stampMusic(array &$events, array &$data, int $now): void {
@@ -899,8 +939,9 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
 
 const LIFT_STORY = 5.4;
 const LIFT_FLOORS = 64;
-const LIFT_CRUISE = 2.025;
-const LIFT_ACCEL = 1.725;
+// 与 js/lift.js 的 CRUISE、ACCEL 相同。
+const LIFT_CRUISE = 2.53125;
+const LIFT_ACCEL = 2.15625;
 const LIFT_DOOR_SPEED = 0.833333333333;
 const LIFT_DWELL = 3.1;
 const LIFT_X_REAR = -18.4;
@@ -1186,6 +1227,24 @@ function liftCall(array &$lift, int $floor): void {
     elseif ($lift["phase"] === "idle") $lift["phase"] = "moving";
 }
 
+function liftRoomEmpty(array $people): bool {
+    foreach ($people as $person) {
+        if (!is_array($person)) continue;
+        if (!empty($person["named"]) && empty($person["gone"])) return false;
+    }
+    return true;
+}
+
+// 房间没有还连着的人时，丢掉其它停靠，轿厢回一楼。人还在就不改他们的呼叫。切到别的页面不算离开。
+function parkEmptyLift(array &$lift, array $people): void {
+    if (!liftRoomEmpty($people)) return;
+    foreach (liftStopList($lift) as $floor) {
+        if ($floor !== 0) liftDrop($lift, $floor);
+    }
+    if ((int) $lift["current"] === 0 && abs((float) $lift["y"]) < 0.05 && $lift["phase"] !== "moving") return;
+    if (!liftHas($lift, 0)) liftCall($lift, 0);
+}
+
 function advanceLift(array &$data, int $now): void {
     if (!isset($data["lift"]) || !is_array($data["lift"])) $data["lift"] = blankLift($now);
     $lift = &$data["lift"];
@@ -1196,6 +1255,7 @@ function advanceLift(array &$data, int $now): void {
     $left = $gap;
     $steps = 0;
     $people = isset($data["people"]) && is_array($data["people"]) ? $data["people"] : [];
+    parkEmptyLift($lift, $people);
     while ($left > 0.0001 && $steps < 2200) {
         if ($lift["phase"] === "idle" && (float) $lift["door"] <= 0.001 && !$lift["stops"]) break;
         $step = min($left, 1 / 30);

@@ -109,7 +109,34 @@ export const adminHtml = `<!DOCTYPE html>
       background: #fff;
       resize: vertical;
     }
-    #frame-status, #arrange-status, #music-status, #sign-status { min-height: 1.4em; color: #6f6a64; }
+    #frame-status, #arrange-status, #music-status, #sign-status, #video-status { min-height: 1.4em; color: #6f6a64; }
+    #video-form {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 18px 0;
+      padding: 12px 14px;
+      background: rgba(255, 252, 248, 0.94);
+      border: 1px solid rgba(44, 41, 38, 0.1);
+    }
+    #video-form > label {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      margin: 0;
+    }
+    #video-links {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 12em;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid rgba(44, 41, 38, 0.16);
+      background: #fff;
+      resize: vertical;
+    }
     #sign-text { width: 18em; max-width: 100%; }
     #sign-speed { width: 5em; }
     #page-tabs {
@@ -344,6 +371,15 @@ export const adminHtml = `<!DOCTYPE html>
       <span class="hint">一楼接待机器人胸前，字从右往左循环滚。最多 32 个字。留空就回到「欢迎光临」。速度填 0 到 100 的整数，0 是字停住，20 是现在这一档，100 最快，大约是现在的 5 倍。比 20 大就更快。正在馆里的人会跟着换。</span>
     </form>
     <p id="sign-status"></p>
+    <h2>小屏幕</h2>
+    <form id="video-form">
+      <label>视频链接
+        <textarea id="video-links" rows="12" autocomplete="off" spellcheck="false" placeholder="https://www.bilibili.com/video/BV...&#10;https://www.youtube.com/watch?v=..."></textarea>
+      </label>
+      <button class="solid" type="submit">保存</button>
+      <span class="hint">一行一条，最多 20 条。B 站请贴完整的 BV 地址，YouTube 贴 watch、youtu.be 或 shorts。留空就都不放。保存后正在馆里的人会换成新的分配。</span>
+    </form>
+    <p id="video-status"></p>
     </section>
   </main>
   <script>
@@ -379,6 +415,11 @@ export const adminHtml = `<!DOCTYPE html>
     const arrangeStatus = document.getElementById("arrange-status");
     const musicStatus = document.getElementById("music-status");
     const signStatus = document.getElementById("sign-status");
+    const videoStatus = document.getElementById("video-status");
+    const videoInput = document.getElementById("video-links");
+    let videoStamp = 0;
+    let videoDirty = false;
+    videoInput.addEventListener("input", () => { videoDirty = true; });
     const signInput = document.getElementById("sign-text");
     const signSpeedInput = document.getElementById("sign-speed");
     let signStamp = 0;
@@ -456,6 +497,9 @@ export const adminHtml = `<!DOCTYPE html>
       if (!signDirty && stamp === signStamp) {
         if (typeof data.sign === "string" && document.activeElement !== signInput) signInput.value = data.sign;
         if (Number.isInteger(data.speed) && document.activeElement !== signSpeedInput) signSpeedInput.value = String(data.speed);
+      }
+      if (!videoDirty && stamp === videoStamp && Array.isArray(data.videos) && document.activeElement !== videoInput) {
+        videoInput.value = data.videos.join("\\n");
       }
       let solo = 0;
       let away = 0;
@@ -1369,6 +1413,38 @@ export const adminHtml = `<!DOCTYPE html>
       signStatus.textContent = data.speed === 0
         ? "已保存。正在馆里的人胸前这行字会停住"
         : "已保存。正在馆里的人胸前会按这个速度滚";
+    });
+
+    document.getElementById("video-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      videoStamp += 1;
+      const stamp = videoStamp;
+      videoDirty = true;
+      videoStatus.textContent = "正在保存…";
+      const res = await fetch("/admin/api/videos", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: videoInput.value }),
+      });
+      if (stamp !== videoStamp) return;
+      if (res.status === 401) {
+        showLogin("口令已失效");
+        return;
+      }
+      const data = await readJson(res);
+      if (!res.ok || !data || !Array.isArray(data.urls)) {
+        videoStatus.textContent = data && typeof data.error === "string" && data.error.length > 8
+          ? data.error
+          : "没有保存";
+        return;
+      }
+      videoInput.value = data.urls.join("\\n");
+      videoStamp += 1;
+      videoDirty = false;
+      videoStatus.textContent = data.urls.length
+        ? "已保存。正在馆里的人会换成新的分配。"
+        : "已保存。小屏幕上先不放视频。";
     });
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {

@@ -3,13 +3,14 @@
 // 来访表只给后台按天查看。PHP 那间房间不记这张表。
 // 画框排列存在这间房间里。PHP 那间不存，展厅读不到时用原来的顺序。
 // 琴声进度也在这间房间。有人站在展厅里才往下走，没人就停住。
-// 电梯也只有这一台。呼叫并进同一组停靠，轿厢位置由这里往前算，各页跟着走。
+// 电梯也只有这一台。呼叫并进同一组停靠，轿厢位置由这里往前算，各页跟着走。没人时回到一楼。
 // 顺序和音量也可以存在这里。没存过时，用 js/score.js 的默认曲目，音量按满。
 import { occupiesHall, blocksLiftDoor, STORY, RECEPTION, receptionHome } from "../js/layout.js";
 import { createLift } from "../js/lift.js";
 import { asPlaylist, playableTracks, scoreTotal, wrapScore } from "../js/score.js";
 import { readVolume } from "./audio-catalog.mjs";
 import { cleanSign, readSignSpeed, signSpeed, DEFAULT_SIGN_SPEED } from "../js/sign.js";
+import { CLIP_CAP, cleanClipList, parseClip } from "../js/clips.js";
 
 export { cleanSign, readSignSpeed, signSpeed };
 
@@ -262,6 +263,59 @@ export function attachMusic(events, music, now) {
   for (let i = 0; i < events.length; i++) {
     const obj = events[i] && events[i].obj;
     if (obj && obj.t === "welcome") obj.music = view;
+  }
+}
+
+// 小屏幕的链接和洗牌种子。认链接、怎么分到各块屏幕在 js/clips.js。
+export function blankVideos() {
+  return { urls: [], seed: 1 };
+}
+
+export function restoreVideos(saved) {
+  const videos = blankVideos();
+  if (!saved || typeof saved !== "object") return videos;
+  const raw = Array.isArray(saved.urls) ? saved.urls : [];
+  const urls = [];
+  for (let i = 0; i < raw.length; i++) {
+    const parsed = parseClip(raw[i]);
+    if (parsed.error || !parsed.url) continue;
+    urls.push(parsed.url);
+    if (urls.length >= CLIP_CAP) break;
+  }
+  videos.urls = urls;
+  const seed = Math.floor(Number(saved.seed));
+  if (seed >= 1) videos.seed = seed;
+  return videos;
+}
+
+// 每次保存都换种子，同一份名单也会重新分。空名单是合法的。
+export function applyVideos(videos, body, now) {
+  if (!videos || !body || typeof body !== "object") return null;
+  if (typeof body.text !== "string") return { error: "这不是 B 站或 YouTube 的视频链接。" };
+  const cleaned = cleanClipList(body.text);
+  if (cleaned.error) return cleaned;
+  videos.urls = cleaned.urls;
+  const stamp = Math.floor(Number(now) || Date.now());
+  videos.seed = Math.max(1, stamp);
+  return videoView(videos);
+}
+
+export function videoView(videos) {
+  const row = videos || blankVideos();
+  return { t: "videos", urls: row.urls.slice(), seed: row.seed || 1 };
+}
+
+export function videoPack(videos) {
+  const view = videoView(videos);
+  return { urls: view.urls, seed: view.seed };
+}
+
+export function attachVideos(events, videos) {
+  if (!events || !videos) return;
+  const pack = videoPack(videos);
+  for (let i = 0; i < events.length; i++) {
+    const obj = events[i] && events[i].obj;
+    if (obj && obj.t === "welcome") obj.videos = pack;
   }
 }
 
@@ -941,6 +995,35 @@ export function liftBusy(shared) {
   return sim.phase !== "idle" || sim.door > 0.001 || sim.list().length > 0;
 }
 
+function roomEmpty(people) {
+  if (!people || typeof people.values !== "function") return true;
+  for (const person of people.values()) {
+    if (person && person.named && !person.gone) return false;
+  }
+  return true;
+}
+
+// 联机房间没有还连着的人时，丢掉其它停靠，轿厢回一楼。人还在就不改他们的呼叫。切到别的页面不算离开。
+function parkEmptyLift(shared, people) {
+  if (!shared || !shared.sim || !roomEmpty(people)) return;
+  const sim = shared.sim;
+  const stops = sim.list();
+  for (let i = 0; i < stops.length; i++) {
+    if (stops[i] !== 0) sim.cancel(stops[i]);
+  }
+  if (sim.current === 0 && Math.abs(sim.y) < 0.05 && sim.phase !== "moving") return;
+  if (!sim.has(0)) sim.call(0);
+}
+
+// 有人时只在轿厢忙着才往前算。没人、又还没停在一楼时也要算，空房才能自己回去。
+export function liftShouldRun(shared, people) {
+  if (!shared || !shared.sim) return false;
+  if (!roomEmpty(people)) return liftBusy(shared);
+  const sim = shared.sim;
+  if (sim.phase !== "idle" || sim.door > 0.001 || sim.list().length > 0) return true;
+  return sim.current !== 0 || Math.abs(sim.y) >= 0.05;
+}
+
 function liftBlocked(people, cabY) {
   if (!people) return false;
   for (const person of people.values()) {
@@ -957,6 +1040,7 @@ export function advanceLift(shared, people, now) {
   if (gap < 0) gap = 0;
   if (gap > 70) gap = 70;
   shared.at = at;
+  parkEmptyLift(shared, people);
   let left = gap;
   let steps = 0;
   while (left > 0.0001 && steps < 2200) {

@@ -220,6 +220,7 @@ let loadPumping = false;
 const LOAD_CAP = 2;
 const FALLBACK_SRC = usableFrameImage(FALLBACK_FRAME_IMAGE);
 let liftPadOpen = false;
+let liftPassingShown = -2;
 let doorCall = false;
 let revealFloor = -1;
 let pictureAim = -1;
@@ -1757,6 +1758,7 @@ function closeLiftPad() {
 function openLiftPad() {
   if (!liftPad || liftPadOpen) return;
   liftPadOpen = true;
+  liftPassingShown = -2;
   liftPad.hidden = false;
   if (liftToggle) liftToggle.setAttribute("aria-expanded", "true");
   down.clear();
@@ -1836,16 +1838,41 @@ function onDoorKey() {
   pushLift(playerFloor(), true);
 }
 
+function liftShownFloor() {
+  const level = lift.y / STORY;
+  const rounded = Math.round(level);
+  let shown = Math.abs(level - rounded) > 0.18 ? (lift.dir < 0 ? Math.floor(level) : Math.ceil(level)) : rounded;
+  if (shown < 0) shown = 0;
+  if (built && shown >= built.floors) shown = built.floors - 1;
+  return shown;
+}
+
 function paintLiftChoices() {
   const list = document.getElementById("lift-list");
   if (!list || !lift) return;
+  const passing = lift.phase === "moving" ? liftShownFloor() : -1;
   const buttons = list.children;
   for (let i = 0; i < buttons.length; i++) {
     const button = buttons[i];
-    const on = liftChosen(Number(button.dataset.floor));
+    const floor = Number(button.dataset.floor);
+    const on = liftChosen(floor);
+    const here = floor === passing;
     button.classList.toggle("chosen", on);
+    button.classList.toggle("passing", here);
     const pressed = on ? "true" : "false";
     if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+    if (here) {
+      if (button.getAttribute("aria-current") !== "true") button.setAttribute("aria-current", "true");
+    } else if (button.hasAttribute("aria-current")) {
+      button.removeAttribute("aria-current");
+    }
+  }
+  if (passing !== liftPassingShown) {
+    liftPassingShown = passing;
+    if (passing >= 0 && liftPadOpen) {
+      const current = list.querySelector("button.passing");
+      if (current) current.scrollIntoView({ block: "nearest" });
+    }
   }
 }
 
@@ -1868,9 +1895,7 @@ function syncLiftHud() {
   const showStatus = liftLabelOn();
   liftToggle.hidden = !showStatus;
   if (liftPad) liftPad.hidden = !liftPadOpen;
-  const level = lift.y / STORY;
-  const rounded = Math.round(level);
-  const shown = Math.abs(level - rounded) > 0.18 ? (lift.dir < 0 ? Math.floor(level) : Math.ceil(level)) : rounded;
+  const shown = liftShownFloor();
   const arrow = lift.dir > 0 && lift.phase === "moving" ? " ▲" : lift.dir < 0 && lift.phase === "moving" ? " ▼" : "";
   const label = (shown + 1) + "F" + arrow;
   if (liftToggle.textContent !== label) liftToggle.textContent = label;

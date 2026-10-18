@@ -11,8 +11,8 @@ const HUM = 0.045;
 const RUMBLE = 0.05;
 const CHIME = 0.04;
 const CLICK = 0.08;
-// 轿厢巡航大约 2 米/秒。机械声按这个收满。
-const CRUISE = 2.02;
+// 轿厢巡航大约 2.53 米/秒。机械声按这个收满。
+const CRUISE = 2.53125;
 
 function mulberry(seed) {
   let a = seed >>> 0;

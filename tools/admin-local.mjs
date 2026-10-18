@@ -273,6 +273,20 @@ async function route(req, res, lobby, path, url) {
     send(res, 200, saved);
     return;
   }
+  if (path === "/admin/api/videos" && req.method === "POST") {
+    const body = await readBody(req, 12000);
+    if (!body) {
+      send(res, 400, { error: "body" });
+      return;
+    }
+    const saved = lobby.setVideos(body.text);
+    if (!saved || saved.error) {
+      send(res, 400, { error: (saved && saved.error) || "body" });
+      return;
+    }
+    send(res, 200, { urls: saved.urls, seed: saved.seed });
+    return;
+  }
   if (path === "/admin/api/kick" && req.method === "POST") {
     const body = await readBody(req);
     const until = lobby.kick(body || {});

@@ -21,8 +21,12 @@ import {
   dayBounds,
   finishVisit,
   attachMusic,
+  attachVideos,
   attachDesk,
   blankMusic,
+  blankVideos,
+  applyVideos,
+  videoPack,
   blankRobot,
   applyMusicDesk,
   foldMusic,
@@ -38,6 +42,7 @@ import {
   pruneSolo,
   rememberSolo,
   restoreMusic,
+  restoreVideos,
   restoreNotes,
   restoreRobot,
   deskView,
@@ -123,6 +128,7 @@ export class SitopiaLobby extends DurableObject {
     this.arrange = cleanArrange(null);
     this.kicks = {};
     this.music = blankMusic(Date.now());
+    this.videos = blankVideos();
     this.musicSavedAt = 0;
     this.robot = blankRobot();
     this.robotSavedAt = 0;
@@ -173,6 +179,7 @@ export class SitopiaLobby extends DurableObject {
       const swept = this.sweepSolo(now);
       if (swept) await this.persistSolo();
       this.music = restoreMusic(await ctx.storage.get("music"), now);
+      this.videos = restoreVideos(await ctx.storage.get("videos"));
       syncMusic(this.music, this.roster(), this.solo, now);
       await this.persistMusic(now, true);
       this.robot = restoreRobot(await ctx.storage.get("robot"));
@@ -466,7 +473,7 @@ export class SitopiaLobby extends DurableObject {
     const ev = await this.noteMusic(this.roster(), now);
     if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
     else if (this.music.playing) await this.persistMusic(now, false);
-    return json({ ok: true, music: musicView(this.music, now), ...signState(this.robot) }, 200, request);
+    return json({ ok: true, music: musicView(this.music, now), videos: videoPack(this.videos), ...signState(this.robot) }, 200, request);
   }
 
   async leave(request) {
@@ -531,6 +538,7 @@ export class SitopiaLobby extends DurableObject {
         now,
         people: adminPeople(this.roster(), this.solo, now),
         ...signState(this.robot),
+        videos: this.videos.urls.slice(),
       }, 200);
     }
     if (url.pathname === "/admin/api/visits" && request.method === "GET") {
@@ -642,6 +650,16 @@ export class SitopiaLobby extends DurableObject {
       this.fanout(null, [{ who: "all", obj: { t: "sign", text: saved.sign, speed: saved.speed } }]);
       return json(saved, 200);
     }
+    if (url.pathname === "/admin/api/videos" && request.method === "POST") {
+      const body = await readJson(request, 12000);
+      if (!body) return json({ error: "body" }, 400);
+      const view = applyVideos(this.videos, body, Date.now());
+      if (!view) return json({ error: "body" }, 400);
+      if (view.error) return json({ error: view.error }, 400);
+      await this.ctx.storage.put("videos", { urls: this.videos.urls, seed: this.videos.seed });
+      this.fanout(null, [{ who: "all", obj: view }]);
+      return json({ urls: view.urls, seed: view.seed }, 200);
+    }
     return new Response("not found", { status: 404 });
   }
 
@@ -658,6 +676,7 @@ export class SitopiaLobby extends DurableObject {
       if (ev) this.fanout(null, [{ who: "all", obj: ev }]);
       const view = musicView(this.music, now);
       Object.assign(view, signState(this.robot));
+      view.videos = videoPack(this.videos);
       return json(view, 200, request);
     }
     if (url.pathname === "/lobby/beat") {
@@ -680,6 +699,10 @@ export class SitopiaLobby extends DurableObject {
     const person = blankPerson(newId(), Date.now());
     person.ip = clientIp(request, this.token);
     server.serializeAttachment(person);
+    const arrived = Date.now();
+    const homing = pumpLift(this.lift, this.roster(), arrived);
+    if (homing) this.fanout(null, [{ who: "all", obj: homing }]);
+    await this.nudgeLift(arrived);
     const pending = await this.ctx.storage.getAlarm();
     if (pending == null) await this.ctx.storage.setAlarm(Date.now() + PING_MS);
     return new Response(null, { status: 101, webSocket: client });
@@ -731,6 +754,7 @@ export class SitopiaLobby extends DurableObject {
       const lift = pumpLift(this.lift, people, now);
       if (lift) result.out.push({ who: "all", obj: lift });
       attachMusic(result.out, this.music, now);
+      attachVideos(result.out, this.videos);
       attachLift(result.out, this.lift);
       attachDesk(result.out, this.robot, this.notes);
     }
@@ -848,9 +872,13 @@ export class SitopiaLobby extends DurableObject {
     if (person.named && person.seat) this.noteDeparture(person.seat, visitLeftAt(person.seen, now));
     const ev = await this.noteMusic(people, now);
     if (ev) out.push({ who: "all", obj: ev });
+    const lift = pumpLift(this.lift, people, now);
+    if (lift) out.push({ who: "all", obj: lift });
     ws.serializeAttachment(person);
     this.fanout(ws, out);
     if (turned) await this.persistRobot(now, true);
+    if (lift) await this.persistLift(now);
+    await this.nudgeLift(now);
   }
 }
 
