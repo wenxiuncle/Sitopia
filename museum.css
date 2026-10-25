@@ -255,7 +255,8 @@ body.opening #tab-hint {
   position: fixed;
   left: 22px;
   bottom: 22px;
-  z-index: 2;
+  /* 高于 #screen-mount。放映厅播视频时，说明卡留在画面上面。 */
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -337,6 +338,8 @@ body.esc-card #boot { pointer-events: auto; }
   position: fixed;
   top: 22px;
   left: 22px;
+  /* 高于 #screen-mount。放映厅播视频时，楼层字留在画面上面。 */
+  z-index: 3;
   pointer-events: none;
 }
 
@@ -535,6 +538,7 @@ body.dark-sky #chatter li {
   left: 50%;
   top: calc(50% + 36px);
   transform: translateX(-50%);
+  z-index: 3;
   padding: 4px 8px;
   background: var(--plate);
   color: #2c2926;
@@ -1442,6 +1446,7 @@ body.dark-sky #tab-hint {
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+  /* 整页盖住画布。楼层字、说明卡和电梯提示是 z-index 3，播视频时留在画面上面。 */
   z-index: 2;
 }
 
