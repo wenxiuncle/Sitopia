@@ -148,6 +148,7 @@ let planPeopleKey = "";
 let guestPlaceKey = "";
 let remoteFace = null;
 let robotLookHeld = false;
+let robotCardWas = false;
 let framePickDist = Infinity;
 const dayNav = document.getElementById("day");
 const corner = document.getElementById("corner");
@@ -240,6 +241,7 @@ orbitRig.rotation.order = "YXZ";
 let selfVisitor = null;
 let walkPhase = 0;
 const lookDir = new THREE.Vector3();
+const hoverNdc = new THREE.Vector3();
 let solidList = null;
 let solidWalls = 0;
 let clickShieldUntil = 0;
@@ -1293,21 +1295,26 @@ function onRobotMessage(view) {
   const mine = presence && presence.myId();
   const linked = presence && presence.linked();
   const driving = !linked || !receptionDriver || mine === receptionDriver;
+  // 司机这一页自己在走，房间回放慢一拍。卡片还开着时更不能把坐标盖掉，否则一关卡片就跳回旧位置。
+  const holdPose = driving && was === receptionDriver && (was || robotLookHeld);
+  if (holdPose) return;
   if (!driving || was !== receptionDriver) {
-    receptionState.x = view.x;
-    receptionState.z = view.z;
-    receptionState.yaw = view.yaw;
-    receptionState.face = view.yaw;
-    receptionState.hold = 0;
-    if (driving) {
-      receptionRender.x = view.x;
-      receptionRender.z = view.z;
-      receptionRender.yaw = view.yaw;
-    } else {
-      receptionFollow.x = view.x;
-      receptionFollow.z = view.z;
-      receptionFollow.yaw = view.yaw;
+    const watching = driving && robotLookHeld;
+    if (!watching) {
+      receptionState.x = view.x;
+      receptionState.z = view.z;
+      receptionState.yaw = view.yaw;
+      receptionState.face = view.yaw;
+      receptionState.hold = 0;
+      if (driving) {
+        receptionRender.x = view.x;
+        receptionRender.z = view.z;
+        receptionRender.yaw = view.yaw;
+      }
     }
+    receptionFollow.x = view.x;
+    receptionFollow.z = view.z;
+    receptionFollow.yaw = view.yaw;
   }
 }
 
@@ -1337,6 +1344,7 @@ function onDeskUnlink() {
   notesShared = false;
   liftShared = false;
   liftWish.clear();
+  if (lift) lift.releaseFollow();
   if (!guestbook.hidden) renderGuestbook();
 }
 
@@ -1349,6 +1357,30 @@ function lookMin() {
   return minT;
 }
 
+function placeVideoHover(on) {
+  const spot = on && artHall && artHall.hoverSpot ? artHall.hoverSpot() : null;
+  document.body.classList.toggle("video-aim", !!spot);
+  if (!spot) {
+    hoverEl.style.left = "";
+    hoverEl.style.top = "";
+    hoverEl.style.bottom = "";
+    return;
+  }
+  hoverNdc.set(spot.x, spot.y, spot.z).project(camera);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const behind = hoverNdc.z < -1 || hoverNdc.z > 1;
+  let sx = behind ? w / 2 : (hoverNdc.x * 0.5 + 0.5) * w;
+  let sy = behind ? h - 28 : (-hoverNdc.y * 0.5 + 0.5) * h + 12;
+  if (sx < 24) sx = 24;
+  if (sx > w - 24) sx = w - 24;
+  if (sy > h - 28) sy = h - 28;
+  if (sy < 12) sy = 12;
+  hoverEl.style.left = sx + "px";
+  hoverEl.style.top = sy + "px";
+  hoverEl.style.bottom = "auto";
+}
+
 function aimHover() {
   const index = pickFrame();
   const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
@@ -1356,12 +1388,15 @@ function aimHover() {
   const onScreen = screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist);
   if (onScreen) {
     if (hoverIndex >= 0) setHover(-1);
-    hoverEl.textContent = artHall.hoverLabel();
-    hoverEl.hidden = false;
+    const label = artHall.hoverLabel();
+    hoverEl.textContent = label;
+    hoverEl.hidden = !label;
     screenHover = true;
     hoverRobot = false;
+    placeVideoHover(true);
     return;
   }
+  placeVideoHover(false);
   if (screenHover) {
     screenHover = false;
     hoverEl.hidden = true;
@@ -1417,9 +1452,35 @@ function showReception(now) {
   updateReception(0.016, now || performance.now());
 }
 
+function followRobotPos(dt, allowSnap) {
+  const gap = Math.hypot(receptionFollow.x - receptionRender.x, receptionFollow.z - receptionRender.z);
+  // 刚进馆、人还没看见它走到哪，差得远可以一次对齐。卡片开着时不能对齐，关上就会跳。
+  if (allowSnap && gap > 1.6) {
+    receptionRender.x = receptionFollow.x;
+    receptionRender.z = receptionFollow.z;
+    return;
+  }
+  if (gap < 0.004) {
+    receptionRender.x = receptionFollow.x;
+    receptionRender.z = receptionFollow.z;
+    return;
+  }
+  const k = 1 - Math.exp(-Math.min(dt, 0.05) * 8);
+  receptionRender.x += (receptionFollow.x - receptionRender.x) * k;
+  receptionRender.z += (receptionFollow.z - receptionRender.z) * k;
+}
+
+function pinRobotFollow() {
+  receptionFollow.x = receptionRender.x;
+  receptionFollow.z = receptionRender.z;
+  receptionFollow.yaw = receptionRender.yaw;
+}
+
 function updateReception(dt, now) {
   if (!reception) return;
   const card = !guestbook.hidden;
+  const cardShut = robotCardWas && !card;
+  robotCardWas = card;
   const linked = presence && presence.linked();
   const mine = presence && presence.myId();
   // 没连上、房间还没指定司机、或司机就是这一页，才由这里往前走。
@@ -1437,6 +1498,7 @@ function updateReception(dt, now) {
     receptionRender.x = receptionState.x;
     receptionRender.z = receptionState.z;
     receptionRender.yaw = receptionState.yaw;
+    pinRobotFollow();
     if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
     robotLookHeld = true;
   } else if (driving && !card) {
@@ -1448,21 +1510,16 @@ function updateReception(dt, now) {
     receptionRender.x = receptionState.x;
     receptionRender.z = receptionState.z;
     receptionRender.yaw = receptionState.yaw;
+    pinRobotFollow();
     if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
   } else if (card) {
     if (linked && presence.sendRobotFace) presence.sendRobotFace(px, pz);
+    // 卡片盖住时也跟着房间里的位置走，只把朝向转到看卡片的人。关上才不会从冻住的旧坐标跳过去。
+    followRobotPos(dt, false);
     const face = yawAt(receptionRender.x, receptionRender.z, px, pz);
     if (face != null) receptionRender.yaw = stepYaw(receptionRender.yaw, face, dt);
   } else {
-    const gap = Math.hypot(receptionFollow.x - receptionRender.x, receptionFollow.z - receptionRender.z);
-    if (gap > 1.6) {
-      receptionRender.x = receptionFollow.x;
-      receptionRender.z = receptionFollow.z;
-    } else {
-      const k = 1 - Math.exp(-Math.min(dt, 0.05) * 8);
-      receptionRender.x += (receptionFollow.x - receptionRender.x) * k;
-      receptionRender.z += (receptionFollow.z - receptionRender.z) * k;
-    }
+    followRobotPos(dt, !cardShut);
     // 朝向跟现场同一套慢转。位置可以快追，朝向不能跟着追。
     // 两个人同时开着卡片时，这一页先对着自己转；关上后若一下子对齐房间朝向，转身就会很快。
     receptionRender.yaw = stepYaw(receptionRender.yaw, receptionFollow.yaw, dt);
@@ -1817,7 +1874,7 @@ function pushLift(floor, on) {
 
 function onLiftMessage(view) {
   if (!lift || !view) return;
-  lift.adopt(view);
+  lift.adopt(view, performance.now());
   liftShared = true;
   for (const [floor, wish] of liftWish) {
     if (lift.has(floor) === wish.on) liftWish.delete(floor);
@@ -2031,8 +2088,11 @@ function step(dt, now) {
   }
   if (doors) doors.update(doorOpen);
   if (lift) {
-    if (liftShared) lift.predict(dt);
-    else lift.tick(dt, holdingLiftDoor());
+    if (liftShared) lift.present(now);
+    else {
+      lift.releaseFollow();
+      lift.tick(dt, holdingLiftDoor());
+    }
     if (liftDoors) {
       const opens = [];
       for (let f = 0; f < built.floors; f++) opens.push(liftOpenVisual(f));
@@ -2049,6 +2109,11 @@ function step(dt, now) {
       hoverRobot = false;
       hoverEl.hidden = true;
     }
+    if (screenHover) {
+      screenHover = false;
+      hoverEl.hidden = true;
+    }
+    placeVideoHover(false);
   } else {
     planarBasis(lookSource(), fwd, right);
     let ix = 0;
@@ -2158,8 +2223,20 @@ function noteLag(now) {
     });
 }
 
-function makeBeacons(roof) {
-  if (!roof) return null;
+function makeBeacons(roofs) {
+  const list = Array.isArray(roofs) ? roofs.filter((item) => item && !item.shadowOnly) : [];
+  if (!list.length) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < list.length; i++) {
+    const box = list[i];
+    if (box.minX < minX) minX = box.minX;
+    if (box.maxX > maxX) maxX = box.maxX;
+    if (box.minZ < minZ) minZ = box.minZ;
+    if (box.maxZ > maxZ) maxZ = box.maxZ;
+  }
   const group = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({ color: 0x3a0a08, fog: false });
   const glow = new THREE.MeshBasicMaterial({
@@ -2169,16 +2246,30 @@ function makeBeacons(roof) {
     depthWrite: false,
     fog: false,
   });
-  const y = roof.maxY + 0.45;
   const spots = [
-    [roof.minX - 0.2, roof.minZ - 0.2],
-    [roof.maxX + 0.2, roof.minZ - 0.2],
-    [roof.minX - 0.2, roof.maxZ + 0.2],
-    [roof.maxX + 0.2, roof.maxZ + 0.2],
+    [minX - 0.2, minZ - 0.2],
+    [maxX + 0.2, minZ - 0.2],
+    [minX - 0.2, maxZ + 0.2],
+    [maxX + 0.2, maxZ + 0.2],
   ];
+  const topAt = (x, z) => {
+    let best = null;
+    let bestD = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const box = list[i];
+      const cx = Math.max(box.minX, Math.min(box.maxX, x));
+      const cz = Math.max(box.minZ, Math.min(box.maxZ, z));
+      const dist = (cx - x) * (cx - x) + (cz - z) * (cz - z);
+      if (dist < bestD - 1e-6 || (Math.abs(dist - bestD) < 1e-6 && (!best || box.maxY > best.maxY))) {
+        bestD = dist;
+        best = box;
+      }
+    }
+    return best ? best.maxY + 0.45 : 0;
+  };
   for (let i = 0; i < spots.length; i++) {
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), mat);
-    lamp.position.set(spots[i][0], y, spots[i][1]);
+    lamp.position.set(spots[i][0], topAt(spots[i][0], spots[i][1]), spots[i][1]);
     const halo = new THREE.Mesh(new THREE.SphereGeometry(0.58, 8, 6), glow);
     halo.position.copy(lamp.position);
     group.add(lamp, halo);
@@ -3064,6 +3155,7 @@ async function buildScene(data, arrange) {
     roomBox: { value: new THREE.Vector4(bodyRoom.minX, bodyRoom.maxX, bodyRoom.minZ, bodyRoom.maxZ) },
     artBox: { value: new THREE.Vector4(1, -1, 0, 0) },
     artY: { value: new THREE.Vector2(0, -1) },
+    artSeam: { value: new THREE.Vector4(1e3, -1e3, 1e3, -1e3) },
     artFill: { value: 0.12 },
   };
   if (built.art && built.art.lit) {
@@ -3071,10 +3163,14 @@ async function buildScene(data, arrange) {
     sunShared.artBox.value.set(box.minX, box.maxX, box.minZ, box.maxZ);
     sunShared.artY.value.set(box.minY, box.maxY);
   }
+  if (built.art && built.art.inner) {
+    const face = built.art.inner;
+    sunShared.artSeam.value.set(face.x0, face.x1, face.z0, face.z1);
+  }
   const role = () => ({ fill: { value: 1 }, gain: { value: 0 }, cast: { value: 0 }, lamps: { value: 0 } });
-  const artRole = (fill) => {
+  const artRole = (fill, mode) => {
     const row = role();
-    row.lamps.value = 3;
+    row.lamps.value = mode == null ? 3 : mode;
     row.footFill = { value: fill };
     return row;
   };
@@ -3095,7 +3191,8 @@ async function buildScene(data, arrange) {
   sunRoles.glass.lamps.value = 2;
   sunRoles.body.lamps.value = 2;
   sunRoles.ground.cast.value = 1;
-  const roof = built.dress.find((item) => item.kind === "roof");
+  const roofs = built.dress.filter((item) => item.kind === "roof");
+  const roof = roofs.find((item) => item.shadowOnly) || roofs[0];
   const shell = built.shell;
   sunShared.block.value.set(shell.minX, shell.maxX, shell.minZ, shell.maxZ);
   sunShared.roof.value = shell.top;
@@ -3261,7 +3358,7 @@ async function buildScene(data, arrange) {
   const kinds = ["lattice", "fin", "groove", "roof", "beam", "glass", "step", "rail", "wood"];
   for (let k = 0; k < kinds.length; k++) {
     const kind = kinds[k];
-    const items = built.dress.filter((item) => item.kind === kind);
+    const items = built.dress.filter((item) => item.kind === kind && !(kind === "roof" && item.shadowOnly));
     const mesh = kind === "glass" ? paneMesh(items, byKind[kind]) : boxMesh(items, byKind[kind]);
     if (mesh) {
       if (kind === "glass") mesh.renderOrder = 3;
@@ -3346,16 +3443,20 @@ async function buildScene(data, arrange) {
   }
   const inner = wallMesh(built.white.concat(built.liners), whiteMat);
   if (inner) hold(inner);
-  const ceilInner = wallMesh(built.ceilWalls || [], ceilMat);
+  // 厅内四面墙和门墙都用原来的深灰。门墙不再走大厅天花那一路，避免比东西北亮一截。
+  const artWallMat = lit(0x2c2c31, "artWall", {
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const ceilInner = wallMesh(built.ceilWalls || [], artWallMat);
   if (ceilInner) hold(ceilInner);
   if (built.art) {
     const artRig = artHallMeshes(built.art, {
       // 墙和门帘内侧只吃脚灯。天花是星空，不吃脚灯。门帘朝门厅的那一面仍走大厅的灯。
-      walls: lit(0x2c2c31, "artWall", {
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-      }),
+      walls: artWallMat,
+      lid: ceilMat,
+      lips: ceilMat,
       curtain: lit(0xffffff, "room", { vertexColors: true }),
       curtainIn: lit(0xffffff, "artCurtain", { vertexColors: true }),
       screen: new THREE.MeshBasicMaterial({ color: 0x101218 }),
@@ -3373,6 +3474,9 @@ async function buildScene(data, arrange) {
       onOpen() {
         closePanel(false);
         closeGuestbook(false);
+        screenHover = false;
+        hoverEl.hidden = true;
+        placeVideoHover(false);
       },
     });
   }
@@ -3479,7 +3583,7 @@ async function buildScene(data, arrange) {
   nightSpillMesh.material.polygonOffsetUnits = -8;
   stage(nightSpillMesh);
   await shown();
-  beacons = makeBeacons(built.dress.find((item) => item.kind === "roof"));
+  beacons = makeBeacons(built.dress.filter((item) => item.kind === "roof"));
   if (beacons) scene.add(beacons.group);
   const cones = lightConeMesh(built.cones, coneMat);
   const discs = floorDiscMesh(built.cones, discMat);
@@ -3596,8 +3700,8 @@ async function buildScene(data, arrange) {
       if (ambience) ambience.follow(view);
     },
     onSign: applySign,
-    onVideos: (urls, seed) => {
-      if (artHall && artHall.setClips) artHall.setClips(urls, seed);
+    onVideos: (urls) => {
+      if (artHall && artHall.setLinks) artHall.setLinks(urls);
     },
     onRobot: onRobotMessage,
     onRobotFace,

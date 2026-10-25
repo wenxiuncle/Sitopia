@@ -431,7 +431,7 @@ export function attachLobby(server) {
       };
     },
     setVideos(text) {
-      const view = applyVideos(room.videos, { text }, Date.now());
+      const view = applyVideos(room.videos, { text });
       if (!view || view.error) return view;
       broadcast(view);
       return view;

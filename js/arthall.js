@@ -1,11 +1,10 @@
-// 数字艺术厅的屏幕、曲目和地面反光。
+// 趣站放映厅的屏幕、曲目和地面反光。
 // 能拿到视频文件时，画面用这一路。地面倒影是同一帧画到布上，不再另播一路。
 // 只有接口真的给出可跨域读取的音轨时，才改走环绕总线，并且先拆掉 iframe，避免两路一起响。
 // B 站、YouTube 播不了文件时用官方播放器，地面再放一路静音的同一地址。
 
 import * as THREE from "../vendor/three.module.js";
 import { STORY } from "./layout.js";
-import { assignClips, clipEmbed, clipPoster, parseClip } from "./clips.js";
 
 function epsilon(value) {
   return Math.abs(value) < 1e-10 ? 0 : value;
@@ -101,8 +100,11 @@ function biliSrc(parsed, seconds, muted) {
 
 function youtubeSrc(parsed, seconds, muted) {
   const t = Math.max(0, Math.floor(seconds || parsed.start || 0));
+  const origin = location.origin && location.origin !== "null"
+    ? "&origin=" + encodeURIComponent(location.origin)
+    : "";
   return "https://www.youtube.com/embed/" + encodeURIComponent(parsed.id) +
-    "?autoplay=1&rel=0&playsinline=1&start=" + t +
+    "?autoplay=1&rel=0&playsinline=1&enablejsapi=1" + origin + "&start=" + t +
     (muted ? "&mute=1" : "");
 }
 
@@ -353,7 +355,8 @@ export function createArtHall(art, screenMesh, hooks) {
   const reflectAnchor = new THREE.Object3D();
   const screen = art.screen;
   const pxPerM = 100;
-  const reflectDepth = 3.4;
+  // 布与屏幕同宽。进深是地面上的画面高度，近边贴在屏幕正下方。
+  const reflectDepth = 6.8;
   anchor.position.set(screen.x, screen.y, screen.z);
   anchor.scale.set(0.01, 0.01, 0.01);
   // 元素底边朝屏幕。中心再往厅内让出半个进深，近边就落在屏幕正下方。
@@ -368,55 +371,28 @@ export function createArtHall(art, screenMesh, hooks) {
     reflect.style.width = (screen.w * pxPerM) + "px";
     reflect.style.height = (reflectDepth * pxPerM) + "px";
   }
+  // 播放器先按大屏幕的 16:9 排版，再压进地面。否则扁盒子两侧会留出黑边。
+  const reflectScaleY = reflectDepth / screen.h;
+  function fitReflectPicture(el) {
+    if (!el) return;
+    el.style.inset = "auto";
+    el.style.left = "0";
+    el.style.width = "100%";
+    el.style.top = "50%";
+    el.style.height = (100 / reflectScaleY) + "%";
+    el.style.transformOrigin = "center center";
+    el.style.transform = "translateY(-50%) scaleY(" + reflectScaleY + ")";
+  }
+  fitReflectPicture(reflectFrame);
+  fitReflectPicture(reflectCanvas);
   if (screenMesh && screenMesh.material && screenMesh.material.color) {
     screenMesh.material.color.setHex(0x101218);
   }
   const fwd = new THREE.Vector3();
   const ndc = new THREE.Vector3();
-  const panelSpecs = art.panels || [];
-  const panelEls = [];
-  const panelAnchors = [];
-  const panelItems = new Array(panelSpecs.length).fill(null);
-  const panelResume = new Array(panelSpecs.length).fill(0);
-  const panelPosterOk = new Array(panelSpecs.length).fill(false);
-  const panelPosterFail = new Array(panelSpecs.length).fill(false);
-  const panelPosterToken = new Array(panelSpecs.length).fill(0);
-  const posterCache = new Map();
-  let panelPlaying = -1;
-  let panelStarted = 0;
-  let pickedPanel = -1;
-  let pickedNear = false;
-  let clipKey = "";
-  // 页面层只放正面画面。厚 10 厘米的箱体在网格里，侧面和背面不再靠 CSS 折出来。
-  if (view) {
-    for (let i = 0; i < panelSpecs.length; i++) {
-      const spec = panelSpecs[i];
-      const lipX = spec.lipX;
-      const lipTop = spec.lipTop;
-      const el = document.createElement("div");
-      el.className = "art-panel";
-      el.style.width = ((spec.w + lipX * 2) * pxPerM) + "px";
-      el.style.height = ((spec.h + lipTop) * pxPerM) + "px";
-      const face = document.createElement("div");
-      face.className = "art-panel-face";
-      face.style.top = (lipTop * pxPerM) + "px";
-      face.style.left = (lipX * pxPerM) + "px";
-      face.style.right = (lipX * pxPerM) + "px";
-      face.style.bottom = "0";
-      const img = document.createElement("img");
-      img.alt = "";
-      img.draggable = false;
-      face.appendChild(img);
-      el.appendChild(face);
-      view.appendChild(el);
-      panelEls.push(el);
-      const panelAnchor = new THREE.Object3D();
-      panelAnchor.position.set(spec.x, spec.y + lipTop / 2, spec.z);
-      panelAnchor.rotation.y = spec.yaw;
-      panelAnchor.scale.set(0.01, 0.01, 0.01);
-      panelAnchors.push(panelAnchor);
-    }
-  }
+  let pickedScreen = false;
+  // 房间里的链接。访客没改过输入框时，才用新的一份盖上去。
+  let roomText = null;
 
   let width = window.innerWidth || 1;
   let height = window.innerHeight || 1;
@@ -441,6 +417,15 @@ export function createArtHall(art, screenMesh, hooks) {
   const LEAVE_FADE = 1.15;
   let leaveAt = 0;
   let leaveFrom = 1;
+  // 卡片上的音量。接上喇叭时只拧总增益，避免和元素音量叠成两次。
+  let clipVolume = 1;
+  // 上一帧已经写进总增益的电平。每帧都取消再预约会把滑块拧回去。
+  let heard = null;
+  let volumeTimer = 0;
+
+  function elementVolume() {
+    return sourceNode ? 1 : clipVolume;
+  }
 
   function fail(msg) {
     if (!error) return;
@@ -483,7 +468,7 @@ export function createArtHall(art, screenMesh, hooks) {
       resumeSec = video.currentTime || resumeSec;
       video.pause();
     }
-    if (video) video.volume = 1;
+    if (video) video.volume = elementVolume();
     leaveAt = 0;
     clearPictureDim();
     hideMount();
@@ -496,14 +481,8 @@ export function createArtHall(art, screenMesh, hooks) {
     if (reflect) reflect.hidden = false;
   }
 
-  // 大屏幕没在播时，只收起它自己的画面。安装层留着，小屏幕才跟它一起按远近遮挡。
-  function hidePicture() {
-    clearBodyHole();
-    if (plane) plane.hidden = true;
-    if (reflect) reflect.hidden = true;
-  }
-
   function clearIframe() {
+    clearVolumeTimer();
     if (frame && frame.getAttribute("src")) frame.removeAttribute("src");
     if (frame) frame.hidden = true;
   }
@@ -564,7 +543,18 @@ export function createArtHall(art, screenMesh, hooks) {
     if (!ctx) return;
     const now = ctx.currentTime;
     bus.master.gain.cancelScheduledValues(now);
-    bus.master.gain.setTargetAtTime(0, now, 0.03);
+    bus.master.gain.setValueAtTime(0, now);
+    heard = 0;
+  }
+
+  function setBusLevel(level) {
+    if (!bus || !liveAmbience || !liveAmbience.context) return;
+    const ctx = liveAmbience.context();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    bus.master.gain.cancelScheduledValues(now);
+    bus.master.gain.setValueAtTime(level, now);
+    heard = level;
   }
 
   function context() {
@@ -602,11 +592,58 @@ export function createArtHall(art, screenMesh, hooks) {
     const ctx = context();
     if (!ctx || !bus) return;
     aimEars(camera);
+    const level = live ? clipVolume : 0;
+    if (heard !== level) setBusLevel(level);
     const now = ctx.currentTime;
-    bus.master.gain.cancelScheduledValues(now);
-    bus.master.gain.setTargetAtTime(live ? 1 : 0, now, 0.08);
-    bus.lowpass.frequency.cancelScheduledValues(now);
-    bus.lowpass.frequency.setTargetAtTime(live ? 18000 : 280, now, 0.08);
+    const freq = live ? 18000 : 280;
+    if (bus.lowpass._heardFreq !== freq) {
+      bus.lowpass._heardFreq = freq;
+      bus.lowpass.frequency.cancelScheduledValues(now);
+      bus.lowpass.frequency.setTargetAtTime(freq, now, 0.08);
+    }
+  }
+
+  function clearVolumeTimer() {
+    if (!volumeTimer) return;
+    clearTimeout(volumeTimer);
+    volumeTimer = 0;
+  }
+
+  function postFrame(data) {
+    if (!frame || !frame.contentWindow) return;
+    try { frame.contentWindow.postMessage(data, "*"); }
+    catch { /* 画面还没挂上。 */ }
+  }
+
+  // 官方播放器的声音不进页面里的视频元素。滑块要另写给播放器。
+  function pushFrameVolume() {
+    if (mode !== "iframe" || !frame || frame.hidden) return;
+    const item = currentItem();
+    if (!item) return;
+    const n = Math.max(0, Math.min(100, Math.round(clipVolume * 100)));
+    if (item.platform === "youtube") {
+      postFrame(JSON.stringify({ event: "listening", id: "screen-frame", channel: "widget" }));
+      postFrame(JSON.stringify({ event: "command", func: "setVolume", args: [n] }));
+      postFrame(JSON.stringify({ event: "command", func: n > 0 ? "unMute" : "mute", args: [] }));
+      return;
+    }
+    if (item.platform === "bili") {
+      postFrame("setPlayer-" + JSON.stringify({ type: "changeVolume", value: { volume: n } }));
+    }
+  }
+
+  function scheduleFrameVolume() {
+    clearVolumeTimer();
+    pushFrameVolume();
+    let n = 0;
+    const kick = () => {
+      volumeTimer = 0;
+      if (mode !== "iframe") return;
+      pushFrameVolume();
+      n += 1;
+      if (n < 5) volumeTimer = setTimeout(kick, 350 * n);
+    };
+    volumeTimer = setTimeout(kick, 350);
   }
 
   function placedInside(player) {
@@ -747,6 +784,7 @@ export function createArtHall(art, screenMesh, hooks) {
     frame.hidden = false;
     frame.src = frameSrc(item, t, false);
     stamp = performance.now() - t * 1000;
+    scheduleFrameVolume();
     if (reflect) reflect.hidden = false;
     if (reflectGlow) reflectGlow.hidden = false;
     hideReflectCanvas();
@@ -816,6 +854,7 @@ export function createArtHall(art, screenMesh, hooks) {
           try { video.currentTime = at; } catch { /* 还不能拖。 */ }
           resumeSec = at;
         }
+        video.volume = clipVolume;
         video.hidden = false;
         if (reflect) reflect.hidden = false;
         if (reflectGlow) reflectGlow.hidden = false;
@@ -824,6 +863,7 @@ export function createArtHall(art, screenMesh, hooks) {
         if (video.crossOrigin) {
           try { connectVideo(context()); } catch { /* 跨域音轨接不上时，元素自己出声。 */ }
         }
+        if (video) video.volume = elementVolume();
         if (insideNow && !paused) {
           const pending = video.play();
           if (pending && pending.catch) pending.catch(() => {});
@@ -1002,10 +1042,6 @@ export function createArtHall(art, screenMesh, hooks) {
   }
 
   function open() {
-    if (pickedPanel >= 0) {
-      if (pickedNear) playPanel(pickedPanel);
-      return;
-    }
     if (!gate) return;
     if (hooks && hooks.onOpen) hooks.onOpen();
     gate.hidden = false;
@@ -1015,40 +1051,11 @@ export function createArtHall(art, screenMesh, hooks) {
     if (input) {
       try { input.focus({ preventScroll: true }); }
       catch { input.focus(); }
-      if (mode === "idle") input.select();
     }
   }
 
   function closeDialog() {
     if (gate) gate.hidden = true;
-  }
-
-  function placeGate(camera) {
-    if (!gate || gate.hidden) return;
-    ndc.set(screen.x, screen.y - screen.h / 2, screen.z);
-    ndc.project(camera);
-    const behind = ndc.z < -1 || ndc.z > 1;
-    if (behind) {
-      gate.style.left = "50%";
-      gate.style.top = "auto";
-      gate.style.bottom = "22px";
-      gate.style.transform = "translateX(-50%)";
-      return;
-    }
-    const sx = (ndc.x * 0.5 + 0.5) * width;
-    const sy = (-ndc.y * 0.5 + 0.5) * height;
-    const cardW = gate.offsetWidth || 420;
-    const cardH = gate.offsetHeight || 280;
-    let left = sx - cardW / 2;
-    let top = sy + 14;
-    if (left < 12) left = 12;
-    if (left + cardW > width - 12) left = Math.max(12, width - 12 - cardW);
-    if (top + cardH > height - 12) top = Math.max(12, height - 12 - cardH);
-    if (top < 12) top = 12;
-    gate.style.left = left + "px";
-    gate.style.top = top + "px";
-    gate.style.bottom = "auto";
-    gate.style.transform = "none";
   }
 
   if (form) {
@@ -1078,6 +1085,17 @@ export function createArtHall(art, screenMesh, hooks) {
       if (hooks && hooks.requestWalk) hooks.requestWalk();
     });
   }
+  const volume = document.getElementById("screen-volume");
+  if (volume) {
+    volume.addEventListener("input", () => {
+      const next = Number(volume.value);
+      clipVolume = Math.max(0, Math.min(1, (Number.isFinite(next) ? next : 100) / 100));
+      if (video && !leaveAt) video.volume = elementVolume();
+      if (sourceNode && bus && insideNow && mode === "video" && !paused && !leaveAt) setBusLevel(clipVolume);
+      else heard = null;
+      pushFrameVolume();
+    });
+  }
   if (seek) {
     seek.addEventListener("input", () => {
       scrubbing = true;
@@ -1102,447 +1120,19 @@ export function createArtHall(art, screenMesh, hooks) {
     });
   }
 
-  // 人在画面法线前方 0.4 到 5.2 米，左右不超出半宽再加 0.8 米。亮度只认这个范围。
-  function zoneHas(player, spec) {
-    if (!player || !spec) return false;
-    const dx = player.x - spec.x;
-    const dz = player.z - spec.z;
-    const nx = Math.sin(spec.yaw);
-    const nz = Math.cos(spec.yaw);
-    const along = dx * nx + dz * nz;
-    if (along < 0.4 || along > 5.2) return false;
-    const lat = dx * Math.cos(spec.yaw) - dz * Math.sin(spec.yaw);
-    if (Math.abs(lat) > spec.w / 2 + 0.8) return false;
-    const bottom = spec.y - spec.h / 2;
-    const top = spec.y + spec.h / 2;
-    if (player.y > top + 0.2) return false;
-    if (player.y + 1.85 < bottom) return false;
-    return true;
-  }
-
-  // 射线对着画面正面。denom 是视线和法线的点积，必须朝画面看。
-  function rayPanel(camera, dir, minT, spec) {
-    const nx = Math.sin(spec.yaw);
-    const nz = Math.cos(spec.yaw);
-    const denom = dir.x * nx + dir.z * nz;
-    if (denom > -1e-4) return -1;
-    const vx = camera.position.x - spec.x;
-    const vz = camera.position.z - spec.z;
-    const t = -(vx * nx + vz * nz) / denom;
-    if (t < (minT || 0) || t > 16) return -1;
-    const hx = camera.position.x + dir.x * t;
-    const hy = camera.position.y + dir.y * t;
-    const hz = camera.position.z + dir.z * t;
-    const dx = hx - spec.x;
-    const dz = hz - spec.z;
-    const lat = dx * Math.cos(spec.yaw) - dz * Math.sin(spec.yaw);
-    if (Math.abs(lat) > spec.w / 2 + spec.lipX) return -1;
-    const faceBottom = spec.y - spec.h / 2;
-    const faceTop = spec.y + spec.h / 2 + spec.lipTop;
-    if (hy < faceBottom || hy > faceTop) return -1;
-    return t;
-  }
-
-  function panelFrame(i) {
-    const el = panelEls[i];
-    if (!el) return null;
-    return el.querySelector("iframe");
-  }
-
-  function clearPanelFrame(i) {
-    const el = panelEls[i];
-    const frame = panelFrame(i);
-    if (frame) frame.remove();
-    if (el) el.classList.remove("is-playing", "has-frame");
-    const img = el && el.querySelector("img");
-    if (img) img.hidden = false;
-  }
-
-  function mountPanelFrame(i, seconds, autoplay) {
-    const el = panelEls[i];
-    const item = panelItems[i];
-    if (!el || !item || item.error) return;
-    const src = clipEmbed(item, seconds, autoplay);
-    if (!src) return;
-    const face = el.querySelector(".art-panel-face") || el;
-    let frame = panelFrame(i);
-    if (!frame) {
-      frame = document.createElement("iframe");
-      frame.title = "小屏幕";
-      frame.referrerPolicy = "unsafe-url";
-      frame.setAttribute("allow", "autoplay; fullscreen; encrypted-media; picture-in-picture");
-      face.appendChild(frame);
-    }
-    if (frame.dataset.src !== src) {
-      frame.dataset.src = src;
-      frame.src = src;
-    }
-    el.classList.add("has-frame");
-    el.classList.toggle("is-playing", !!autoplay);
-    const img = el.querySelector("img");
-    if (img) img.hidden = true;
-  }
-
-  function pausePanel(i) {
-    if (panelPlaying !== i) return;
-    const elapsed = (panelResume[i] || 0) + (performance.now() - panelStarted) / 1000;
-    panelResume[i] = elapsed;
-    panelPlaying = -1;
-    panelStarted = 0;
-    clearPanelFrame(i);
-  }
-
-  function playPanel(i) {
-    const item = panelItems[i];
-    if (!item || item.error) return;
-    if (panelPlaying === i) return;
-    if (panelPlaying >= 0) pausePanel(panelPlaying);
-    const seconds = panelResume[i] > 0 ? panelResume[i] : (item.start || 0);
-    panelPlaying = i;
-    panelStarted = performance.now();
-    mountPanelFrame(i, seconds, true);
-  }
-
-  function biliPoster(item) {
-    const key = item.bvid || ("av" + item.aid);
-    if (posterCache.has(key)) return posterCache.get(key);
-    const pending = (async () => {
-      try {
-        const q = item.bvid ? "bvid=" + encodeURIComponent(item.bvid) : "aid=" + encodeURIComponent(item.aid);
-        const res = await fetch("https://api.bilibili.com/x/web-interface/view?" + q);
-        if (!res.ok) return "";
-        const data = await res.json();
-        const pic = data && data.data && data.data.pic;
-        return typeof pic === "string" ? pic : "";
-      } catch {
-        return "";
-      }
-    })();
-    posterCache.set(key, pending);
-    return pending;
-  }
-
-  function paintPosters() {
-    for (let i = 0; i < panelEls.length; i++) {
-      const img = panelEls[i].querySelector("img");
-      const item = panelItems[i];
-      panelPosterOk[i] = false;
-      panelPosterFail[i] = false;
-      if (!img) continue;
-      img.hidden = false;
-      img.onload = null;
-      img.onerror = null;
-      if (!item || item.error) {
-        img.removeAttribute("src");
-        continue;
-      }
-      const token = panelPosterToken[i] + 1;
-      panelPosterToken[i] = token;
-      const failed = () => {
-        if (panelPosterToken[i] !== token || panelPosterOk[i]) return;
-        panelPosterOk[i] = false;
-        panelPosterFail[i] = true;
-      };
-      const poster = clipPoster(item);
-      if (poster) {
-        img.onload = () => {
-          if (panelPosterToken[i] !== token) return;
-          panelPosterOk[i] = true;
-          panelPosterFail[i] = false;
-        };
-        img.onerror = failed;
-        img.src = poster;
-        continue;
-      }
-      img.removeAttribute("src");
-      biliPoster(item).then((pic) => {
-        if (panelPosterToken[i] !== token || !img.isConnected) return;
-        if (!pic) {
-          failed();
-          return;
-        }
-        img.onload = () => {
-          if (panelPosterToken[i] !== token) return;
-          panelPosterOk[i] = true;
-          panelPosterFail[i] = false;
-        };
-        img.onerror = failed;
-        img.src = pic;
-      });
-      setTimeout(failed, 1200);
-    }
-  }
-
-  function setClips(urls, seed) {
+  // 后台链接预填到卡片。访客改过输入框之后，不再盖掉。
+  function setLinks(urls) {
     const list = Array.isArray(urls) ? urls : [];
-    const key = String(seed) + "\n" + list.join("\n");
-    if (key === clipKey) return;
-    clipKey = key;
-    if (panelPlaying >= 0) {
-      panelPlaying = -1;
-      panelStarted = 0;
+    const nextLines = [];
+    for (let i = 0; i < list.length; i++) {
+      if (typeof list[i] === "string" && list[i]) nextLines.push(list[i]);
     }
-    const assigned = assignClips(list, seed, panelSpecs.length);
-    for (let i = 0; i < panelSpecs.length; i++) {
-      panelResume[i] = 0;
-      clearPanelFrame(i);
-      const parsed = assigned[i] ? parseClip(assigned[i]) : null;
-      panelItems[i] = parsed && !parsed.error ? parsed : null;
-    }
-    paintPosters();
-  }
-
-  // 页面层不写深度。近处箱体投到这块画面上的影子要挖掉，否则对面的视频会贴在箱体背面。
-  function roundPx(n) {
-    return Math.round(n * 10) / 10;
-  }
-
-  function convexHull(points) {
-    const pts = [];
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      let dup = false;
-      for (let j = 0; j < pts.length; j++) {
-        if (Math.abs(pts[j][0] - p[0]) < 0.4 && Math.abs(pts[j][1] - p[1]) < 0.4) {
-          dup = true;
-          break;
-        }
-      }
-      if (!dup) pts.push(p);
-    }
-    if (pts.length < 3) return pts;
-    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-    const lower = [];
-    for (let i = 0; i < pts.length; i++) {
-      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0) lower.pop();
-      lower.push(pts[i]);
-    }
-    const upper = [];
-    for (let i = pts.length - 1; i >= 0; i--) {
-      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) upper.pop();
-      upper.push(pts[i]);
-    }
-    lower.pop();
-    upper.pop();
-    return lower.concat(upper);
-  }
-
-  function separated(poly, other) {
-    for (let i = 0; i < poly.length; i++) {
-      const a = poly[i];
-      const b = poly[(i + 1) % poly.length];
-      const ax = b[1] - a[1];
-      const ay = a[0] - b[0];
-      let minA = Infinity;
-      let maxA = -Infinity;
-      let minB = Infinity;
-      let maxB = -Infinity;
-      for (let k = 0; k < poly.length; k++) {
-        const p = poly[k][0] * ax + poly[k][1] * ay;
-        if (p < minA) minA = p;
-        if (p > maxA) maxA = p;
-      }
-      for (let k = 0; k < other.length; k++) {
-        const p = other[k][0] * ax + other[k][1] * ay;
-        if (p < minB) minB = p;
-        if (p > maxB) maxB = p;
-      }
-      if (maxA < minB || maxB < minA) return true;
-    }
-    return false;
-  }
-
-  function polysOverlap(a, b) {
-    return a.length >= 3 && b.length >= 3 && !separated(a, b) && !separated(b, a);
-  }
-
-  function mergeHoles(holes) {
-    const list = holes.slice();
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let i = 0; i < list.length; i++) {
-        for (let j = i + 1; j < list.length; j++) {
-          if (!polysOverlap(list[i], list[j])) continue;
-          const hull = convexHull(list[i].concat(list[j]));
-          list.splice(j, 1);
-          list.splice(i, 1, hull);
-          changed = true;
-          break;
-        }
-        if (changed) break;
-      }
-    }
-    return list;
-  }
-
-  function panelBoxCorners(spec) {
-    const yaw = spec.yaw;
-    const pad = 0.02;
-    const hx = (spec.w + spec.lipX * 2) / 2 + pad;
-    const hy = (spec.h + spec.lipTop) / 2 + pad;
-    const hz = spec.d / 2 + pad;
-    const cx = spec.x - Math.sin(yaw) * (spec.d / 2);
-    const cy = spec.y + spec.lipTop / 2;
-    const cz = spec.z - Math.cos(yaw) * (spec.d / 2);
-    const rx = Math.cos(yaw);
-    const rz = -Math.sin(yaw);
-    const nx = Math.sin(yaw);
-    const nz = Math.cos(yaw);
-    const corners = [];
-    for (let ix = -1; ix <= 1; ix += 2) {
-      for (let iy = -1; iy <= 1; iy += 2) {
-        for (let iz = -1; iz <= 1; iz += 2) {
-          corners.push([
-            cx + rx * hx * ix + nx * hz * iz,
-            cy + hy * iy,
-            cz + rz * hx * ix + nz * hz * iz,
-          ]);
-        }
-      }
-    }
-    return corners;
-  }
-
-  function shadowOnPanel(cam, spec, corners) {
-    const yaw = spec.yaw;
-    const nx = Math.sin(yaw);
-    const nz = Math.cos(yaw);
-    const px = spec.x;
-    const py = spec.y + spec.lipTop / 2;
-    const pz = spec.z;
-    const rx = Math.cos(yaw);
-    const rz = -Math.sin(yaw);
-    const widthPx = (spec.w + spec.lipX * 2) * pxPerM;
-    const heightPx = (spec.h + spec.lipTop) * pxPerM;
-    const hits = [];
-    for (let i = 0; i < corners.length; i++) {
-      const corner = corners[i];
-      const dx = corner[0] - cam.x;
-      const dy = corner[1] - cam.y;
-      const dz = corner[2] - cam.z;
-      const denom = dx * nx + dz * nz;
-      if (Math.abs(denom) < 1e-5) continue;
-      const t = ((px - cam.x) * nx + (pz - cam.z) * nz) / denom;
-      if (t <= 1.02) continue;
-      const hx = cam.x + dx * t;
-      const hy = cam.y + dy * t;
-      const hz = cam.z + dz * t;
-      const lx = (hx - px) * rx + (hz - pz) * rz;
-      const ly = hy - py;
-      hits.push([widthPx / 2 + lx * pxPerM, heightPx / 2 - ly * pxPerM]);
-    }
-    return convexHull(hits);
-  }
-
-  function panelHoles(camera, index) {
-    const spec = panelSpecs[index];
-    const w = (spec.w + spec.lipX * 2) * pxPerM;
-    const h = (spec.h + spec.lipTop) * pxPerM;
-    const rect = [[0, 0], [w, 0], [w, h], [0, h]];
-    const holes = [];
-    const cam = camera.position;
-    for (let j = 0; j < panelSpecs.length; j++) {
-      if (j === index) continue;
-      const hole = shadowOnPanel(cam, spec, panelBoxCorners(panelSpecs[j]));
-      if (hole.length >= 3 && polysOverlap(hole, rect)) holes.push(hole);
-    }
-    return mergeHoles(holes);
-  }
-
-  function panelClipPath(spec, holes) {
-    const w = roundPx((spec.w + spec.lipX * 2) * pxPerM);
-    const h = roundPx((spec.h + spec.lipTop) * pxPerM);
-    let d = "M0 0H" + w + "V" + h + "H0Z";
-    for (let i = 0; i < holes.length; i++) {
-      const hole = holes[i];
-      d += "M" + roundPx(hole[0][0]) + " " + roundPx(hole[0][1]);
-      for (let k = 1; k < hole.length; k++) d += "L" + roundPx(hole[k][0]) + " " + roundPx(hole[k][1]);
-      d += "Z";
-    }
-    return "path(evenodd,\"" + d + "\")";
-  }
-
-  function setPanelClip(el, value) {
-    if (el.dataset.occlude === value) return;
-    el.dataset.occlude = value;
-    el.style.clipPath = value;
-    el.style.webkitClipPath = value;
-  }
-
-  function occludePanel(el, camera, index) {
-    const holes = panelHoles(camera, index);
-    const frame = el.querySelector("iframe");
-    // 跨域画面不吃父级裁剪，一旦和近处箱体重叠就整块收起。
-    if (frame && holes.length) {
-      frame.style.visibility = "hidden";
-      setPanelClip(el, "");
-      el.style.visibility = "hidden";
-      return;
-    }
-    if (frame) frame.style.visibility = "";
-    setPanelClip(el, holes.length ? panelClipPath(panelSpecs[index], holes) : "");
-    el.style.visibility = "visible";
-  }
-
-  // 人在画面正面才叠视频。侧面和背面留给箱体，不把画面穿过去。
-  function seesFront(camera, spec) {
-    const nx = Math.sin(spec.yaw);
-    const nz = Math.cos(spec.yaw);
-    return (camera.position.x - spec.x) * nx + (camera.position.z - spec.z) * nz > 0.05;
-  }
-
-  function syncPanelContent(i, onScreen) {
-    if (panelPlaying === i) return;
-    const item = panelItems[i];
-    if (!item || item.error || !panelPosterFail[i]) {
-      if (panelFrame(i)) clearPanelFrame(i);
-      return;
-    }
-    if (!onScreen) return;
-    const seconds = panelResume[i] > 0 ? panelResume[i] : (item.start || 0);
-    mountPanelFrame(i, seconds, false);
-  }
-
-  function presentPanels(camera) {
-    if (!mount || mount.hidden || !view) return;
-    camera.getWorldDirection(fwd);
-    for (let i = 0; i < panelEls.length; i++) {
-      const anchor = panelAnchors[i];
-      const el = panelEls[i];
-      const spec = panelSpecs[i];
-      anchor.updateMatrixWorld(true);
-      const dx = anchor.position.x - camera.position.x;
-      const dy = anchor.position.y - camera.position.y;
-      const dz = anchor.position.z - camera.position.z;
-      const onScreen = fwd.x * dx + fwd.y * dy + fwd.z * dz >= 0.3 && seesFront(camera, spec);
-      syncPanelContent(i, onScreen);
-      if (!onScreen) {
-        el.style.visibility = "hidden";
-        setPanelClip(el, "");
-        const frame = el.querySelector("iframe");
-        if (frame) frame.style.visibility = "";
-        continue;
-      }
-      el.style.transform = getObjectCSSMatrix(anchor.matrixWorld);
-      occludePanel(el, camera, i);
-    }
-  }
-
-  function tickPanels(camera, player, inside) {
-    if (!inside) {
-      if (panelPlaying >= 0) pausePanel(panelPlaying);
-      for (let i = 0; i < panelEls.length; i++) {
-        if (panelFrame(i)) clearPanelFrame(i);
-      }
-      return;
-    }
-    for (let i = 0; i < panelEls.length; i++) {
-      const near = zoneHas(player, panelSpecs[i]);
-      if (panelPlaying === i && !near) pausePanel(i);
-    }
-    presentPanels(camera);
+    const next = nextLines.join("\n");
+    if (next === roomText) return;
+    const current = input ? input.value.replace(/\r\n/g, "\n") : "";
+    const untouched = roomText == null ? current.trim() === "" : current === roomText;
+    roomText = next;
+    if (input && untouched) input.value = next;
   }
 
   resize(width, height);
@@ -1557,13 +1147,17 @@ export function createArtHall(art, screenMesh, hooks) {
       return !!(gate && !gate.hidden);
     },
     hoverLabel() {
-      if (pickedPanel >= 0) {
-        if (!pickedNear) return "走近播放";
-        if (panelPlaying === pickedPanel) return "播放中";
-        return "点击播放";
+      if (mode === "idle") {
+        if (gate && !gate.hidden) return "";
+        return "输入视频链接";
       }
-      if (mode === "idle") return "输入视频链接";
-      return paused ? "点击继续播放" : "点击控制播放";
+      if (!paused) return "";
+      return "点击继续播放";
+    },
+    // 正在播、并且视线落在这块画面上时，返回画面底边中点。其它时候是 null。
+    hoverSpot() {
+      if (!pickedScreen || mode === "idle" || paused) return null;
+      return { x: screen.x, y: screen.y - screen.h / 2, z: screen.z };
     },
     contains(player) {
       return placedInside(player);
@@ -1572,38 +1166,18 @@ export function createArtHall(art, screenMesh, hooks) {
       return insideFlag;
     },
     pick(camera, dir, minT, player) {
-      pickedPanel = -1;
-      pickedNear = false;
+      pickedScreen = false;
       if (!player || !dir) return -1;
       if (Math.round(player.y / STORY) !== art.floor) return -1;
       if (player.z > art.curtainZ - 0.05) return -1;
-      let best = -1;
-      for (let i = 0; i < panelSpecs.length; i++) {
-        const t = rayPanel(camera, dir, minT, panelSpecs[i]);
-        if (t < 0) continue;
-        if (best < 0 || t < best) {
-          best = t;
-          pickedPanel = i;
-        }
-      }
-      let screenT = -1;
-      if (dir.z <= -1e-4) {
-        const t = (screen.z - camera.position.z) / dir.z;
-        if (t >= (minT || 0) && t <= 22) {
-          const hx = camera.position.x + dir.x * t;
-          const hy = camera.position.y + dir.y * t;
-          if (Math.abs(hx - screen.x) <= screen.w / 2 && Math.abs(hy - screen.y) <= screen.h / 2) screenT = t;
-        }
-      }
-      if (screenT >= 0 && (best < 0 || screenT < best)) {
-        pickedPanel = -1;
-        return screenT;
-      }
-      if (pickedPanel >= 0) {
-        pickedNear = zoneHas(player, panelSpecs[pickedPanel]);
-        return best;
-      }
-      return -1;
+      if (dir.z > -1e-4) return -1;
+      const t = (screen.z - camera.position.z) / dir.z;
+      if (t < (minT || 0) || t > 22) return -1;
+      const hx = camera.position.x + dir.x * t;
+      const hy = camera.position.y + dir.y * t;
+      if (Math.abs(hx - screen.x) > screen.w / 2 || Math.abs(hy - screen.y) > screen.h / 2) return -1;
+      pickedScreen = true;
+      return t;
     },
     tick(camera, player, ambience) {
       liveAmbience = ambience || liveAmbience;
@@ -1613,11 +1187,13 @@ export function createArtHall(art, screenMesh, hooks) {
         if (clip && (!video.paused || leaveAt)) {
           if (!leaveAt) {
             leaveAt = performance.now();
-            leaveFrom = Math.max(0.001, Number.isFinite(video.volume) ? video.volume : 1);
+            leaveFrom = clipVolume;
             dimPicture();
           }
           const along = Math.min(1, (performance.now() - leaveAt) / (LEAVE_FADE * 1000));
-          video.volume = leaveFrom * (1 - along);
+          const faded = leaveFrom * (1 - along);
+          if (video) video.volume = sourceNode ? 1 : faded;
+          if (sourceNode && bus) setBusLevel(faded);
           aimEars(camera);
           if (along >= 1) finishLeaveAudio();
         } else if (mode === "iframe" && frame && frame.getAttribute("src")) {
@@ -1640,13 +1216,11 @@ export function createArtHall(art, screenMesh, hooks) {
       } else {
         if (leaveAt) {
           leaveAt = 0;
-          if (video) video.volume = 1;
+          if (video) video.volume = elementVolume();
           clearPictureDim();
         }
         if (mode === "idle" || (mode === "iframe" && paused)) {
-          if (mount) mount.hidden = false;
-          hidePicture();
-          present(camera);
+          hideMount();
         } else {
           if (mode === "iframe" && !tryingVideo && frame && !frame.getAttribute("src")) mountIframe(resumeSec);
           if (mode === "video" && !paused && video && video.getAttribute("src") && video.paused) {
@@ -1660,18 +1234,13 @@ export function createArtHall(art, screenMesh, hooks) {
           if (bus) hear(camera, mode === "video" && !paused);
         }
       }
-      if (gate && !gate.hidden) {
-        placeGate(camera);
-        paintProgress();
-      }
+      if (gate && !gate.hidden) paintProgress();
       if (liveAmbience && liveAmbience.duck) {
         const screenLive = insideNow && mode !== "idle" && !paused;
-        const panelLive = insideNow && panelPlaying >= 0;
-        liveAmbience.duck(screenLive || panelLive ? 0.22 : 1);
+        liveAmbience.duck(screenLive ? 0.22 : 1);
       }
-      tickPanels(camera, player, insideNow);
     },
-    setClips,
+    setLinks,
   };
 }
 

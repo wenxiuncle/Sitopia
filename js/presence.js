@@ -243,8 +243,7 @@ export function mountPresence(options) {
 
   function takeVideos(payload) {
     if (!onVideos || !payload || !Array.isArray(payload.urls)) return;
-    const seed = Number(payload.seed);
-    onVideos(payload.urls, Number.isFinite(seed) ? seed : 1);
+    onVideos(payload.urls);
   }
 
   function beatAddress() {

@@ -498,7 +498,7 @@ function syncMusic(array &$data, int $now): ?array {
 }
 
 function blankVideos(): array {
-    return ["urls" => [], "seed" => 1];
+    return ["urls" => []];
 }
 
 function normalizeVideos($saved): array {
@@ -517,16 +517,13 @@ function normalizeVideos($saved): array {
         }
     }
     $videos["urls"] = $urls;
-    $seed = isset($saved["seed"]) ? (int) $saved["seed"] : 1;
-    if ($seed < 1) $seed = 1;
-    $videos["seed"] = $seed;
     return $videos;
 }
 
 function stampVideos(array &$events, array &$data): void {
     if (!isset($data["videos"]) || !is_array($data["videos"])) $data["videos"] = blankVideos();
     else $data["videos"] = normalizeVideos($data["videos"]);
-    $pack = ["urls" => $data["videos"]["urls"], "seed" => $data["videos"]["seed"]];
+    $pack = ["urls" => $data["videos"]["urls"]];
     foreach ($events as &$ev) {
         if (!is_array($ev) || !isset($ev["obj"]) || !is_array($ev["obj"])) continue;
         if (($ev["obj"]["t"] ?? "") === "welcome") $ev["obj"]["videos"] = $pack;

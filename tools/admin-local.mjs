@@ -284,7 +284,7 @@ async function route(req, res, lobby, path, url) {
       send(res, 400, { error: (saved && saved.error) || "body" });
       return;
     }
-    send(res, 200, { urls: saved.urls, seed: saved.seed });
+    send(res, 200, { urls: saved.urls });
     return;
   }
   if (path === "/admin/api/kick" && req.method === "POST") {

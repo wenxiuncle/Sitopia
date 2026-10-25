@@ -653,12 +653,12 @@ export class SitopiaLobby extends DurableObject {
     if (url.pathname === "/admin/api/videos" && request.method === "POST") {
       const body = await readJson(request, 12000);
       if (!body) return json({ error: "body" }, 400);
-      const view = applyVideos(this.videos, body, Date.now());
+      const view = applyVideos(this.videos, body);
       if (!view) return json({ error: "body" }, 400);
       if (view.error) return json({ error: view.error }, 400);
-      await this.ctx.storage.put("videos", { urls: this.videos.urls, seed: this.videos.seed });
+      await this.ctx.storage.put("videos", { urls: this.videos.urls });
       this.fanout(null, [{ who: "all", obj: view }]);
-      return json({ urls: view.urls, seed: view.seed }, 200);
+      return json({ urls: view.urls }, 200);
     }
     return new Response("not found", { status: 404 });
   }

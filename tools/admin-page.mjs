@@ -371,13 +371,13 @@ export const adminHtml = `<!DOCTYPE html>
       <span class="hint">一楼接待机器人胸前，字从右往左循环滚。最多 32 个字。留空就回到「欢迎光临」。速度填 0 到 100 的整数，0 是字停住，20 是现在这一档，100 最快，大约是现在的 5 倍。比 20 大就更快。正在馆里的人会跟着换。</span>
     </form>
     <p id="sign-status"></p>
-    <h2>小屏幕</h2>
+    <h2>大屏幕</h2>
     <form id="video-form">
       <label>视频链接
         <textarea id="video-links" rows="12" autocomplete="off" spellcheck="false" placeholder="https://www.bilibili.com/video/BV...&#10;https://www.youtube.com/watch?v=..."></textarea>
       </label>
       <button class="solid" type="submit">保存</button>
-      <span class="hint">一行一条，最多 20 条。B 站请贴完整的 BV 地址，YouTube 贴 watch、youtu.be 或 shorts。留空就都不放。保存后正在馆里的人会换成新的分配。</span>
+      <span class="hint">一行一条，最多 20 条。B 站请贴完整的 BV 地址，YouTube 贴 watch、youtu.be 或 shorts。留空就不预填。保存后，正在馆里、还没改过大屏幕卡片的人，输入框会换成这份链接。</span>
     </form>
     <p id="video-status"></p>
     </section>
@@ -1443,8 +1443,8 @@ export const adminHtml = `<!DOCTYPE html>
       videoStamp += 1;
       videoDirty = false;
       videoStatus.textContent = data.urls.length
-        ? "已保存。正在馆里的人会换成新的分配。"
-        : "已保存。小屏幕上先不放视频。";
+        ? "已保存。正在馆里、还没改过卡片的人，大屏幕输入框会换成这份链接。"
+        : "已保存。大屏幕卡片里先不填链接。";
     });
 
     document.getElementById("arrange-form").addEventListener("submit", async (event) => {

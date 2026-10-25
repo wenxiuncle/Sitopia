@@ -46,9 +46,24 @@ const HALL_A = SOUTH - FOYER;
 const BAY = 12;
 const HALL_B = HALL_A - BAY;
 const NORTH = HALL_B - BAY;
-// 数字艺术厅叠在展品楼层之上，并且不低于这一层（0 起算）。展品再往上加时，艺术厅跟着上移。
+// 趣站放映厅叠在展品楼层之上，并且不低于这一层（0 起算）。展品再往上加时，艺术厅跟着上移。
 const ART_HOME = 14;
-const ART_NAME = "数字艺术厅";
+const ART_NAME = "趣站放映厅";
+
+// 艺术厅内墙和厅内顶。天棚贴在这道顶的下面。
+function artWallTopAt(floor) {
+  return floor * STORY + WALL_H * 3 - 0.02;
+}
+
+// 15 层原有立面收到这里。再往上两层是外墙，不把厅内墙皮算进去。
+function artFaceTop(floor) {
+  return (floor + 1) * STORY;
+}
+
+// 两层深红外墙的顶。15 层再加这两层，外观是 17 层。
+function artCrownTop(floor) {
+  return (floor + 3) * STORY;
+}
 
 // 一楼进门后的两根柱。内侧夹出的走廊是接待机器人的东西范围。
 const COL_IN = 8.2;
@@ -1322,55 +1337,17 @@ function pushBlock(blocks, box) {
   });
 }
 
-// 长轴在图上的角度换成画面朝向。本地 +Z 在 rotation.y = θ 之后指向 (sin θ, 0, cos θ)。
-// 法线先取长轴左转 90°，再翻到指向厅心（nx、ny 都往 0.5）。
-function panelYaw(nx, ny, deg) {
-  const th = deg * Math.PI / 180;
-  const ix = 0.5 - nx;
-  const iz = 0.5 - ny;
-  let nxn = -Math.sin(th);
-  let nzn = Math.cos(th);
-  if (nxn * ix + nzn * iz < 0) {
-    nxn = -nxn;
-    nzn = -nzn;
-  }
-  return Math.atan2(nxn, nzn);
-}
-
-// 碰撞盒用和画面同一套 yaw。本地 +X 到 (cos θ, 0, -sin θ)，本地 +Z 到 (sin θ, 0, cos θ)。
-function panelAabb(x, z, yaw, w, thick, y0, y1) {
-  const hx = w / 2;
-  const hz = thick / 2;
-  const c = Math.cos(yaw);
-  const s = Math.sin(yaw);
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minZ = Infinity;
-  let maxZ = -Infinity;
-  const corners = [[hx, hz], [hx, -hz], [-hx, hz], [-hx, -hz]];
-  for (let i = 0; i < corners.length; i++) {
-    const lx = corners[i][0];
-    const lz = corners[i][1];
-    const wx = x + lx * c + lz * s;
-    const wz = z - lx * s + lz * c;
-    if (wx < minX) minX = wx;
-    if (wx > maxX) maxX = wx;
-    if (wz < minZ) minZ = wz;
-    if (wz > maxZ) maxZ = wz;
-  }
-  return artSlab(minX, maxX, y0, y1, minZ, maxZ);
-}
-
-// 艺术厅只描述这一层。门帘无碰撞。牌子和屏幕挡人。天花、墙皮、喇叭不挡人。
+// 艺术厅只描述这一层。门帘无碰撞。牌子和大屏幕挡人。天花、墙皮、喇叭不挡人。
 // 喇叭正面是物体本地 +Z。有 aim 时朝地面中心，否则 yaw 0 朝 +Z（南）。
 function describeArt(floor, blocks, cones) {
   const base = floor * STORY;
   const faceN = HALL_A - WALL_T / 2;
   const faceS = HALL_A + WALL_T / 2;
   const walk = base + 0.04;
-  // 天棚底面在 WALL_H 往下 6 厘米。星空贴在这张底面下，不再另吊一层。
-  const soffit = base + WALL_H - 0.06;
+  // 厅内墙和星空天棚抬到三倍层高。门帘仍停在原来的天花下沿，不跟着上去。
+  const soffit = base + WALL_H * 3 - 0.06;
   const starY = soffit - 0.02;
+  const oldSoffit = base + WALL_H - 0.06;
   // 厅内地面和门厅地面的交接线。帘身挂在门洞里，下摆收到这条线的两侧，把接缝盖住。
   const floorJoin = HALL_A - 0.04;
   const curtainZ = floorJoin + 0.068;
@@ -1385,29 +1362,35 @@ function describeArt(floor, blocks, cones) {
   const zInS = faceN - 0.04;
   const skin = 0.05;
   const bury = 0.04;
-  // 北墙皮伸进东西墙和墙角柱，但停在外墙皮里面。远处贴着北墙看两个墙角时，先碰到灰墙。
-  const wrap = WALL_T - 0.02;
-  const northX0 = -INNER - wrap;
-  const northX1 = INNER + wrap;
-  const northZ0 = NORTH - wrap;
-  // 底面交给星空。范围只写在这里。南边埋进门墙，不伸进门厅。
+  // 墙皮只埋进结构墙 2 厘米，内侧面仍盖住白衬。不穿到楼体外皮。
+  const tuck = 0.02;
+  // 星空盖住整厅，南边埋进全高的门墙。上面再垫一块实顶，缝里不再看见天。
   const ceiling = [
-    artSlab(xInL - 0.02, xInR + 0.02, starY, starY + 0.012, zInN - 0.02, faceN + 0.02),
+    artSlab(xInL - 0.06, xInR + 0.06, starY, starY + 0.012, zInN - 0.06, faceS - 0.02),
   ];
-  // 墙皮只埋进地面 1 厘米，避免底边穿出楼板。顶上仍埋进天花。
-  const wallY0 = walk - 0.01;
+  const lid = [
+    artSlab(xInL - 0.08, xInR + 0.08, starY + 0.004, soffit + bury, zInN - 0.08, faceS + 0.02),
+  ];
+  // 墙皮底埋进楼板。再往下 2 厘米，贴地时不和楼板错开。墙根亮线仍是脚灯打在地面上。
+  const wallY0 = walk - 0.14;
   const wallY1 = soffit + bury;
   const walls = [
-    artSlab(xInL - skin, xInL, wallY0, wallY1, northZ0, zInS + skin),
-    artSlab(xInR, xInR + skin, wallY0, wallY1, northZ0, zInS + skin),
-    artSlab(northX0, northX1, wallY0, wallY1, northZ0, zInN),
-    artSlab(xInL - skin, -DOOR + 0.02, wallY0, wallY1, zInS, zInS + skin),
-    artSlab(DOOR - 0.02, xInR + skin, wallY0, wallY1, zInS, zInS + skin),
+    artSlab(-INNER - tuck, xInL, wallY0, wallY1, NORTH - tuck, zInS + skin),
+    artSlab(xInR, INNER + tuck, wallY0, wallY1, NORTH - tuck, zInS + skin),
+    artSlab(-INNER - tuck, INNER + tuck, wallY0, wallY1, NORTH - tuck, zInN),
+    artSlab(xInL - skin, -DOOR + 0.02, wallY0, wallY1, zInS, faceS + 0.02),
+    artSlab(DOOR - 0.02, xInR + skin, wallY0, wallY1, zInS, faceS + 0.02),
+    // 门帘仍停在原来的天花下。帘子上面这面墙一直收到厅顶。
+    artSlab(-DOOR + 0.02, DOOR - 0.02, oldSoffit - 0.04, wallY1, zInS, faceS + 0.02),
+  ];
+  // 一层天棚在门墙里的切口。门墙已经全高，星空南沿埋在墙里，不再另补一条竖边。
+  const lips = [
+    artSlab(-INNER + 0.02, INNER - 0.02, base + WALL_H - 0.06, base + WALL_H, faceN + 0.012, faceN + 0.055),
   ];
   const curtain = {
     z: curtainZ,
-    y0: walk - 0.1,
-    y1: soffit - 0.02,
+    y0: walk - 0.12,
+    y1: oldSoffit - 0.02,
     width: DOOR * 2 + 0.16,
     floorJoin,
   };
@@ -1416,8 +1399,8 @@ function describeArt(floor, blocks, cones) {
   const post = [artSlab(-0.07, 0.07, walk, base + 1.32, signZ - 0.05, signZ + 0.05)];
   pushBlock(blocks, board[0]);
   pushBlock(blocks, post[0]);
-  const screenW = 7.11;
-  const screenH = 4;
+  const screenW = 7.11 * 3;
+  const screenH = 4 * 3;
   const screenBottom = walk + 0.04;
   const screen = {
     x: 0,
@@ -1427,50 +1410,7 @@ function describeArt(floor, blocks, cones) {
     h: screenH,
   };
   pushBlock(blocks, artSlab(-screenW / 2, screenW / 2, screenBottom, screenBottom + screenH, screen.z - 0.1, screen.z + 0.05));
-  // 图上红条的中心。nx 左到右，ny 上到下（上是北墙大屏幕）。deg 是长轴：0 朝图右（世界 +X），正角朝图下（世界 +Z）。
-  // 条的长短只是示意图。每块屏幕都是 2.25 米宽、4 米高。画面本地 +Z 朝厅心。
-  const panelMarks = [
-    { nx: 0.081, ny: 0.170, deg: -56.8 },
-    { nx: 0.915, ny: 0.170, deg: 56.8 },
-    { nx: 0.177, ny: 0.388, deg: 90 },
-    { nx: 0.818, ny: 0.388, deg: 90 },
-    { nx: 0.051, ny: 0.458, deg: 90 },
-    { nx: 0.945, ny: 0.458, deg: 90 },
-    { nx: 0.250, ny: 0.653, deg: 90 },
-    { nx: 0.745, ny: 0.653, deg: 90 },
-    { nx: 0.085, ny: 0.724, deg: 46.8 },
-    { nx: 0.910, ny: 0.724, deg: -46.8 },
-    { nx: 0.208, ny: 0.890, deg: 25 },
-    { nx: 0.788, ny: 0.890, deg: -25 },
-  ];
-  const panelW = 2.25;
-  const panelH = 4;
-  const panelY = screenBottom + panelH / 2;
-  const spanX = xInR - xInL;
-  const spanZ = zInS - zInN;
-  const panels = [];
-  for (let i = 0; i < panelMarks.length; i++) {
-    const mark = panelMarks[i];
-    const x = xInL + mark.nx * spanX;
-    const z = zInN + mark.ny * spanZ;
-    const yaw = panelYaw(mark.nx, mark.ny, mark.deg);
-    // 箱体厚 10 厘米，只在画面背后。底边和画面齐。左右各 4 厘米，顶上 4 厘米，是边框。
-    const panelD = 0.1;
-    const lipX = 0.04;
-    const lipTop = 0.04;
-    panels.push({ x, y: panelY, z, w: panelW, h: panelH, yaw, d: panelD, lipX, lipTop });
-    const recess = panelD / 2;
-    pushBlock(blocks, panelAabb(
-      x - Math.sin(yaw) * recess,
-      z - Math.cos(yaw) * recess,
-      yaw,
-      panelW + lipX * 2,
-      panelD,
-      screenBottom,
-      screenBottom + panelH + lipTop,
-    ));
-  }
-  // 脚灯贴在厅内墙皮上。北墙在屏幕两侧各居中一盏；东西墙按整面宽三等分；门两侧墙各居中一盏。
+  // 脚灯贴在厅内墙皮上。北墙两盏落在屏幕左右边到东西墙的中点；东西墙按整面宽三等分；门两侧墙各居中一盏。
   // 灯心离地半米，光只落在地面。
   const footLift = 0.5;
   const zSpan = zInS - zInN;
@@ -1493,7 +1433,8 @@ function describeArt(floor, blocks, cones) {
   const xR = roomX1 - margin;
   const zN = roomZ0 + margin;
   const zS = roomZ1 - margin;
-  const ySp = starY - hang;
+  // 喇叭仍挂在原来的天花下，不跟抬高的星空走。
+  const ySp = oldSoffit - 0.02 - hang;
   const aimX = 0;
   const aimY = walk;
   const aimZ = (roomZ0 + roomZ1) / 2;
@@ -1525,22 +1466,25 @@ function describeArt(floor, blocks, cones) {
     baseY: base,
     curtainZ,
     ceiling,
+    lid,
+    lips,
     walls,
     curtain,
     foots,
     board,
     post,
     screen,
-    panels,
     speakers,
     // 厅内地面和天花只认这只盒子。竖向的门帘不走这里，内外两面各用自己的材质。
+    // 东墙、门墙的内侧面。脚灯在这两条墙根收掉，不照进交缝。
+    inner: { x0: xInL, x1: xInR, z0: zInN, z1: zInS },
     lit: {
       minX: -INNER - 0.05,
       maxX: INNER + 0.05,
       minZ: NORTH - 0.05,
       maxZ: floorJoin,
       minY: base - 0.08,
-      maxY: base + WALL_H + 0.12,
+      maxY: artWallTopAt(floor) + 0.14,
     },
     sign: {
       text: "正在施工",
@@ -1551,9 +1495,9 @@ function describeArt(floor, blocks, cones) {
       w: 1.6,
       h: 0.34,
     },
-    // 厅门墙朝门厅的那一面，门东侧居中。字背贴墙，朝南挤出。
+    // 厅门墙朝门厅的那一面，门东侧居中。字背贴墙，朝南挤出。楼层名仍用 ART_NAME。
     nameSign: {
-      text: ART_NAME,
+      text: "趣站放映厅",
       x: (DOOR + INNER) / 2,
       y: base + 2.5,
       z: faceS + 0.03,
@@ -1590,8 +1534,10 @@ export function buildMuseum(sites, arrange, sortMode) {
   const artIndex = Math.max(ART_HOME, exhibitFloors);
   floorCount = artIndex + 1;
   const top = (floorCount - 1) * STORY;
-  const totalH = top + 6.9;
-  const shellH = totalH;
+  const faceTop = artFaceTop(artIndex);
+  const crownTop = artCrownTop(artIndex);
+  // 电梯井在 15 层天棚处封死。窗玻璃仍停在这道天棚下，洞口以上是实墙。
+  const shaftCeil = top + WALL_H;
 
   // 两侧墙是双层：靠厅、靠广场各一层，中间留槽。门扇整段待在槽里，不和墙皮交上。
   const parkedLeaf = doorBoxes(1, 0)[0];
@@ -1600,38 +1546,42 @@ export function buildMuseum(sites, arrange, sortMode) {
   const skinIn = parkedLeaf.minZ - slotGap;
   const skinOut = parkedLeaf.maxZ + slotGap;
   const pocketFar = -parkedLeaf.minX + pocketClear;
-  pushBox(stone, -INNER, -pocketFar, SOUTH, SOUTH + T, shellH);
-  pushBox(stone, pocketFar, INNER, SOUTH, SOUTH + T, shellH);
-  pushBox(stone, -pocketFar, -DOOR, SOUTH, skinIn, shellH);
-  pushBox(stone, -pocketFar, -DOOR, skinOut, SOUTH + T, shellH);
-  pushBox(stone, DOOR, pocketFar, SOUTH, skinIn, shellH);
-  pushBox(stone, DOOR, pocketFar, skinOut, SOUTH + T, shellH);
+  pushBox(stone, -INNER, -pocketFar, SOUTH, SOUTH + T, crownTop);
+  pushBox(stone, pocketFar, INNER, SOUTH, SOUTH + T, crownTop);
+  pushBox(stone, -pocketFar, -DOOR, SOUTH, skinIn, crownTop);
+  pushBox(stone, -pocketFar, -DOOR, skinOut, SOUTH + T, crownTop);
+  pushBox(stone, DOOR, pocketFar, SOUTH, skinIn, crownTop);
+  pushBox(stone, DOOR, pocketFar, skinOut, SOUTH + T, crownTop);
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
-    const next = f === floorCount - 1 ? shellH : (f + 1) * STORY;
+    const next = (f + 1) * STORY;
     const y0 = base + DOOR_H + 0.004;
     pushBox(stone, -pocketFar, -DOOR, skinIn, skinOut, next - y0, "stone", y0);
     pushBox(stone, DOOR, pocketFar, skinIn, skinOut, next - y0, "stone", y0);
   }
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
-    const headTop = f === floorCount - 1 ? WALL_H : STORY;
-    pushBox(stone, -DOOR, DOOR, SOUTH, SOUTH + T, headTop - DOOR_H, "stone", base + DOOR_H);
-    pushBox(white, -DOOR, DOOR, SOUTH - 0.052, SOUTH - 0.01, headTop - DOOR_H, "white", base + DOOR_H);
+    pushBox(stone, -DOOR, DOOR, SOUTH, SOUTH + T, STORY - DOOR_H, "stone", base + DOOR_H);
+    pushBox(white, -DOOR, DOOR, SOUTH - 0.052, SOUTH - 0.01, STORY - DOOR_H, "white", base + DOOR_H);
   }
+  // 15 层往上的两层正面不再留自动门。门洞和门槽补到楼冠，和外墙两侧连成一块。正面不伸出观景台。
+  const upperH = crownTop - faceTop;
+  pushBox(stone, -DOOR, DOOR, SOUTH, SOUTH + T, upperH, "stone", faceTop);
+  pushBox(stone, -pocketFar, -DOOR, skinIn, skinOut, upperH, "stone", faceTop);
+  pushBox(stone, DOOR, pocketFar, skinIn, skinOut, upperH, "stone", faceTop);
 
   const cheek = 0.16;
   const winJamb = (LIFT.carW - LIFT.winW) / 2;
-  // 后墙一路做到窗边，中间只留窗洞。不要再叠一块墙垛，外立面和内墙才不会抖。
-  pushBox(stone, -INNER - T, -INNER, NORTH, LIFT.z0 + winJamb, shellH);
-  pushBox(stone, -INNER - T, -INNER, LIFT.z1 - winJamb, SOUTH, shellH);
-  pushBox(stone, INNER, INNER + T, NORTH, SOUTH, shellH);
-  pushBox(stone, -INNER, INNER, NORTH - T, NORTH, shellH);
+  // 石墙跟到 17 层顶。西侧窗洞一路留着，玻璃仍是一整块，不在 15 层天棚处截断。
+  pushBox(stone, -INNER - T, -INNER, NORTH, LIFT.z0 + winJamb, crownTop);
+  pushBox(stone, -INNER - T, -INNER, LIFT.z1 - winJamb, SOUTH, crownTop);
+  pushBox(stone, INNER, INNER + T, NORTH, SOUTH, crownTop);
+  pushBox(stone, -INNER, INNER, NORTH - T, NORTH, crownTop);
   const corners = [];
-  pushBox(corners, -INNER - T, -INNER, SOUTH, SOUTH + T, shellH);
-  pushBox(corners, INNER, INNER + T, SOUTH, SOUTH + T, shellH);
-  pushBox(corners, -INNER - T, -INNER, NORTH - T, NORTH, shellH);
-  pushBox(corners, INNER, INNER + T, NORTH - T, NORTH, shellH);
+  pushBox(corners, -INNER - T, -INNER, SOUTH, SOUTH + T, crownTop);
+  pushBox(corners, INNER, INNER + T, SOUTH, SOUTH + T, crownTop);
+  pushBox(corners, -INNER - T, -INNER, NORTH - T, NORTH, crownTop);
+  pushBox(corners, INNER, INNER + T, NORTH - T, NORTH, crownTop);
 
   pushBox(curb, INNER + T, PLAZA.maxX + T, SOUTH, SOUTH + T, 0.45, "curb");
   pushBox(curb, PLAZA.minX - T, -INNER - T, SOUTH, SOUTH + T, 0.45, "curb");
@@ -1642,11 +1592,11 @@ export function buildMuseum(sites, arrange, sortMode) {
   const ceilWalls = [];
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
-    const h = f === floorCount - 1 ? WALL_H : STORY;
+    const h = f === artIndex ? artWallTopAt(f) - base : (f === floorCount - 1 ? WALL_H : STORY);
     const hallList = f === artIndex ? ceilWalls : white;
-    // 艺术厅这面门墙从楼板顶面附近起，不再从层底穿出地面。
-    const jambBase = f === artIndex ? base + 0.032 : base;
-    const jambH = f === artIndex ? h - 0.032 : h;
+    // 艺术厅门墙底埋进楼板，底边不悬在走道上面。
+    const jambBase = f === artIndex ? base - 0.08 : base;
+    const jambH = f === artIndex ? h + 0.08 : h;
     pushBox(hallList, -INNER, -DOOR, HALL_A - T / 2, HALL_A + T / 2, jambH, "white", jambBase);
     pushBox(hallList, DOOR, INNER, HALL_A - T / 2, HALL_A + T / 2, jambH, "white", jambBase);
     pushBox(white, COL_IN, COL_OUT, COL_Z0, COL_Z1, WALL_H, "white", base);
@@ -1673,22 +1623,22 @@ export function buildMuseum(sites, arrange, sortMode) {
   const skinX0 = leafX1 + 0.004;
   const backX1 = leafX0 - slot;
   const backX0 = LIFT.xDoor - 0.085;
-  pushBox(white, cheekIn, liftFace, LIFT.z0 - cheek - 0.02, LIFT.z0 - pocket, shellH, "white");
-  pushBox(white, cheekIn, backX1, LIFT.z0 - pocket, LIFT.z0, shellH, "white");
-  pushBox(white, skinX0, liftFace, LIFT.z0 - pocket, LIFT.z0, shellH, "white");
-  pushBox(white, cheekIn, liftFace, LIFT.z1 + pocket, LIFT.z1 + cheek + 0.02, shellH, "white");
-  pushBox(white, cheekIn, backX1, LIFT.z1, LIFT.z1 + pocket, shellH, "white");
-  pushBox(white, skinX0, liftFace, LIFT.z1, LIFT.z1 + pocket, shellH, "white");
-  pushBox(white, backX0, backX1, LIFT.z0, LIFT.z0 + doorJamb, shellH, "white");
-  pushBox(white, skinX0, liftFace, LIFT.z0, LIFT.z0 + doorJamb, shellH, "white");
-  pushBox(white, backX0, backX1, LIFT.z1 - doorJamb, LIFT.z1, shellH, "white");
-  pushBox(white, skinX0, liftFace, LIFT.z1 - doorJamb, LIFT.z1, shellH, "white");
+  pushBox(white, cheekIn, liftFace, LIFT.z0 - cheek - 0.02, LIFT.z0 - pocket, shaftCeil, "white");
+  pushBox(white, cheekIn, backX1, LIFT.z0 - pocket, LIFT.z0, shaftCeil, "white");
+  pushBox(white, skinX0, liftFace, LIFT.z0 - pocket, LIFT.z0, shaftCeil, "white");
+  pushBox(white, cheekIn, liftFace, LIFT.z1 + pocket, LIFT.z1 + cheek + 0.02, shaftCeil, "white");
+  pushBox(white, cheekIn, backX1, LIFT.z1, LIFT.z1 + pocket, shaftCeil, "white");
+  pushBox(white, skinX0, liftFace, LIFT.z1, LIFT.z1 + pocket, shaftCeil, "white");
+  pushBox(white, backX0, backX1, LIFT.z0, LIFT.z0 + doorJamb, shaftCeil, "white");
+  pushBox(white, skinX0, liftFace, LIFT.z0, LIFT.z0 + doorJamb, shaftCeil, "white");
+  pushBox(white, backX0, backX1, LIFT.z1 - doorJamb, LIFT.z1, shaftCeil, "white");
+  pushBox(white, skinX0, liftFace, LIFT.z1 - doorJamb, LIFT.z1, shaftCeil, "white");
   blocks.push({
     minX: LIFT.xRear - 0.04,
     maxX: LIFT.xRear + 0.06,
     minZ: LIFT.cz - LIFT.winW / 2,
     maxZ: LIFT.cz + LIFT.winW / 2,
-    h: shellH,
+    h: shaftCeil,
   });
   for (let f = 0; f < floorCount; f++) {
     const base = f * STORY;
@@ -1697,22 +1647,26 @@ export function buildMuseum(sites, arrange, sortMode) {
   }
 
   const skin = INNER + T - 0.006;
-  liners.push({ minX: -skin, maxX: -DOOR, minZ: SOUTH - 0.052, maxZ: SOUTH - 0.01, h: shellH });
-  liners.push({ minX: DOOR, maxX: skin, minZ: SOUTH - 0.052, maxZ: SOUTH - 0.01, h: shellH });
+  liners.push({ minX: -skin, maxX: -DOOR, minZ: SOUTH - 0.052, maxZ: SOUTH - 0.01, h: faceTop });
+  liners.push({ minX: DOOR, maxX: skin, minZ: SOUTH - 0.052, maxZ: SOUTH - 0.01, h: faceTop });
   const winJambLiner = (LIFT.carW - LIFT.winW) / 2;
   // 内衬在窗洞边收进 3 厘米，端面不和石墙的窗侧切在同一张面上。
-  liners.push({ minX: -INNER - 0.01, maxX: -INNER + 0.05, minZ: NORTH, maxZ: LIFT.z0 + winJambLiner - 0.03, h: shellH });
-  liners.push({ minX: -INNER - 0.01, maxX: -INNER + 0.05, minZ: LIFT.z1 - winJambLiner + 0.03, maxZ: SOUTH - 0.02, h: shellH });
-  liners.push({ minX: INNER - 0.05, maxX: INNER + 0.01, minZ: NORTH, maxZ: SOUTH - 0.02, h: shellH });
-  liners.push({ minX: -skin, maxX: skin, minZ: NORTH - 0.01, maxZ: NORTH + 0.008, h: shellH });
+  liners.push({ minX: -INNER - 0.01, maxX: -INNER + 0.05, minZ: NORTH, maxZ: LIFT.z0 + winJambLiner - 0.03, h: faceTop });
+  liners.push({ minX: -INNER - 0.01, maxX: -INNER + 0.05, minZ: LIFT.z1 - winJambLiner + 0.03, maxZ: SOUTH - 0.02, h: faceTop });
+  liners.push({ minX: INNER - 0.05, maxX: INNER + 0.01, minZ: NORTH, maxZ: SOUTH - 0.02, h: faceTop });
+  liners.push({ minX: -skin, maxX: skin, minZ: NORTH - 0.01, maxZ: NORTH + 0.008, h: faceTop });
 
   const dress = [];
   const bandCorners = [];
   const cap = floorCount > 1 ? STORY - 0.08 : null;
-  for (let f = 0; f < floorCount; f++) {
+  // 15 层往上再画两层，立面和下面每一层相同。正面不另加观景台。
+  const faceFloors = floorCount + 2;
+  for (let f = 0; f < faceFloors; f++) {
     const base = f * STORY;
-    const storyCap = f === floorCount - 1 ? null : cap;
-    addFacade(dress, "z", SOUTH + T, 1, -18.35, 18.35, [-2.7, 2.7], base, storyCap);
+    const storyCap = cap;
+    // 最上两层门洞已经封上，竖向线条不再在正中让开一道门。
+    const southGap = f < floorCount ? [-2.7, 2.7] : null;
+    addFacade(dress, "z", SOUTH + T, 1, -18.35, 18.35, southGap, base, storyCap);
     addFacade(dress, "z", NORTH - T, -1, -18.35, 18.35, null, base, storyCap);
     addFacade(dress, "x", INNER + T, 1, NORTH - 0.2, SOUTH + 0.2, null, base, storyCap);
     addFacade(dress, "x", -INNER - T, -1, NORTH - 0.2, SOUTH + 0.2, [LIFT.z0 - 0.3, LIFT.z1 + 0.3], base, storyCap);
@@ -1730,25 +1684,37 @@ export function buildMuseum(sites, arrange, sortMode) {
       bandCorners.push({ minX: -xOut, maxX: -xBand, minY: band[0], maxY: band[1], minZ: zBack, maxZ: zSideN });
     }
   }
+
   // 后窗是一整块玻璃。按层切开的话，上下两块之间会留缝，两块叠在同一张面上又会抖。
   dress.push({
     kind: "glass",
     minX: LIFT.xRear + 0.02,
     maxX: LIFT.xRear + 0.06,
     minY: 0.02,
-    maxY: (floorCount - 1) * STORY + WALL_H - 0.02,
+    maxY: crownTop - 0.02,
     minZ: LIFT.cz - LIFT.winW / 2 - 0.16,
     maxZ: LIFT.cz + LIFT.winW / 2 + 0.16,
   });
+  // 落影仍用整块旧屋面。看得见的顶盖是一整块，四角不再留缝。
+  const roofLow0 = top + 6.28;
+  const roofLow1 = top + 6.72;
+  const roofX0 = -19.15;
+  const roofX1 = 19.15;
+  const roofZ0 = NORTH - 0.85;
+  const roofZ1 = SOUTH + T + 0.7;
   dress.push({
     kind: "roof",
-    minX: -19.15,
-    maxX: 19.15,
-    minY: top + 6.28,
-    maxY: top + 6.72,
-    minZ: NORTH - 0.85,
-    maxZ: SOUTH + T + 0.7,
+    shadowOnly: true,
+    minX: roofX0,
+    maxX: roofX1,
+    minY: roofLow0,
+    maxY: roofLow1,
+    minZ: roofZ0,
+    maxZ: roofZ1,
   });
+  const eaveY0 = crownTop;
+  const eaveY1 = crownTop + (roofLow1 - roofLow0);
+  dress.push({ kind: "roof", minX: roofX0, maxX: roofX1, minY: eaveY0, maxY: eaveY1, minZ: roofZ0, maxZ: roofZ1 });
 
   const openings = [];
   pushOpening(openings, "z", SOUTH - 0.02, 1, -18.35, 18.35, 2.95, 3.42, [-2.7, 2.7]);
@@ -1859,12 +1825,40 @@ export function buildMuseum(sites, arrange, sortMode) {
       });
     } else {
       const ceilTop = base + WALL_H;
+      const holes = [];
+      if (f === artIndex) {
+        // 厅外天棚停在门帘上方。厅内这段挖空，上面才和加高后的空间相通。绕向跟外轮廓一致。
+        const xWest = -INNER - 0.02;
+        const xEast = INNER + 0.32;
+        const zNorth = NORTH - 0.02;
+        const zCut = HALL_A - WALL_T / 2 + 0.04;
+        holes.push([
+          [xWest + 0.04, zCut],
+          [xEast - 0.04, zCut],
+          [xEast - 0.04, zNorth + 0.04],
+          [xWest + 0.04, zNorth + 0.04],
+        ]);
+      }
       ceilPlates.push({
         minY: ceilTop - 0.06,
         maxY: ceilTop,
         outer: roomOuterPoly(true),
-        holes: [],
+        holes,
       });
+      if (f === artIndex) {
+        // 井道在这层天棚上封一块板。外轮廓已经把井让出去了，这里补回来。
+        ceilPlates.push({
+          minY: ceilTop - 0.06,
+          maxY: ceilTop,
+          outer: [
+            [LIFT.xRear + 0.02, LIFT.z1 + 0.04],
+            [LIFT.xDoor - 0.02, LIFT.z1 + 0.04],
+            [LIFT.xDoor - 0.02, LIFT.z0 - 0.04],
+            [LIFT.xRear + 0.02, LIFT.z0 - 0.04],
+          ],
+          holes: [],
+        });
+      }
     }
   }
 
@@ -1893,7 +1887,7 @@ export function buildMuseum(sites, arrange, sortMode) {
       minZ: NORTH - 0.3,
       maxZ: SOUTH + T + 0.3,
       minY: f * STORY - 0.35,
-      maxY: f === floorCount - 1 ? f * STORY + WALL_H : (f + 1) * STORY - 0.15,
+      maxY: f === floorCount - 1 ? artCrownTop(f) : (f + 1) * STORY - 0.15,
     });
     if (f > 0) {
       zones.push({
@@ -2012,6 +2006,7 @@ export function buildMuseum(sites, arrange, sortMode) {
     handrails,
     zones,
     floors: floorCount,
+    faceFloors: floorCount + 2,
     art,
     floorNames,
     floorSpans,
@@ -2024,7 +2019,7 @@ export function buildMuseum(sites, arrange, sortMode) {
       maxX: INNER + T,
       minZ: NORTH - T,
       maxZ: SOUTH + T,
-      top: shellH,
+      top: crownTop,
     },
     bounds: { minX, maxX, minZ, maxZ },
     interior: hallInterior(),

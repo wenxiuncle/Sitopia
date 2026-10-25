@@ -558,7 +558,12 @@ function lampSamples(acc) {
           float pool = smoothstep(${glslNum(LAMP_FOOT_FAR)}, ${glslNum(LAMP_FOOT_NEAR)}, dist);
           float below = smoothstep(-0.08, 0.42, ldir.y);
           float upFace = smoothstep(0.45, 0.85, nrm.y);
-          ${acc} += below * pool * ${glslNum(LAMP_FOOT_DIRECT)} * upFace;
+          float seam = 1.0;
+          float eastGap = uArtSeam.y - vSunW.x;
+          float doorGap = uArtSeam.w - vSunW.z;
+          if (eastGap > 0.0 && eastGap < 0.2) seam = min(seam, smoothstep(0.02, 0.16, eastGap));
+          if (doorGap > 0.0 && doorGap < 0.2) seam = min(seam, smoothstep(0.02, 0.16, doorGap));
+          ${acc} += below * pool * ${glslNum(LAMP_FOOT_DIRECT)} * upFace * seam;
         } else if (!footOnly) {
           float aim = max(ldir.y, 0.0);
           float down = smoothstep(${glslNum(LAMP_CONE_IN)}, ${glslNum(LAMP_CONE_OUT)}, aim);
@@ -625,6 +630,7 @@ function patchSunShader(shader, shared, role) {
   shader.uniforms.uLampMode = role.lamps;
   shader.uniforms.uArtBox = shared.artBox;
   shader.uniforms.uArtY = shared.artY;
+  shader.uniforms.uArtSeam = shared.artSeam;
   shader.uniforms.uFootFill = role.footFill || shared.artFill;
   if (sunIndexLoops) {
     shader.uniforms.uLampN = { value: LAMPS_PER_FLOOR };
@@ -652,7 +658,9 @@ function patchSunShader(shader, shared, role) {
     `vec3 outgoingLight = reflectedLight.indirectDiffuse;
     vec3 nrm = normalize(vSunN);
     bool useLamp = uLampMode > 0.5;
-    if (uLampMode > 1.5) {
+    if (uLampMode > 2.5) {
+      useLamp = vSunW.y > -0.2;
+    } else if (uLampMode > 1.5) {
       useLamp = vSunW.y > -0.2 && vSunW.y < uRoof - 1.0 && vSunW.x > uRoom.x && vSunW.x < uRoom.y && vSunW.z > uRoom.z && vSunW.z < uRoom.w;
     }
     float shade;
@@ -762,6 +770,7 @@ uniform vec3 uLampTint;
 uniform float uLampMode;
 uniform vec4 uArtBox;
 uniform vec2 uArtY;
+uniform vec4 uArtSeam;
 uniform float uFootFill;
 varying vec3 vSunN;
 varying vec3 vSunW;
@@ -825,7 +834,7 @@ float volumeMask(vec2 p, vec2 dir, vec2 lo, vec2 hi, float roof) {
 
 export function attachSun(material, shared, role) {
   material.onBeforeCompile = (shader) => patchSunShader(shader, shared, role);
-  material.customProgramCacheKey = () => "museum-sun-22" + sunVariant(role);
+  material.customProgramCacheKey = () => "museum-sun-23" + sunVariant(role);
 }
 
 // 画芯共用一张图集。frameUv 是格子偏移和缩放。
@@ -841,7 +850,7 @@ export function attachFramePicture(material, shared, role) {
     if (next === shader.vertexShader) throw new Error("画框贴图坐标没有对上");
     shader.vertexShader = "attribute vec4 frameUv;\n" + next;
   };
-  material.customProgramCacheKey = () => "museum-sun-frame-22" + sunVariant(role);
+  material.customProgramCacheKey = () => "museum-sun-frame-23" + sunVariant(role);
 }
 
 export function sunPatchMesh(count) {
@@ -1791,12 +1800,50 @@ function letterHalo(raster, box) {
     fog: false,
     toneMapped: false,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -2,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(canvas.width, canvas.height), mat);
-  plane.position.set(raster.width / 2 - box.cx, raster.height / 2 - box.cy, -2.2);
+  plane.position.set(raster.width / 2 - box.cx, raster.height / 2 - box.cy, 0);
   plane.renderOrder = 2;
+  return plane;
+}
+
+// 黑字再铺在挤出正面之前。远处笔画细过一个像素时，立体面会被光栅丢掉，光晕还在，字就没了。
+function letterInk(raster, box, z) {
+  const canvas = document.createElement("canvas");
+  canvas.width = raster.width;
+  canvas.height = raster.height;
+  const ctx = canvas.getContext("2d");
+  const image = ctx.createImageData(raster.width, raster.height);
+  for (let i = 0; i < raster.mask.length; i++) {
+    if (!raster.mask[i]) continue;
+    const o = i * 4;
+    image.data[o] = 0x14;
+    image.data[o + 1] = 0x12;
+    image.data[o + 2] = 0x10;
+    image.data[o + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    alphaTest: 0.45,
+    depthWrite: false,
+    fog: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(raster.width, raster.height), mat);
+  plane.position.set(raster.width / 2 - box.cx, raster.height / 2 - box.cy, z);
+  plane.renderOrder = 4;
   return plane;
 }
 
@@ -1831,7 +1878,13 @@ function solidSign(sign) {
       mesh.renderOrder = 3;
       group.add(mesh);
     }
-    if (sign.backlight) group.add(letterHalo(raster, box));
+    if (sign.backlight) {
+      const halo = letterHalo(raster, box);
+      // 字背离门墙只有 1 厘米。光卡片按像素塞到墙里会被深度测试吃掉，收到字背后面 4 毫米。
+      halo.position.z = -0.004 / scale;
+      group.add(halo);
+      group.add(letterInk(raster, box, depth + 0.35));
+    }
     group.scale.set(scale, scale, scale);
     group.position.set(sign.x, sign.y, sign.z);
     group.rotation.y = sign.yaw || 0;
@@ -2914,6 +2967,8 @@ export function artHallMeshes(art, mats) {
   const sky = starCeiling(art.ceiling);
   if (sky.root.children.length) root.add(sky.root);
   addArtBoxes(root, art.walls, mats.walls);
+  addArtBoxes(root, art.lid, mats.lid || mats.lips || mats.walls);
+  addArtBoxes(root, art.lips, mats.lips || mats.walls);
   const curtain = curtainMesh(art.curtain, mats.curtain, mats.curtainIn);
   if (curtain) root.add(curtain);
   const foots = footlightRig(art.foots);
@@ -2947,39 +3002,6 @@ export function artHallMeshes(art, mats) {
     grille.position.set(0, 0, sp.d / 2 + 0.001);
     cab.add(grille);
     root.add(cab);
-  }
-  const panels = art.panels || [];
-  if (panels.length) {
-    // 箱体是边框色。正面画面盖在箱体朝外的那一面上，侧面和背面只看见箱体。
-    const sample = panels[0];
-    const cabinetGeo = new THREE.BoxGeometry(sample.w + sample.lipX * 2, sample.h + sample.lipTop, sample.d);
-    const faceGeo = new THREE.PlaneGeometry(sample.w, sample.h);
-    const cabinetMat = new THREE.MeshBasicMaterial({ color: 0x2c2e34 });
-    const panelMat = new THREE.MeshBasicMaterial({
-      color: 0x101218,
-      side: THREE.FrontSide,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    for (let i = 0; i < panels.length; i++) {
-      const spec = panels[i];
-      const back = spec.d / 2;
-      const cabinet = new THREE.Mesh(cabinetGeo, cabinetMat);
-      cabinet.position.set(
-        spec.x - Math.sin(spec.yaw) * back,
-        spec.y + spec.lipTop / 2,
-        spec.z - Math.cos(spec.yaw) * back,
-      );
-      cabinet.rotation.y = spec.yaw;
-      cabinet.name = "art-panel-box";
-      root.add(cabinet);
-      const face = new THREE.Mesh(faceGeo, panelMat);
-      face.position.set(spec.x, spec.y, spec.z);
-      face.rotation.y = spec.yaw;
-      face.name = "art-panel";
-      root.add(face);
-    }
   }
   return { root, screen: picture, sky };
 }

@@ -266,9 +266,9 @@ export function attachMusic(events, music, now) {
   }
 }
 
-// 小屏幕的链接和洗牌种子。认链接、怎么分到各块屏幕在 js/clips.js。
+// 大屏幕卡片里预填的视频链接。认哪些链接在 js/clips.js。
 export function blankVideos() {
-  return { urls: [], seed: 1 };
+  return { urls: [] };
 }
 
 export function restoreVideos(saved) {
@@ -283,31 +283,27 @@ export function restoreVideos(saved) {
     if (urls.length >= CLIP_CAP) break;
   }
   videos.urls = urls;
-  const seed = Math.floor(Number(saved.seed));
-  if (seed >= 1) videos.seed = seed;
   return videos;
 }
 
-// 每次保存都换种子，同一份名单也会重新分。空名单是合法的。
-export function applyVideos(videos, body, now) {
+// 空名单是合法的。旧档里的洗牌种子不再使用。
+export function applyVideos(videos, body) {
   if (!videos || !body || typeof body !== "object") return null;
   if (typeof body.text !== "string") return { error: "这不是 B 站或 YouTube 的视频链接。" };
   const cleaned = cleanClipList(body.text);
   if (cleaned.error) return cleaned;
   videos.urls = cleaned.urls;
-  const stamp = Math.floor(Number(now) || Date.now());
-  videos.seed = Math.max(1, stamp);
   return videoView(videos);
 }
 
 export function videoView(videos) {
   const row = videos || blankVideos();
-  return { t: "videos", urls: row.urls.slice(), seed: row.seed || 1 };
+  return { t: "videos", urls: row.urls.slice() };
 }
 
 export function videoPack(videos) {
   const view = videoView(videos);
-  return { urls: view.urls, seed: view.seed };
+  return { urls: view.urls };
 }
 
 export function attachVideos(events, videos) {
