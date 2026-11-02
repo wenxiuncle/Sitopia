@@ -2863,44 +2863,66 @@ function footlightRig(lamps) {
   return root;
 }
 
-// 艺术厅天棚。板的范围仍在 layout.js。这里只把底面画成缓缓闪的星空。
-function starHashGlsl() {
-  return `
-    float starHash(vec2 p) {
-      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-      p3 += dot(p3, p3.yzx + 33.33);
-      return fract((p3.x + p3.y) * p3.z);
+// 艺术厅天棚。板的范围仍在 layout.js。一整张黑色深空，白点不重复、不拼接。
+function starRand(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function starFieldTexture(worldW, worldD) {
+  const pxPerM = 72;
+  let width = Math.max(2, Math.round(worldW * pxPerM));
+  let height = Math.max(2, Math.round(worldD * pxPerM));
+  const cap = 4096;
+  const longest = Math.max(width, height);
+  if (longest > cap) {
+    const scale = cap / longest;
+    width = Math.max(2, Math.round(width * scale));
+    height = Math.max(2, Math.round(height * scale));
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, width, height);
+  const rand = starRand(0x51a7c0de);
+  const count = Math.max(1, Math.round(worldW * worldD * 2.1));
+  ctx.fillStyle = "#ffffff";
+  for (let i = 0; i < count; i++) {
+    const x = rand() * width;
+    const y = rand() * height;
+    const roll = rand();
+    let radius = 1.15 + rand() * 0.4;
+    let alpha = 0.62 + rand() * 0.28;
+    if (roll > 0.96) {
+      radius = 2.15 + rand() * 0.35;
+      alpha = 1;
+    } else if (roll > 0.8) {
+      radius = 1.6 + rand() * 0.35;
+      alpha = 0.88 + rand() * 0.12;
     }
-    float starBreathe(vec2 id, float n, float enable) {
-      float pace = 0.32 + starHash(id + 5.1) * 0.55;
-      float wave = 0.5 + 0.5 * sin(uStarTime * pace + n * 6.2831853);
-      wave = smoothstep(0.12, 0.88, wave);
-      float pick = step(0.38, starHash(id + 2.4));
-      return mix(1.0, mix(0.18, 1.0, wave), pick * enable * uStarTwinkle);
-    }
-    vec3 starLayer(vec2 uv, float cells, float keep, float radius, float gain, float haloGain, float twinkle) {
-      vec2 g = uv * cells;
-      vec2 id = floor(g);
-      vec2 f = fract(g) - 0.5;
-      float n = starHash(id);
-      vec2 jitter = vec2(starHash(id + 1.7), starHash(id + 8.3)) - 0.5;
-      float d = length(f - jitter * 0.7);
-      float core = 1.0 - smoothstep(radius * 0.12, radius, d);
-      float halo = (1.0 - smoothstep(radius * 0.45, radius * 4.2, d)) * haloGain;
-      vec3 tint = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.93, 0.78), starHash(id + 4.4));
-      return tint * (core + halo) * step(keep, n) * starBreathe(id, n, twinkle) * gain;
-    }
-    float starValue(vec2 p) {
-      vec2 i = floor(p);
-      vec2 f = fract(p);
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      float a = starHash(i);
-      float b = starHash(i + vec2(1.0, 0.0));
-      float c = starHash(i + vec2(0.0, 1.0));
-      float d = starHash(i + vec2(1.0, 1.0));
-      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-    }
-  `;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 function starCeiling(list) {
@@ -2908,15 +2930,26 @@ function starCeiling(list) {
   const twinkle = {
     value: (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) ? 0 : 1,
   };
+  const slabs = list || [];
+  let worldW = 1;
+  let worldD = 1;
+  for (let i = 0; i < slabs.length; i++) {
+    const slab = slabs[i];
+    const w = slab.maxX - slab.minX;
+    const d = slab.maxZ - slab.minZ;
+    if (w > worldW) worldW = w;
+    if (d > worldD) worldD = d;
+  }
   const mat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
+    map: starFieldTexture(worldW, worldD),
     fog: false,
     side: THREE.DoubleSide,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-  mat.customProgramCacheKey = () => "museum-star-field";
+  mat.customProgramCacheKey = () => "museum-star-field-2";
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uStarTime = time;
     shader.uniforms.uStarTwinkle = twinkle;
@@ -2931,30 +2964,24 @@ function starCeiling(list) {
       "vec3 outgoingLight = reflectedLight.indirectDiffuse;",
       `vec3 outgoingLight = reflectedLight.indirectDiffuse;
       {
-        vec2 p = vStarW.xz;
-        float across = p.x * 0.62 - p.y * 0.34;
-        float band = across * 0.055;
-        float milky = exp(-(band * band));
-        vec3 space = vec3(0.0032, 0.0042, 0.014);
-        space += vec3(0.011, 0.013, 0.028) * milky;
-        float wash = starValue(p * 0.045) * 0.65 + starValue(p * 0.11 + 19.0) * 0.35;
-        space += vec3(0.004, 0.005, 0.012) * wash;
-        vec3 stars = space;
-        stars += starLayer(p, 5.2, 0.38, 0.07, 0.5, 0.0, 0.0);
-        stars += starLayer(p, 1.6, 0.58, 0.075, 1.0, 0.22, 1.0);
-        stars += starLayer(p, 0.55, 0.7, 0.11, 1.4, 0.55, 1.0);
-        outgoingLight = stars * 0.3;
+        float lum = outgoingLight.r;
+        if (lum > 0.08) {
+          vec2 cell = floor(vStarW.xz * 6.0);
+          float n = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+          float pace = 0.28 + n * 0.55;
+          float wave = 0.5 + 0.5 * sin(uStarTime * pace + n * 6.2831853);
+          float pick = step(0.72, n);
+          outgoingLight *= mix(1.0, mix(0.8, 1.0, wave), pick * uStarTwinkle);
+        }
       }`,
     );
     if (fragment === shader.fragmentShader) throw new Error("星空片元着色器没有对上");
     shader.fragmentShader = `uniform float uStarTime;
 uniform float uStarTwinkle;
 varying vec3 vStarW;
-${starHashGlsl()}
 ` + fragment;
   };
   const root = new THREE.Group();
-  const slabs = list || [];
   for (let i = 0; i < slabs.length; i++) {
     const slab = slabs[i];
     const w = slab.maxX - slab.minX;
@@ -2976,6 +3003,146 @@ ${starHashGlsl()}
       time.value = now * 0.001;
     },
   };
+}
+
+function standRailMesh(rails, material) {
+  if (!rails || !rails.length || !material) return null;
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.046, 0.052), material, rails.length);
+  const dir = new THREE.Vector3();
+  const axis = new THREE.Vector3(1, 0, 0);
+  for (let i = 0; i < rails.length; i++) {
+    const rail = rails[i];
+    dir.set(rail.x1 - rail.x0, rail.y1 - rail.y0, rail.z1 - rail.z0);
+    const len = dir.length() || 1;
+    dir.multiplyScalar(1 / len);
+    dummy.position.set((rail.x0 + rail.x1) / 2, (rail.y0 + rail.y1) / 2, (rail.z0 + rail.z1) / 2);
+    dummy.scale.set(len, 1, 1);
+    dummy.quaternion.setFromUnitVectors(axis, dir);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  return commit(mesh);
+}
+
+function addStandPart(root, geo, material, count, place) {
+  const mesh = paintInstances(geo, material, count, (i) => {
+    dummy.quaternion.identity();
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    place(i);
+  });
+  if (mesh) root.add(mesh);
+}
+
+// 单人沙发朝北（-Z）。占位和碰撞在 layout.js，这里的外形收在那只盒子里。
+function loungeMeshes(root, stand, mats) {
+  const seats = stand.seats || [];
+  const tables = stand.tables || [];
+  if (!seats.length || !mats.leather) return;
+  const n = seats.length;
+  const at = (i, lx, ly, lz) => {
+    const seat = seats[i];
+    dummy.position.set(seat.x + lx, seat.y + ly, seat.z + lz);
+  };
+  addStandPart(root, new THREE.CylinderGeometry(0.03, 0.042, 0.16, 10), mats.bronze, n * 4, (i) => {
+    const leg = i % 4;
+    const seat = Math.floor(i / 4);
+    const lx = leg < 2 ? -0.46 : 0.46;
+    const lz = leg % 2 === 0 ? -0.36 : 0.36;
+    at(seat, lx, 0.08, lz);
+  });
+  addStandPart(root, new THREE.BoxGeometry(1.02, 0.07, 0.78), mats.bronze, n, (i) => at(i, 0, 0.2, 0.02));
+  addStandPart(root, new THREE.BoxGeometry(1.08, 0.05, 0.72), mats.leather, n, (i) => at(i, 0, 0.255, -0.02));
+  addStandPart(root, new THREE.BoxGeometry(0.96, 0.12, 0.66), mats.cushion, n, (i) => at(i, 0, 0.33, -0.04));
+  addStandPart(root, new THREE.BoxGeometry(0.9, 0.035, 0.6), mats.cushion, n, (i) => at(i, 0, 0.4, -0.05));
+  addStandPart(root, new THREE.BoxGeometry(0.1, 0.32, 0.84), mats.leather, n * 2, (i) => {
+    const side = i % 2 === 0 ? -1 : 1;
+    at(Math.floor(i / 2), side * 0.52, 0.38, 0);
+  });
+  addStandPart(root, new THREE.BoxGeometry(0.12, 0.05, 0.86), mats.cushion, n * 2, (i) => {
+    const side = i % 2 === 0 ? -1 : 1;
+    at(Math.floor(i / 2), side * 0.52, 0.55, 0);
+  });
+  addStandPart(root, new THREE.BoxGeometry(0.045, 0.18, 0.58), mats.cushion, n * 2, (i) => {
+    const side = i % 2 === 0 ? -1 : 1;
+    at(Math.floor(i / 2), side * 0.45, 0.4, -0.06);
+  });
+  addStandPart(root, new THREE.BoxGeometry(1.02, 0.56, 0.08), mats.leather, n, (i) => at(i, 0, 0.6, 0.42));
+  addStandPart(root, new THREE.BoxGeometry(0.78, 0.38, 0.07), mats.cushion, n, (i) => at(i, 0, 0.64, 0.35));
+  addStandPart(root, new THREE.BoxGeometry(0.34, 0.2, 0.08), mats.pillow, n, (i) => at(i, 0.02, 0.46, 0.28));
+  if (!tables.length || !mats.stone) return;
+  const tn = tables.length;
+  const tableAt = (i, lx, ly, lz) => {
+    const table = tables[i];
+    dummy.position.set(table.x + lx, table.y + ly, table.z + lz);
+  };
+  addStandPart(root, new THREE.BoxGeometry(0.5, 0.028, 0.44), mats.stone, tn, (i) => tableAt(i, 0, 0.432, 0));
+  addStandPart(root, new THREE.BoxGeometry(0.42, 0.028, 0.36), mats.bronze, tn, (i) => tableAt(i, 0, 0.402, 0));
+  addStandPart(root, new THREE.BoxGeometry(0.028, 0.38, 0.028), mats.bronze, tn * 4, (i) => {
+    const leg = i % 4;
+    const table = Math.floor(i / 4);
+    const lx = leg < 2 ? -0.19 : 0.19;
+    const lz = leg % 2 === 0 ? -0.15 : 0.15;
+    tableAt(table, lx, 0.2, lz);
+  });
+  if (!mats.vase) return;
+  addStandPart(root, new THREE.CylinderGeometry(0.055, 0.062, 0.018, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.456, 0));
+  addStandPart(root, new THREE.CylinderGeometry(0.048, 0.062, 0.14, 14), mats.vase, tn, (i) => tableAt(i, 0, 0.53, 0));
+  addStandPart(root, new THREE.CylinderGeometry(0.026, 0.04, 0.07, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.63, 0));
+  addStandPart(root, new THREE.CylinderGeometry(0.046, 0.03, 0.02, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.672, 0));
+  const blooms = [
+    { x: 0.045, y: 0.8, z: 0.02, s: 1.05 },
+    { x: -0.04, y: 0.84, z: -0.015, s: 0.95 },
+    { x: 0.01, y: 0.88, z: -0.04, s: 0.9 },
+    { x: -0.015, y: 0.78, z: 0.045, s: 0.88 },
+  ];
+  const flowers = mats.flowers || [];
+  for (let b = 0; b < blooms.length; b++) {
+    const bloom = blooms[b];
+    const flower = flowers[b] || mats.vase;
+    if (mats.leaf) {
+      addStandPart(root, new THREE.CylinderGeometry(0.006, 0.006, 0.16, 5), mats.leaf, tn, (i) => {
+        tableAt(i, bloom.x, bloom.y - 0.1, bloom.z);
+      });
+    }
+    addStandPart(root, new THREE.SphereGeometry(0.038, 8, 6), flower, tn, (i) => {
+      dummy.scale.set(bloom.s, bloom.s * 0.92, bloom.s);
+      tableAt(i, bloom.x, bloom.y, bloom.z);
+    });
+  }
+  if (!mats.leaf) return;
+  const leaves = [
+    { x: 0.07, y: 0.74, z: 0, s: 1.2 },
+    { x: -0.06, y: 0.76, z: 0.03, s: 1 },
+    { x: 0.02, y: 0.73, z: -0.06, s: 0.9 },
+  ];
+  for (let leaf = 0; leaf < leaves.length; leaf++) {
+    const bit = leaves[leaf];
+    addStandPart(root, new THREE.SphereGeometry(0.028, 7, 5), mats.leaf, tn, (i) => {
+      dummy.scale.set(bit.s, 0.45, bit.s * 0.7);
+      tableAt(i, bit.x, bit.y, bit.z);
+    });
+  }
+}
+
+function viewingStandMeshes(stand, mats) {
+  if (!stand || !mats) return null;
+  const root = new THREE.Group();
+  root.name = "viewing-stand";
+  const boxes = [
+    [stand.mass, mats.mass],
+    [stand.soffit, mats.soffit],
+    [stand.carpet, mats.carpet],
+    [stand.posts, mats.rail],
+  ];
+  for (let i = 0; i < boxes.length; i++) {
+    const mesh = boxMesh(boxes[i][0] || [], boxes[i][1]);
+    if (mesh) root.add(mesh);
+  }
+  const rails = standRailMesh(stand.rails, mats.rail);
+  if (rails) root.add(rails);
+  loungeMeshes(root, stand, mats);
+  return root.children.length ? root : null;
 }
 
 // 艺术厅的天花、墙皮、门帘、屏幕、脚灯和喇叭。屏幕画面本身不带边，边框在画面北侧。
@@ -3020,5 +3187,7 @@ export function artHallMeshes(art, mats) {
     cab.add(grille);
     root.add(cab);
   }
+  const stand = viewingStandMeshes(art.stand, mats);
+  if (stand) root.add(stand);
   return { root, screen: picture, sky };
 }

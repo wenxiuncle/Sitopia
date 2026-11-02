@@ -1477,11 +1477,17 @@ body.dark-sky #tab-hint {
 
 #screen-reflect {
   width: 711px;
-  height: 680px;
+  height: 440px;
   background: transparent;
-  /* 宽度与大屏幕对齐，不往两侧收。元素底边朝屏幕，朝观众淡出。 */
-  -webkit-mask-image: linear-gradient(to top, #fff, rgba(0, 0, 0, 0.8) 48%, transparent 100%);
-  mask-image: linear-gradient(to top, #fff, rgba(0, 0, 0, 0.8) 48%, transparent 100%);
+  /* 元素底边朝屏幕。近处 50%，收到观影台前沿时收到 0。左右再淡一截。 */
+  -webkit-mask-image:
+    linear-gradient(to top, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(to right, rgba(255, 255, 255, 0) 0%, #fff 12%, #fff 88%, rgba(255, 255, 255, 0) 100%);
+  mask-image:
+    linear-gradient(to top, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 100%),
+    linear-gradient(to right, rgba(255, 255, 255, 0) 0%, #fff 12%, #fff 88%, rgba(255, 255, 255, 0) 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
 }
 
 #screen-reflect-glow {

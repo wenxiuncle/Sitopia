@@ -4,7 +4,7 @@
 // B 站、YouTube 播不了文件时用官方播放器，地面再放一路静音的同一地址。
 
 import * as THREE from "../vendor/three.module.js";
-import { STORY } from "./layout.js";
+
 
 function epsilon(value) {
   return Math.abs(value) < 1e-10 ? 0 : value;
@@ -379,8 +379,10 @@ export function createArtHall(art, screenMesh, hooks) {
   const reflectAnchor = new THREE.Object3D();
   const screen = art.screen;
   const pxPerM = 100;
-  // 布与屏幕同宽。进深是地面上的画面高度，近边贴在屏幕正下方。
-  const reflectDepth = 6.8;
+  // 倒影近边贴在屏幕正下方，远端收到观影台前沿。再往里就会铺上台阶。
+  const standFront = art.stand && art.stand.span ? art.stand.span.zTier0 : null;
+  let reflectDepth = standFront == null ? 4.4 : standFront - screen.z;
+  if (!(reflectDepth > 0.8)) reflectDepth = 4.4;
   anchor.position.set(screen.x, screen.y, screen.z);
   anchor.scale.set(0.01, 0.01, 0.01);
   // 元素底边朝屏幕。中心再往厅内让出半个进深，近边就落在屏幕正下方。
@@ -686,13 +688,20 @@ export function createArtHall(art, screenMesh, hooks) {
     volumeTimer = setTimeout(kick, 350);
   }
 
+  // 天棚比半层高。脚在厅内竖向范围里就算这一层，不能四舍五入到不存在的上一层。
+  function onArtStorey(y) {
+    const box = art.lit;
+    if (box) return y >= box.minY - 0.35 && y <= box.maxY;
+    const base = art.baseY || 0;
+    return y >= base - 0.45 && y < base + 16;
+  }
+
   function placedInside(player) {
     if (!player) {
       insideFlag = false;
       return false;
     }
-    const floor = Math.round(player.y / STORY);
-    if (floor !== art.floor) {
+    if (!onArtStorey(player.y)) {
       insideFlag = false;
       return false;
     }
@@ -1314,7 +1323,7 @@ export function createArtHall(art, screenMesh, hooks) {
     pick(camera, dir, minT, player) {
       pickedScreen = false;
       if (!player || !dir) return -1;
-      if (Math.round(player.y / STORY) !== art.floor) return -1;
+      if (!onArtStorey(player.y)) return -1;
       if (player.z > art.curtainZ - 0.05) return -1;
       if (dir.z > -1e-4) return -1;
       const t = (screen.z - camera.position.z) / dir.z;

@@ -437,6 +437,11 @@ export function mountPresence(options) {
     const zone = zones ? zoneAt(x, z, zones, y || 0) : null;
     if (zone && zone.name === "广场") return "广场";
     let floor = Math.round((y || 0) / STORY);
+    // 放映厅竖向跨了不止一层。站在天棚上时，四舍五入会标成不存在的楼。
+    if (zone && zone.minY != null && zone.maxY - zone.minY > STORY * 1.5) {
+      const home = Math.round((zone.minY + 0.35) / STORY);
+      if (floor > home) floor = home;
+    }
     if (floor < 0) floor = 0;
     return (floor + 1) + "楼";
   }

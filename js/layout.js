@@ -49,6 +49,8 @@ const NORTH = HALL_B - BAY;
 // 趣站放映厅叠在展品楼层之上，并且不低于这一层（0 起算）。展品再往上加时，艺术厅跟着上移。
 const ART_HOME = 14;
 const ART_NAME = "趣站放映厅";
+// 观影台踏步。groundAt 来读。只在 buildMuseum 里写入。
+let artSurfaces = null;
 
 // 艺术厅内墙和厅内顶。天棚贴在这道顶的下面。
 function artWallTopAt(floor) {
@@ -248,7 +250,27 @@ export function blocked(x, z, radius, walls, footY) {
   return false;
 }
 
+function releaseOverlap(x, z, radius, walls, footY) {
+  if (!blocked(x, z, radius, walls, footY)) return { x, z };
+  const dirs = [
+    [0, -1], [0, 1], [-1, 0], [1, 0],
+    [-0.7, -0.7], [0.7, -0.7], [-0.7, 0.7], [0.7, 0.7],
+  ];
+  for (let i = 1; i <= 8; i++) {
+    const dist = i * 0.08;
+    for (let d = 0; d < dirs.length; d++) {
+      const nx = x + dirs[d][0] * dist;
+      const nz = z + dirs[d][1] * dist;
+      if (!blocked(nx, nz, radius, walls, footY)) return { x: nx, z: nz };
+    }
+  }
+  return { x, z };
+}
+
 export function movePlayer(x, z, dx, dz, radius, walls, footY) {
+  const freed = releaseOverlap(x, z, radius, walls, footY);
+  x = freed.x;
+  z = freed.z;
   const nx = x + dx;
   if (!blocked(nx, z, radius, walls, footY)) x = nx;
   const nz = z + dz;
@@ -264,6 +286,34 @@ function soleClears(x, z, sole, floors) {
   return land <= sole + SOLE_SKIN;
 }
 
+// 从高处跳下时，落点上的沙发和茶几也要挡住。起跳那一层的台面本身不挡，否则人过不了踏步沿。
+function blocksLanding(x, z, radius, walls, landY, takeoffY) {
+  const y0 = landY;
+  const y1 = landY + 1.75;
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i];
+    const base = w.base || 0;
+    const top = base + (w.h == null ? WALL_H : w.h);
+    if (Math.abs(top - takeoffY) <= 0.03) continue;
+    if (base < landY - 0.2) continue;
+    if (top <= y0 + 0.08 || base >= y1 - 0.02) continue;
+    if (x > w.minX - radius && x < w.maxX + radius && z > w.minZ - radius && z < w.maxZ + radius) return true;
+  }
+  return false;
+}
+
+function deckBelow(x, z, sole, footY, floors) {
+  let best = null;
+  const cap = Math.max(sole, footY || 0, 0);
+  for (let probe = cap + 0.3; probe >= cap - 4.2; probe -= 1) {
+    const found = groundAt(x, z, probe, floors);
+    if (found == null || found > sole + 0.05) continue;
+    if (best == null || found > best) best = found;
+  }
+  if (best == null || !(best < footY - 0.2)) return null;
+  return best;
+}
+
 function slideAirAxis(x, z, delta, alongX, radius, walls, footY, sole, floors) {
   const pose = (t) => {
     const nx = alongX ? x + delta * t : x;
@@ -271,16 +321,22 @@ function slideAirAxis(x, z, delta, alongX, radius, walls, footY, sole, floors) {
     if (blocked(nx, nz, radius, walls, footY)) return null;
     return { x: nx, z: nz };
   };
+  const fits = (at) => {
+    if (!at || !soleClears(at.x, at.z, sole, floors)) return false;
+    const land = deckBelow(at.x, at.z, sole, footY, floors);
+    if (land == null) return true;
+    return !blocksLanding(at.x, at.z, radius, walls, land, footY);
+  };
   if (delta === 0) return { x, z };
   const full = pose(1);
-  if (full && soleClears(full.x, full.z, sole, floors)) return full;
+  if (fits(full)) return full;
   let lo = 0;
   let hi = 1;
   let best = { x, z };
   for (let i = 0; i < 10; i++) {
     const mid = (lo + hi) / 2;
     const at = pose(mid);
-    if (at && soleClears(at.x, at.z, sole, floors)) {
+    if (fits(at)) {
       lo = mid;
       best = at;
     } else hi = mid;
@@ -290,6 +346,7 @@ function slideAirAxis(x, z, delta, alongX, radius, walls, footY, sole, floors) {
 
 // 跳跃时落点只认脚底下的面。人若先走进更高的踏步，那一面会被丢掉，人就从楼梯井穿下去。
 // 预测的脚要是已经低于此刻踩着的面，仍按这个面来放行，免得落地那一帧在平地上被绊住。
+// 往低一层跳时，按落点高度再挡一次沙发。不然人会穿进椅背，落地后被卡住。
 export function moveAirborne(x, z, dx, dz, radius, walls, footY, sole, floors) {
   const here = groundAt(x, z, Math.max(sole, 0), floors);
   const feet = here == null ? sole : Math.max(sole, here);
@@ -297,7 +354,32 @@ export function moveAirborne(x, z, dx, dz, radius, walls, footY, sole, floors) {
   return slideAirAxis(stepped.x, stepped.z, dz, false, radius, walls, footY, feet, floors);
 }
 
+function artSurfaceAt(x, z, py) {
+  const stand = artSurfaces;
+  if (!stand) return null;
+  const cands = [];
+  const decks = stand.decks;
+  for (let i = 0; i < decks.length; i++) {
+    const d = decks[i];
+    if (x < d.minX || x > d.maxX || z < d.minZ || z > d.maxZ) continue;
+    cands.push(d.y);
+  }
+  const flights = stand.flights;
+  for (let i = 0; i < flights.length; i++) {
+    const flight = flights[i];
+    if (x < flight.minX || x > flight.maxX || z < flight.z0 || z > flight.z1) continue;
+    const span = flight.z1 - flight.z0;
+    let t = span === 0 ? 0 : (z - flight.z0) / span;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    cands.push(flight.y0 + (flight.y1 - flight.y0) * t);
+  }
+  return nearest(cands, py == null ? 0 : py);
+}
+
 export function stairSupport(x, z, py, floors) {
+  const stand = artSurfaceAt(x, z, py);
+  if (stand != null) return stand;
   if (!inWell(x, z)) return null;
   return stairHeight(x, z, py, floors);
 }
@@ -899,6 +981,8 @@ export function groundAt(x, z, py, floors) {
   }
   const climbed = stairHeight(x, z, foot, count);
   if (climbed != null) return climbed;
+  const stand = artSurfaceAt(x, z, foot);
+  if (stand != null) return stand;
   const deck = flatY(foot, count);
   if (onThreshold(x, z) && deck != null) return deck;
   if (deck != null && deck >= STORY - 0.01 && onDeck(x, z)) return deck;
@@ -1383,6 +1467,248 @@ function pushBlock(blocks, box) {
   });
 }
 
+// 观影台。四排单人沙发，北低南高，两侧楼梯爬到进门通道上方的天棚。
+// 天棚比半层高出一截，楼层号不能再用四舍五入，否则人会算到不存在的上一层。
+// 喇叭在四角，比原来的天花再高 4 米。天棚南边停在南墙喇叭北侧，不和箱体交上。
+function buildViewingStand(floor, room, blocks) {
+  const base = floor * STORY;
+  const xL = room.xInL + 0.08;
+  const xR = room.xInR - 0.08;
+  const aisle = 2.28;
+  const stairW = 2.05;
+  const west0 = xL + aisle;
+  const west1 = west0 + stairW;
+  const east1 = xR - aisle;
+  const east0 = east1 - stairW;
+  const tierD = 2.92;
+  const walkD = 1.36;
+  const approachRun = 1.08;
+  const lifts = [0.5, 1.48, 2.46, 3.46];
+  const rows = lifts.length;
+  const zApproachN = NORTH + 3.6;
+  const zTier0 = zApproachN + approachRun;
+  const zCanopyN = zTier0 + rows * tierD;
+  const zCanopyS = room.zInS - 1.05;
+  const deckY = base + lifts[rows - 1];
+  const mass = [];
+  const soffit = [];
+  const carpet = [];
+  const rails = [];
+  const posts = [];
+  const seats = [];
+  const tables = [];
+  const decks = [];
+  const flights = [];
+  const empty = {
+    mass, soffit, carpet, rails, posts, seats, tables,
+    surfaces: { decks, flights },
+    span: null,
+  };
+  if (east0 - west1 < 8 || zCanopyS - zCanopyN < 2.4) return empty;
+
+  function addBox(list, minX, maxX, minY, maxY, minZ, maxZ) {
+    if (maxX - minX < 0.02 || maxY - minY < 0.008 || maxZ - minZ < 0.02) return;
+    list.push({ minX, maxX, minY, maxY, minZ, maxZ });
+  }
+
+  function addBalustrade(x0, y0, z0, x1, y1, z1) {
+    const len = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+    if (len < 0.08) return;
+    rails.push({ x0, y0: y0 + 0.94, z0, x1, y1: y1 + 0.94, z1 });
+    rails.push({ x0, y0: y0 + 0.46, z0, x1, y1: y1 + 0.46, z1 });
+    const n = Math.max(1, Math.round(len / 0.92));
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const x = x0 + (x1 - x0) * t;
+      const y = y0 + (y1 - y0) * t;
+      const z = z0 + (z1 - z0) * t;
+      posts.push({
+        minX: x - 0.028,
+        maxX: x + 0.028,
+        minY: y + 0.02,
+        maxY: y + 0.96,
+        minZ: z - 0.028,
+        maxZ: z + 0.028,
+      });
+    }
+    const steps = Math.max(1, Math.ceil(len / 0.36));
+    for (let i = 0; i < steps; i++) {
+      const t0 = i / steps;
+      const t1 = (i + 1) / steps;
+      const ax = x0 + (x1 - x0) * t0;
+      const bx = x0 + (x1 - x0) * t1;
+      const ay = y0 + (y1 - y0) * t0;
+      const by = y0 + (y1 - y0) * t1;
+      const az = z0 + (z1 - z0) * t0;
+      const bz = z0 + (z1 - z0) * t1;
+      const y = Math.min(ay, by);
+      pushBlock(blocks, {
+        minX: Math.min(ax, bx) - 0.04,
+        maxX: Math.max(ax, bx) + 0.04,
+        minY: y,
+        maxY: y + 1.02,
+        minZ: Math.min(az, bz) - 0.04,
+        maxZ: Math.max(az, bz) + 0.04,
+      });
+    }
+  }
+
+  function addSteps(x0, x1, z0, z1, y0, y1) {
+    const rise = y1 - y0;
+    const run = z1 - z0;
+    if (rise < 0.08 || run < 0.2) return;
+    const n = Math.max(2, Math.round(rise / 0.17));
+    const riser = rise / n;
+    const tread = run / n;
+    flights.push({ minX: x0, maxX: x1, z0: z0 - 0.03, z1: z1 + 0.03, y0, y1 });
+    const ix0 = x0 + 0.05;
+    const ix1 = x1 - 0.05;
+    for (let s = 0; s < n; s++) {
+      const za = z0 + s * tread;
+      const zb = za + tread;
+      const top = y0 + (s + 1) * riser;
+      const prev = y0 + s * riser;
+      const treadBottom = Math.max(base + 0.02, prev);
+      if (treadBottom > base + 0.08) {
+        addBox(mass, x0, x1, base + 0.02, treadBottom - 0.01, za, zb);
+      }
+      addBox(mass, ix0, ix1, treadBottom, top - 0.035, za, zb);
+      addBox(carpet, ix0, ix1, top - 0.042, top, za, zb + 0.01);
+      const solidTop = treadBottom - 0.16;
+      if (solidTop > base + 0.35) {
+        pushBlock(blocks, {
+          minX: x0,
+          maxX: x1,
+          minY: base,
+          maxY: solidTop,
+          minZ: za,
+          maxZ: zb,
+        });
+      }
+    }
+  }
+
+  function addLanding(x0, x1, z0, z1, y) {
+    decks.push({ minX: x0 - 0.02, maxX: x1 + 0.02, minZ: z0, maxZ: z1, y });
+    addBox(mass, x0 + 0.02, x1 - 0.02, base + 0.02, y - 0.035, z0, z1);
+    addBox(carpet, x0 + 0.02, x1 - 0.02, y - 0.042, y, z0, z1);
+  }
+
+  for (let i = 0; i < rows; i++) {
+    const zN = zTier0 + i * tierD;
+    const zS = zN + tierD;
+    const y = base + lifts[i];
+    addBox(mass, west1, east0, base + 0.02, y - 0.04, zN, zS);
+    addBox(carpet, west1, east0, y - 0.045, y, zN - (i === 0 ? 0.02 : 0), zS);
+    decks.push({ minX: west1 - 0.02, maxX: east0 + 0.02, minZ: zN, maxZ: zS, y });
+    pushBlock(blocks, {
+      minX: west1,
+      maxX: east0,
+      minY: base,
+      maxY: y,
+      minZ: zN,
+      maxZ: zS,
+    });
+  }
+
+  addBox(soffit, xL, xR, deckY - 0.16, deckY - 0.04, zCanopyN, zCanopyS);
+  addBox(carpet, xL, xR, deckY - 0.045, deckY, zCanopyN - 0.02, zCanopyS);
+  decks.push({ minX: xL, maxX: xR, minZ: zCanopyN - 0.02, maxZ: zCanopyS, y: deckY });
+  pushBlock(blocks, {
+    minX: xL,
+    maxX: xR,
+    minY: deckY - 0.16,
+    maxY: deckY,
+    minZ: zCanopyN,
+    maxZ: zCanopyS,
+  });
+
+  addBalustrade(xL + 0.12, deckY, zCanopyS - 0.08, xR - 0.12, deckY, zCanopyS - 0.08);
+  addBalustrade(xL + 0.12, deckY, zCanopyN + 0.08, west0 - 0.02, deckY, zCanopyN + 0.08);
+  addBalustrade(east1 + 0.02, deckY, zCanopyN + 0.08, xR - 0.12, deckY, zCanopyN + 0.08);
+
+  function buildSide(x0, x1, outerX, innerX) {
+    const yFirst = base + lifts[0];
+    addSteps(x0, x1, zApproachN, zTier0, base, yFirst);
+    addBalustrade(outerX, base, zApproachN, outerX, yFirst, zTier0);
+    addBalustrade(innerX, base, zApproachN, innerX, yFirst, zTier0);
+    for (let i = 0; i < rows; i++) {
+      const zN = zTier0 + i * tierD;
+      const zS = zN + tierD;
+      const y = base + lifts[i];
+      const top = i === rows - 1;
+      const zLand = top ? zS : zN + walkD;
+      addLanding(x0, x1, zN, zLand, y);
+      addBalustrade(outerX, y, zN, outerX, y, zLand);
+      if (top) continue;
+      const yNext = base + lifts[i + 1];
+      addSteps(x0, x1, zLand, zS, y, yNext);
+      addBalustrade(outerX, y, zLand, outerX, yNext, zS);
+      addBalustrade(innerX, y, zLand, innerX, yNext, zS);
+    }
+  }
+
+  buildSide(west0, west1, west0 + 0.08, west1 - 0.08);
+  buildSide(east0, east1, east1 - 0.08, east0 + 0.08);
+
+  const sofaW = 1.18;
+  const sofaD = 1.02;
+  const tableW = 0.52;
+  const tableD = 0.44;
+  const tableGap = 0.16;
+  const pitch = 3.4;
+  // 椅背和后一排踏步之间要容得下人。再窄，从座位往下跳就会卡在立面上。
+  const rearAisle = 1.02;
+  const cluster = (6 - 1) * pitch + sofaW + tableGap + tableW;
+  const origin = (west1 + east0) / 2 - cluster / 2;
+  for (let row = 0; row < rows; row++) {
+    const zN = zTier0 + row * tierD;
+    const y = base + lifts[row];
+    const z = zN + tierD - rearAisle - sofaD * 0.5;
+    for (let c = 0; c < 6; c++) {
+      const x = origin + sofaW * 0.5 + c * pitch;
+      const tx = x + sofaW * 0.5 + tableGap + tableW * 0.5;
+      seats.push({ x, y, z });
+      tables.push({ x: tx, y, z: z - 0.04 });
+      pushBlock(blocks, {
+        minX: x - sofaW / 2,
+        maxX: x + sofaW / 2,
+        minY: y,
+        maxY: y + 0.92,
+        minZ: z - sofaD / 2,
+        maxZ: z + sofaD / 2,
+      });
+      pushBlock(blocks, {
+        minX: tx - tableW / 2,
+        maxX: tx + tableW / 2,
+        minY: y,
+        maxY: y + 0.46,
+        minZ: z - 0.04 - tableD / 2,
+        maxZ: z - 0.04 + tableD / 2,
+      });
+    }
+  }
+
+  return {
+    mass, soffit, carpet, rails, posts, seats, tables,
+    surfaces: { decks, flights },
+    span: {
+      base,
+      deckY,
+      zApproachN,
+      zTier0,
+      zCanopyN,
+      zCanopyS,
+      west0,
+      west1,
+      east0,
+      east1,
+      walkD,
+      tierD,
+    },
+  };
+}
+
 // 艺术厅只描述这一层。门帘无碰撞。牌子和大屏幕挡人。天花、墙皮、喇叭不挡人。
 // 喇叭正面是物体本地 +Z。有 aim 时朝地面中心，否则 yaw 0 朝 +Z（南）。
 function describeArt(floor, blocks, cones) {
@@ -1470,17 +1796,19 @@ function describeArt(floor, blocks, cones) {
     { role: "foot", x: (xInL - DOOR) / 2, z: zInS, y: base, lift: footLift, yaw: Math.PI },
     { role: "foot", x: (DOOR + xInR) / 2, z: zInS, y: base, lift: footLift, yaw: Math.PI },
   ];
-  const cabW = 0.52;
-  const cabH = 0.8;
-  const cabD = 0.4;
+  // 体积是原来的两倍，中心再抬高 4 米。
+  const speakerBulk = Math.cbrt(2);
+  const cabW = 0.52 * speakerBulk;
+  const cabH = 0.8 * speakerBulk;
+  const cabD = 0.4 * speakerBulk;
   const hang = 0.62;
   const margin = 0.6;
   const xL = roomX0 + margin;
   const xR = roomX1 - margin;
   const zN = roomZ0 + margin;
   const zS = roomZ1 - margin;
-  // 喇叭仍挂在原来的天花下，不跟抬高的星空走。
-  const ySp = oldSoffit - 0.02 - hang;
+  // 喇叭从原来的天花下沿再抬高 4 米，仍在星空下面。
+  const ySp = oldSoffit - 0.02 - hang + 4;
   const aimX = 0;
   const aimY = walk;
   const aimZ = (roomZ0 + roomZ1) / 2;
@@ -1507,6 +1835,8 @@ function describeArt(floor, blocks, cones) {
     { x: -5.5, z: -7.6, y: base },
     { x: 5.5, z: -7.6, y: base },
   );
+  const stand = buildViewingStand(floor, { xInL, xInR, zInN, zInS }, blocks);
+  artSurfaces = stand.surfaces;
   return {
     floor,
     baseY: base,
@@ -1521,6 +1851,7 @@ function describeArt(floor, blocks, cones) {
     post,
     screen,
     speakers,
+    stand,
     // 厅内地面和天花只认这只盒子。竖向的门帘不走这里，内外两面各用自己的材质。
     // 东墙、门墙的内侧面。脚灯在这两条墙根收掉，不照进交缝。
     inner: { x0: xInL, x1: xInR, z0: zInN, z1: zInS },
@@ -1556,6 +1887,7 @@ function describeArt(floor, blocks, cones) {
 }
 
 export function buildMuseum(sites, arrange, sortMode) {
+  artSurfaces = null;
   const ordered = pickOrdered(sites || [], arrange, sortMode);
   const chosen = ordered.chosen;
   const hangCat = ordered.hangCat;
