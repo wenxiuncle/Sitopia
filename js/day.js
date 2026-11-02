@@ -50,6 +50,9 @@ export const LAMP_WASH_OUT = 0.92;
 export const LAMP_SOFFIT_FADE = 0.72;
 // 天花底在 WALL_H 往下 6 厘米。比这再低过这一截，才算扶手底一类，沿井边收灯。
 export const LAMP_SOFFIT_KEEP = 0.35;
+// 顶层厅外天棚把楼梯口封上了，底面仍在 WALL_H 往下 6 厘米。
+// 井口投影里、离这道底面不超过这一截的朝下表面，跟旁边的天棚同一亮度。再远仍是洞里的踏步底。
+export const LAMP_SEALED_SOFFIT = 0.02;
 // 楼梯口以西的南墙、以北的东墙贴在天棚下面。上下层的灯若在井口齐边切断，天棚下会留下一道竖的阳阴线，
 // 靠外那截只剩填充光，越靠近天花越暗。先沿用井口的灯，南墙往西、东墙往北用同一对距离淡出。
 export const LAMP_SOUTH_HOLD = 4.6;
@@ -817,9 +820,11 @@ export function lampAt(rows, x, y, z, nx, ny, nz, story) {
   ny /= nlen;
   nz /= nlen;
   const faceDown = ny < -0.45;
-  const voided = faceDown && inStairVoid(x, z);
   const y0 = y > 0 ? y : 0;
   const storyY = y0 - Math.floor(y0 / story) * story;
+  // 封上的顶层天棚底仍落在井口投影里。这一小片不当洞里的踏步底。
+  const sealedSoffit = faceDown && Math.abs(storyY - (WALL_H - 0.06)) < LAMP_SEALED_SOFFIT;
+  const voided = faceDown && inStairVoid(x, z) && !sealedSoffit;
   const highSoffit = faceDown && !voided && storyY > WALL_H - LAMP_SOFFIT_KEEP;
   if (faceDown && !voided && !highSoffit) {
     const rim = stairRimInfo(x, z);

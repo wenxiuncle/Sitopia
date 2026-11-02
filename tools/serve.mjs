@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachLobby } from "./lobby.mjs";
 import { adminTokenState, handleLocalAdmin } from "./admin-local.mjs";
+import { biliPageDuration } from "./bili-duration.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const types = {
@@ -24,9 +25,33 @@ const types = {
 const port = Number(process.env.PORT) || 4173;
 
 let lobby;
+function writeJson(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify(body));
+}
+
+// 浏览器直接问 B 站会被来源页拦住。本地服务代问分页时长，外链播完才能按时收画面。
+function handleBiliDuration(url, res) {
+  const bvid = url.searchParams.get("bvid") || "";
+  const aid = url.searchParams.get("aid") || "";
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid) && !/^\d{1,16}$/.test(aid)) {
+    writeJson(res, 400, { duration: 0 });
+    return;
+  }
+  biliPageDuration(bvid, aid, page).then((duration) => writeJson(res, 200, { duration }));
+}
+
 const server = http.createServer((req, res) => {
   if (lobby && handleLocalAdmin(req, res, lobby)) return;
   const url = new URL(req.url, "http://127.0.0.1");
+  if (url.pathname === "/bili-duration") {
+    handleBiliDuration(url, res);
+    return;
+  }
   let rel = decodeURIComponent(url.pathname);
   if (rel.endsWith("/")) rel += "index.html";
   const file = path.normalize(path.join(root, rel));

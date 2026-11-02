@@ -25,6 +25,7 @@ import {
   LAMP_WRAP,
   LAMP_SOFFIT_FADE,
   LAMP_SOFFIT_KEEP,
+  LAMP_SEALED_SOFFIT,
   LAMP_SOUTH_HOLD,
   LAMP_SOUTH_SPILL,
   LAMP_PACK_XZ,
@@ -685,6 +686,8 @@ function patchSunShader(shader, shared, role) {
       float storyY = mod(max(vSunW.y, 0.0), uStory);
       float soffitDown = max(-nrm.y, 0.0);
       bool faceDown = nrm.y < -0.45;
+      // 顶层厅外天棚在楼梯口是封上的。这一小片仍落在井口投影里，按旁边的天棚抬亮。
+      if (faceDown && abs(storyY - ${glslNum(WALL_H - 0.06)}) < ${glslNum(LAMP_SEALED_SOFFIT)}) inVoid = 0.0;
       bool highSoffit = faceDown && inVoid < 0.5 && storyY > ${glslNum(WALL_H - LAMP_SOFFIT_KEEP)};
       if (faceDown && inVoid < 0.5 && !highSoffit) {
         float near = 1.0 - smoothstep(0.04, ${glslNum(LAMP_SOFFIT_FADE)}, rimDist);
@@ -834,7 +837,7 @@ float volumeMask(vec2 p, vec2 dir, vec2 lo, vec2 hi, float roof) {
 
 export function attachSun(material, shared, role) {
   material.onBeforeCompile = (shader) => patchSunShader(shader, shared, role);
-  material.customProgramCacheKey = () => "museum-sun-23" + sunVariant(role);
+  material.customProgramCacheKey = () => "museum-sun-24" + sunVariant(role);
 }
 
 // 画芯共用一张图集。frameUv 是格子偏移和缩放。
@@ -850,7 +853,7 @@ export function attachFramePicture(material, shared, role) {
     if (next === shader.vertexShader) throw new Error("画框贴图坐标没有对上");
     shader.vertexShader = "attribute vec4 frameUv;\n" + next;
   };
-  material.customProgramCacheKey = () => "museum-sun-frame-23" + sunVariant(role);
+  material.customProgramCacheKey = () => "museum-sun-frame-24" + sunVariant(role);
 }
 
 export function sunPatchMesh(count) {
@@ -1579,6 +1582,21 @@ function pathHolds(path, x, y) {
   return inside;
 }
 
+// 像素台阶切一刀斜角，再丢掉贴着弦的碎点。只给厅外那块背光字用。
+function roundClosed(path) {
+  const count = path.length;
+  if (count < 4) return path;
+  const next = [];
+  for (let i = 0; i < count; i++) {
+    const a = path[i];
+    const b = path[(i + 1) % count];
+    next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+    next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+  }
+  const slim = simplifyPath(next, 0.85);
+  return slim.length >= 4 ? slim : path;
+}
+
 function simplifyPath(path, epsilon) {
   if (path.length < 4) return path;
   function keep(start, end, out) {
@@ -1710,7 +1728,7 @@ function rasterMask(text, px, weight) {
   const image = ctx.getImageData(0, 0, width, height);
   const mask = new Uint8Array(width * height);
   for (let i = 0; i < mask.length; i++) mask[i] = image.data[i * 4 + 3] > 96 ? 1 : 0;
-  return { mask, width, height };
+  return { mask, width, height, canvas };
 }
 
 function shapeFromPath(path) {
@@ -1758,8 +1776,9 @@ function centerPaths(shapes) {
 
 const letterMat = new THREE.MeshBasicMaterial({ color: 0x2c2926, fog: false });
 const facadeMat = new THREE.MeshBasicMaterial({ color: 0x2c2926, fog: false });
-const backFaceMat = new THREE.MeshBasicMaterial({ color: 0x141210, fog: false });
-const backEdgeMat = new THREE.MeshBasicMaterial({ color: 0x6b5436, fog: false });
+// 厅外背光字跟着雾走。关掉雾的话，远处黑字会一直是实心的，抠在发灰的楼面上。
+const backFaceMat = new THREE.MeshBasicMaterial({ color: 0x141210 });
+const backEdgeMat = new THREE.MeshBasicMaterial({ color: 0x6b5436 });
 
 // 字模铺一层发虚的暖白，贴在立体字背面。正面挡住字心，边上露出一圈光。
 function letterHalo(raster, box) {
@@ -1797,7 +1816,6 @@ function letterHalo(raster, box) {
     map: tex,
     transparent: true,
     depthWrite: false,
-    fog: false,
     toneMapped: false,
     polygonOffset: true,
     polygonOffsetFactor: -4,
@@ -1809,34 +1827,27 @@ function letterHalo(raster, box) {
   return plane;
 }
 
-// 黑字再铺在挤出正面之前。远处笔画细过一个像素时，立体面会被光栅丢掉，光晕还在，字就没了。
+// 黑字铺在挤出正面之前。用字体自己的抗锯齿，并留下缩小用的 mip。硬切的像素边在远处会结成一块黑斑。
 function letterInk(raster, box, z) {
   const canvas = document.createElement("canvas");
   canvas.width = raster.width;
   canvas.height = raster.height;
   const ctx = canvas.getContext("2d");
-  const image = ctx.createImageData(raster.width, raster.height);
-  for (let i = 0; i < raster.mask.length; i++) {
-    if (!raster.mask[i]) continue;
-    const o = i * 4;
-    image.data[o] = 0x14;
-    image.data[o + 1] = 0x12;
-    image.data[o + 2] = 0x10;
-    image.data[o + 3] = 255;
-  }
-  ctx.putImageData(image, 0, 0);
+  if (raster.canvas) ctx.drawImage(raster.canvas, 0, 0);
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = "#141210";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.generateMipmaps = false;
-  tex.minFilter = THREE.LinearFilter;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
+  tex.anisotropy = 8;
   tex.needsUpdate = true;
   const mat = new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    alphaTest: 0.45,
     depthWrite: false,
-    fog: false,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
@@ -1853,10 +1864,16 @@ export function setFacadeSignNight(glow) {
 
 function solidSign(sign) {
   try {
-    const px = sign.backlight ? 88 : (sign.h > 0.5 ? 64 : 48);
+    const px = sign.backlight ? 176 : (sign.h > 0.5 ? 64 : 48);
     const raster = rasterMask(sign.text, px, sign.backlight ? 700 : 600);
     const shapes = maskPaths(raster.mask, raster.width, raster.height);
     if (!shapes.length) return null;
+    if (sign.backlight) {
+      for (let i = 0; i < shapes.length; i++) {
+        shapes[i].pts = roundClosed(shapes[i].pts);
+        for (let h = 0; h < shapes[i].holes.length; h++) shapes[i].holes[h] = roundClosed(shapes[i].holes[h]);
+      }
+    }
     const box = centerPaths(shapes);
     const scale = sign.h / box.height;
     const group = new THREE.Group();

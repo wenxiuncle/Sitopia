@@ -256,6 +256,52 @@ export function movePlayer(x, z, dx, dz, radius, walls, footY) {
   return { x, z };
 }
 
+const SOLE_SKIN = 0.012;
+
+function soleClears(x, z, sole, floors) {
+  const land = groundAt(x, z, sole, floors);
+  if (land == null) return true;
+  return land <= sole + SOLE_SKIN;
+}
+
+function slideAirAxis(x, z, delta, alongX, radius, walls, footY, sole, floors) {
+  const pose = (t) => {
+    const nx = alongX ? x + delta * t : x;
+    const nz = alongX ? z : z + delta * t;
+    if (blocked(nx, nz, radius, walls, footY)) return null;
+    return { x: nx, z: nz };
+  };
+  if (delta === 0) return { x, z };
+  const full = pose(1);
+  if (full && soleClears(full.x, full.z, sole, floors)) return full;
+  let lo = 0;
+  let hi = 1;
+  let best = { x, z };
+  for (let i = 0; i < 10; i++) {
+    const mid = (lo + hi) / 2;
+    const at = pose(mid);
+    if (at && soleClears(at.x, at.z, sole, floors)) {
+      lo = mid;
+      best = at;
+    } else hi = mid;
+  }
+  return best;
+}
+
+// 跳跃时落点只认脚底下的面。人若先走进更高的踏步，那一面会被丢掉，人就从楼梯井穿下去。
+// 预测的脚要是已经低于此刻踩着的面，仍按这个面来放行，免得落地那一帧在平地上被绊住。
+export function moveAirborne(x, z, dx, dz, radius, walls, footY, sole, floors) {
+  const here = groundAt(x, z, Math.max(sole, 0), floors);
+  const feet = here == null ? sole : Math.max(sole, here);
+  const stepped = slideAirAxis(x, z, dx, true, radius, walls, footY, feet, floors);
+  return slideAirAxis(stepped.x, stepped.z, dz, false, radius, walls, footY, feet, floors);
+}
+
+export function stairSupport(x, z, py, floors) {
+  if (!inWell(x, z)) return null;
+  return stairHeight(x, z, py, floors);
+}
+
 function rayWall(ox, oy, oz, dx, dy, dz, box, maxT) {
   const y0 = box.base || 0;
   const y1 = y0 + (box.h == null ? WALL_H : box.h);

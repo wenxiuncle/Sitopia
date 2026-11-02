@@ -1576,13 +1576,23 @@ body.dark-sky #tab-hint {
 #screen-volume-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 12px;
   color: #3d3935;
   font-size: 13px;
 }
-#screen-volume { flex: 1; width: 100%; margin: 0; }
-#screen-gate button:focus, #screen-url:focus, #screen-volume:focus { outline: 1px solid #2c2926; outline-offset: 2px; }
+#screen-volume { flex: 1 1 88px; width: auto; min-width: 72px; margin: 0; }
+#screen-autonext {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#screen-autonext input { margin: 0; }
+#screen-gate button:focus, #screen-url:focus, #screen-volume:focus, #screen-autonext-box:focus { outline: 1px solid #2c2926; outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   #drawer, #panel, #chatter li, #loading, #name-gate { transition: none; }

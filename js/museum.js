@@ -29,6 +29,8 @@ import {
   liftDoorBoxes,
   blocked,
   movePlayer,
+  moveAirborne,
+  stairSupport,
   nearLiftHall,
   pullCamera,
   zoneAt,
@@ -1760,6 +1762,27 @@ function surfaceBelow(sample) {
   return land;
 }
 
+function fallStep(vy0, py0, dt) {
+  let nextVy = vy0 - GRAVITY * dt;
+  if (nextVy < -12) nextVy = -12;
+  return { vy: nextVy, py: py0 + nextVy * dt };
+}
+
+// 脚已经插进踏步时，先托回这级台阶。落点查询超过大约一掌就不再认这面，人会从井里掉下去。
+function holdStair(prev) {
+  const probe = Math.max(prev, py);
+  let ramp = stairSupport(px, pz, probe, built.floors);
+  if (ramp == null) ramp = stairSupport(px, pz, probe + 0.8, built.floors);
+  if (ramp == null || py >= ramp - 0.001) return false;
+  if (ramp - py >= STORY * 0.5) return false;
+  py = ramp;
+  if (vy <= 0) {
+    vy = 0;
+    airborne = false;
+  }
+  return true;
+}
+
 function settleFeet(dt) {
   const inCar = !!(lift && inLiftCar(px, pz));
   const gap = inCar ? Math.abs(py - lift.y) : Infinity;
@@ -1775,10 +1798,10 @@ function settleFeet(dt) {
   }
   if (!inCar) liftPassenger = false;
   if (airborne) {
-    vy -= GRAVITY * dt;
-    if (vy < -12) vy = -12;
+    const next = fallStep(vy, py, dt);
+    vy = next.vy;
     const prev = py;
-    py += vy * dt;
+    py = next.py;
     let land = surfaceBelow(prev);
     if (land == null) land = surfaceBelow(py);
     if (land == null && takeoffY != null) land = surfaceBelow(takeoffY);
@@ -1788,6 +1811,7 @@ function settleFeet(dt) {
       airborne = false;
       return;
     }
+    if (holdStair(prev)) return;
     if (py <= 0) {
       py = 0;
       vy = 0;
@@ -2129,7 +2153,10 @@ function step(dt, now) {
     vx += (ix * speed - vx) * rate;
     vz += (iz * speed - vz) * rate;
     const foot = airborne ? takeoffY : py;
-    const moved = movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), foot);
+    const inCar = !!(lift && inLiftCar(px, pz));
+    const moved = airborne && !inCar
+      ? moveAirborne(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), foot, fallStep(vy, py, dt).py, built.floors)
+      : movePlayer(px, pz, vx * dt, vz * dt, PLAYER_RADIUS, collide(), foot);
     px = moved.x;
     pz = moved.z;
     if (now >= hoverClock) {

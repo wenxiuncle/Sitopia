@@ -9,9 +9,17 @@ import { musicForm, resolveOrder } from "../tools/audio-catalog.mjs";
 import { listRepoAudio } from "../tools/audio-remote.mjs";
 import { fetchedToday, frameDispatch, frameStatus } from "../tools/frames.mjs";
 import { createLoginGuard, pause } from "../tools/login-guard.mjs";
+import { biliPageDuration } from "../tools/bili-duration.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
 const guard = createLoginGuard();
+// 和房间服同一份页面来源。外链时长不进房间，由这台反代直接回答。
+const PAGE_ORIGINS = new Set([
+  "https://wenxiuncle.github.io",
+  "https://sitopia.youquhome.com",
+  "http://127.0.0.1:4173",
+  "http://localhost:4173",
+]);
 
 function json(body, status, extra) {
   const headers = Object.assign({
@@ -141,6 +149,56 @@ async function adminLogin(request, env) {
   });
 }
 
+async function biliDuration(request, url) {
+  const origin = request.headers.get("Origin") || "";
+  if (!PAGE_ORIGINS.has(origin)) return new Response("forbidden", { status: 403 });
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "access-control-allow-origin": origin,
+    vary: "Origin",
+  };
+  if (request.method === "OPTIONS") {
+    headers.allow = "GET, OPTIONS";
+    headers["access-control-allow-methods"] = "GET, OPTIONS";
+    headers["access-control-max-age"] = "86400";
+    return new Response(null, { status: 204, headers });
+  }
+  if (request.method !== "GET") return new Response("method", { status: 405, headers });
+  const bvid = url.searchParams.get("bvid") || "";
+  const aid = url.searchParams.get("aid") || "";
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid) && !/^\d{1,16}$/.test(aid)) {
+    return new Response('{"duration":0}', { status: 400, headers });
+  }
+  const cacheUrl = new URL(url.origin + "/bili-duration");
+  if (bvid) cacheUrl.searchParams.set("bvid", bvid);
+  if (aid) cacheUrl.searchParams.set("aid", aid);
+  cacheUrl.searchParams.set("page", String(page));
+  const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
+  try {
+    const hit = await caches.default.match(cacheKey);
+    if (hit) return new Response(hit.body, { status: hit.status, headers });
+  } catch {
+    // 缓存不可用就直接问。
+  }
+  const duration = await biliPageDuration(bvid, aid, page);
+  const body = JSON.stringify({ duration: duration || 0 });
+  if (duration > 0) {
+    try {
+      await caches.default.put(cacheKey, new Response(body, {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "public, max-age=86400",
+        },
+      }));
+    } catch {
+      // 记不住就下次再问。
+    }
+  }
+  return new Response(body, { headers });
+}
+
 function adminLogout(request) {
   const secure = new URL(request.url).protocol === "https:";
   return json({ ok: true }, 200, {
@@ -189,6 +247,7 @@ export default {
       if (!(await adminOk(request, env))) return json({ error: "login" }, 401);
       return forwardAdmin(request, env);
     }
+    if (url.pathname === "/bili-duration") return biliDuration(request, url);
     if (
       url.pathname === "/lobby" ||
       url.pathname === "/lobby/beat" ||

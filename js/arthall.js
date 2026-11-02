@@ -298,21 +298,45 @@ function buildBus(ctx, speakers) {
   return { master, lowpass, input: splitter };
 }
 
+async function fetchBiliDuration(parsed) {
+  const q = parsed.bvid
+    ? "bvid=" + encodeURIComponent(parsed.bvid)
+    : "aid=" + encodeURIComponent(parsed.aid);
+  const query = "/bili-duration?" + q + "&page=" + (parsed.page || 1);
+  const urls = [query, "https://lobby.youquhome.com" + query];
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const res = await fetch(urls[i], { cache: "no-store", signal: AbortSignal.timeout(4000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const duration = Number(data && data.duration) || 0;
+      if (duration > 0) return duration;
+    } catch {
+      // 这一处没有时长，换下一条。
+    }
+  }
+  return 0;
+}
+
 async function lookupBili(parsed) {
   const q = parsed.bvid ? "bvid=" + encodeURIComponent(parsed.bvid) : "aid=" + encodeURIComponent(parsed.aid);
-  const viewRes = await fetch("https://api.bilibili.com/x/web-interface/view?" + q);
-  if (!viewRes.ok) return null;
-  const view = await viewRes.json();
-  const pages = view && view.data && view.data.pages;
-  if (!pages || !pages.length) return null;
-  const page = pages[(parsed.page || 1) - 1] || pages[0];
-  if (!page || !page.cid) return null;
-  const duration = Number(page.duration) || 0;
-  const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + page.cid + "&qn=64&fnval=1");
-  if (!playRes.ok) return { url: "", duration };
-  const play = await playRes.json();
-  const url = play && play.data && play.data.durl && play.data.durl[0] && play.data.durl[0].url;
-  return { url: url || "", duration };
+  try {
+    const viewRes = await fetch("https://api.bilibili.com/x/web-interface/view?" + q);
+    if (!viewRes.ok) return { url: "", duration: 0 };
+    const view = await viewRes.json();
+    const pages = view && view.data && view.data.pages;
+    if (!pages || !pages.length) return { url: "", duration: 0 };
+    const page = pages[(parsed.page || 1) - 1] || pages[0];
+    if (!page || !page.cid) return { url: "", duration: 0 };
+    const duration = Number(page.duration) || 0;
+    const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + page.cid + "&qn=64&fnval=1");
+    if (!playRes.ok) return { url: "", duration };
+    const play = await playRes.json();
+    const url = play && play.data && play.data.durl && play.data.durl[0] && play.data.durl[0].url;
+    return { url: url || "", duration };
+  } catch {
+    return { url: "", duration: 0 };
+  }
 }
 
 async function corsOk(url) {
@@ -419,6 +443,11 @@ export function createArtHall(art, screenMesh, hooks) {
   let leaveFrom = 1;
   // 卡片上的音量。接上喇叭时只拧总增益，避免和元素音量叠成两次。
   let clipVolume = 1;
+  let startedAt = 0;
+  let ignoreEnd = false;
+  // B 站外链不告诉父页面播完了。知道秒数后，在推荐画面淡入前收掉。
+  let endTimer = 0;
+  const AUTO_KEY = "quzhan-museum-screen-autonext";
   // 上一帧已经写进总增益的电平。每帧都取消再预约会把滑块拧回去。
   let heard = null;
   let volumeTimer = 0;
@@ -483,8 +512,10 @@ export function createArtHall(art, screenMesh, hooks) {
 
   function clearIframe() {
     clearVolumeTimer();
+    ignoreEnd = true;
     if (frame && frame.getAttribute("src")) frame.removeAttribute("src");
     if (frame) frame.hidden = true;
+    ignoreEnd = false;
   }
 
   function clearReflectFrame() {
@@ -527,6 +558,7 @@ export function createArtHall(art, screenMesh, hooks) {
 
   function clearVideo() {
     loadGen += 1;
+    ignoreEnd = true;
     if (video) {
       video.pause();
       video.removeAttribute("src");
@@ -535,6 +567,7 @@ export function createArtHall(art, screenMesh, hooks) {
       video.hidden = true;
     }
     hideReflectCanvas();
+    ignoreEnd = false;
   }
 
   function silenceBus() {
@@ -623,6 +656,13 @@ export function createArtHall(art, screenMesh, hooks) {
     const n = Math.max(0, Math.min(100, Math.round(clipVolume * 100)));
     if (item.platform === "youtube") {
       postFrame(JSON.stringify({ event: "listening", id: "screen-frame", channel: "widget" }));
+      postFrame(JSON.stringify({
+        event: "command",
+        func: "addEventListener",
+        args: ["onStateChange"],
+        id: "screen-frame",
+        channel: "widget",
+      }));
       postFrame(JSON.stringify({ event: "command", func: "setVolume", args: [n] }));
       postFrame(JSON.stringify({ event: "command", func: n > 0 ? "unMute" : "mute", args: [] }));
       return;
@@ -795,9 +835,36 @@ export function createArtHall(art, screenMesh, hooks) {
       clearReflectFrame();
     }
     showMount();
+    armEndTimer();
+  }
+
+  function clearEndTimer() {
+    if (!endTimer) return;
+    clearTimeout(endTimer);
+    endTimer = 0;
+  }
+
+  // 墙钟从装上播放器就开始走，本身比正片早一截。再提前最多 0.25 秒，赶在推荐页出现前收掉。
+  function endAhead() {
+    if (!(duration > 0)) return 0;
+    return Math.min(0.25, duration / 2);
+  }
+
+  function armEndTimer() {
+    clearEndTimer();
+    if (mode !== "iframe" || paused || !(duration > 0) || !stamp) return;
+    const mine = token;
+    const wait = Math.max(0, (duration - currentTimeSec() - endAhead()) * 1000);
+    const handle = setTimeout(() => {
+      if (endTimer === handle) endTimer = 0;
+      if (mine !== token || mode !== "iframe" || paused) return;
+      onClipDone();
+    }, wait);
+    endTimer = handle;
   }
 
   function seekTo(sec) {
+    clearEndTimer();
     const t = Math.max(0, Number(sec) || 0);
     resumeSec = duration > 0 ? Math.min(duration, t) : t;
     if (mode === "video" && video && video.getAttribute("src")) {
@@ -849,6 +916,7 @@ export function createArtHall(art, screenMesh, hooks) {
         clearIframe();
         clearReflectFrame();
         mode = "video";
+        clearEndTimer();
         if (Number.isFinite(video.duration) && video.duration > 0) duration = video.duration;
         if (at > 0.35) {
           try { video.currentTime = at; } catch { /* 还不能拖。 */ }
@@ -885,6 +953,8 @@ export function createArtHall(art, screenMesh, hooks) {
 
   function playIndex(i) {
     if (!playlist.length) return;
+    clearEndTimer();
+    startedAt = performance.now();
     index = (i % playlist.length + playlist.length) % playlist.length;
     const item = playlist[index];
     token += 1;
@@ -902,11 +972,18 @@ export function createArtHall(art, screenMesh, hooks) {
     if (insideNow) mountIframe(0);
     paintProgress();
     if (item.platform !== "bili") return;
+    fetchBiliDuration(item).then((seconds) => {
+      if (mine !== token || !(seconds > 0) || duration > 0) return;
+      duration = seconds;
+      paintProgress();
+      if (mode === "iframe") armEndTimer();
+    }).catch(() => {});
     lookupBili(item).then(async (info) => {
       if (mine !== token) return;
-      if (info && info.duration) {
+      if (info && info.duration && !(duration > 0)) {
         duration = info.duration;
         paintProgress();
+        if (mode === "iframe") armEndTimer();
       }
       if (!info || !info.url) return;
       const ok = await startVideo(info.url, mine);
@@ -972,6 +1049,7 @@ export function createArtHall(art, screenMesh, hooks) {
 
   function pausePlayback() {
     if (mode === "idle" || paused) return;
+    clearEndTimer();
     if (mode === "video") {
       resumeSec = video ? (video.currentTime || 0) : resumeSec;
       if (video) video.pause();
@@ -1024,6 +1102,7 @@ export function createArtHall(art, screenMesh, hooks) {
   }
 
   function stop() {
+    clearEndTimer();
     token += 1;
     mode = "idle";
     paused = false;
@@ -1085,6 +1164,76 @@ export function createArtHall(art, screenMesh, hooks) {
       if (hooks && hooks.requestWalk) hooks.requestWalk();
     });
   }
+  function autoNextOn() {
+    const box = document.getElementById("screen-autonext-box");
+    return !!(box && box.checked);
+  }
+
+  // 文件播到头，或内嵌页的时长走完。手动暂停不算。
+  function playbackEnded() {
+    if (ignoreEnd || paused || mode === "idle") return false;
+    if (mode === "video" && video && video.getAttribute("src")) {
+      if (video.ended) return true;
+      const mediaDur = Number(video.duration);
+      const dur = mediaDur > 0 && Number.isFinite(mediaDur) ? mediaDur : duration;
+      return dur > 0 && (video.currentTime || 0) >= dur - 0.08;
+    }
+    return mode === "iframe" && duration > 0 && currentTimeSec() >= duration - endAhead();
+  }
+
+  // 一首放到头。没勾自动播放就和点「停止」一样收起。列表还在，下一首再继续。
+  function onClipDone() {
+    if (ignoreEnd || mode === "idle" || paused) return;
+    if (performance.now() - startedAt < 400) return;
+    if (autoNextOn() && index < playlist.length - 1) {
+      playIndex(index + 1);
+      return;
+    }
+    stop();
+  }
+
+  function endName(value) {
+    return value === "ended" || value === "onEnded" || value === "Ended" || value === "video_media_ended";
+  }
+
+  function playerEnded(data) {
+    if (data == null) return false;
+    if (typeof data === "string") {
+      if (endName(data)) return true;
+      if (data.indexOf("video_media_ended") >= 0) return true;
+      try { return playerEnded(JSON.parse(data)); } catch { return false; }
+    }
+    if (typeof data !== "object") return false;
+    if (data.event === "onStateChange" && Number(data.info) === 0) return true;
+    if (data.info && typeof data.info === "object" && Number(data.info.playerState) === 0) return true;
+    const name = data.event || data.type || data.action || "";
+    if (endName(name)) return true;
+    const inner = data.data;
+    if (inner && typeof inner === "object" && inner !== data) {
+      if (endName(inner.event) || endName(inner.type) || endName(inner.action)) return true;
+    }
+    return false;
+  }
+
+  window.addEventListener("message", (event) => {
+    if (!frame || event.source !== frame.contentWindow) return;
+    const origin = event.origin || "";
+    const youtube = origin === "https://www.youtube.com" || origin === "https://www.youtube-nocookie.com";
+    const bili = origin === "https://player.bilibili.com";
+    if (!youtube && !bili) return;
+    if (!playerEnded(event.data)) return;
+    onClipDone();
+  });
+
+  const autoBox = document.getElementById("screen-autonext-box");
+  if (autoBox) {
+    try { autoBox.checked = localStorage.getItem(AUTO_KEY) === "1"; }
+    catch { /* 读不到就保持不勾。 */ }
+    autoBox.addEventListener("change", () => {
+      try { localStorage.setItem(AUTO_KEY, autoBox.checked ? "1" : "0"); }
+      catch { /* 浏览器不许记。 */ }
+    });
+  }
   const volume = document.getElementById("screen-volume");
   if (volume) {
     volume.addEventListener("input", () => {
@@ -1109,15 +1258,12 @@ export function createArtHall(art, screenMesh, hooks) {
     });
   }
   if (video) {
-    video.addEventListener("ended", () => {
-      if (mode !== "video") return;
-      if (index < playlist.length - 1) playIndex(index + 1);
-      else {
-        paused = true;
-        resumeSec = duration || video.currentTime || 0;
-        paintProgress();
-      }
-    });
+    const clipOver = () => {
+      if (mode !== "video" || paused || ignoreEnd) return;
+      if (playbackEnded()) onClipDone();
+    };
+    video.addEventListener("ended", clipOver);
+    video.addEventListener("pause", clipOver);
   }
 
   // 后台链接预填到卡片。访客改过输入框之后，不再盖掉。
@@ -1182,6 +1328,7 @@ export function createArtHall(art, screenMesh, hooks) {
     tick(camera, player, ambience) {
       liveAmbience = ambience || liveAmbience;
       insideNow = placedInside(player);
+      if (playbackEnded()) onClipDone();
       if (!insideNow) {
         const clip = mode === "video" && video && video.getAttribute("src") && !paused;
         if (clip && (!video.paused || leaveAt)) {
@@ -1197,7 +1344,8 @@ export function createArtHall(art, screenMesh, hooks) {
           aimEars(camera);
           if (along >= 1) finishLeaveAudio();
         } else if (mode === "iframe" && frame && frame.getAttribute("src")) {
-          // 内嵌页的声音不经过厅内音量，离开时只能停。
+          // 内嵌页的声音不经过厅内音量，离开时只能停。人在厅外时正片也不往前走。
+          clearEndTimer();
           captureIframeTime();
           clearIframe();
           clearReflectFrame();
@@ -1223,7 +1371,8 @@ export function createArtHall(art, screenMesh, hooks) {
           hideMount();
         } else {
           if (mode === "iframe" && !tryingVideo && frame && !frame.getAttribute("src")) mountIframe(resumeSec);
-          if (mode === "video" && !paused && video && video.getAttribute("src") && video.paused) {
+          // 播完时元素也会变成暂停。这时不能再 play()，否则最后一帧又被拉起来。
+          if (mode === "video" && !paused && video && video.getAttribute("src") && video.paused && !playbackEnded()) {
             const pending = video.play();
             if (pending && pending.catch) pending.catch(() => {});
           }
