@@ -1553,7 +1553,19 @@ function buildViewingStand(floor, room, blocks) {
     }
   }
 
-  function addSteps(x0, x1, z0, z1, y0, y1) {
+  // 墙根落在这一层楼板面上。再往下 2 厘米会穿进楼板。
+  const floorY = base + 0.04;
+  // 楼梯靠观影台的那一侧埋进台身，裙墙和原来的台墙齐，不再另起一道错开的墙。
+  const wallBury = 0.012;
+
+  function stairWallX(x0, x1, innerSign) {
+    return {
+      minX: innerSign < 0 ? x0 - wallBury : x0,
+      maxX: innerSign > 0 ? x1 + wallBury : x1,
+    };
+  }
+
+  function addSteps(x0, x1, z0, z1, y0, y1, innerSign) {
     const rise = y1 - y0;
     const run = z1 - z0;
     if (rise < 0.08 || run < 0.2) return;
@@ -1563,18 +1575,20 @@ function buildViewingStand(floor, room, blocks) {
     flights.push({ minX: x0, maxX: x1, z0: z0 - 0.03, z1: z1 + 0.03, y0, y1 });
     const ix0 = x0 + 0.05;
     const ix1 = x1 - 0.05;
+    const wall = stairWallX(x0, x1, innerSign);
     for (let s = 0; s < n; s++) {
       const za = z0 + s * tread;
       const zb = za + tread;
       const top = y0 + (s + 1) * riser;
       const prev = y0 + s * riser;
-      const treadBottom = Math.max(base + 0.02, prev);
-      if (treadBottom > base + 0.08) {
-        addBox(mass, x0, x1, base + 0.02, treadBottom - 0.01, za, zb);
+      const treadBottom = Math.max(floorY, prev);
+      if (treadBottom > floorY + 0.06) {
+        addBox(mass, wall.minX, wall.maxX, floorY, treadBottom - 0.01, za, zb);
       }
       addBox(mass, ix0, ix1, treadBottom, top - 0.035, za, zb);
-      addBox(carpet, ix0, ix1, top - 0.042, top, za, zb + 0.01);
-      const solidTop = treadBottom - 0.16;
+      addBox(carpet, ix0, ix1, top - 0.042, top, za, zb);
+      // 快跑一帧能跨过大约半米，脚还停在下一级。裙墙顶要低于这只脚，才不会被墙挡住。
+      const solidTop = prev - 0.7;
       if (solidTop > base + 0.35) {
         pushBlock(blocks, {
           minX: x0,
@@ -1588,17 +1602,20 @@ function buildViewingStand(floor, room, blocks) {
     }
   }
 
-  function addLanding(x0, x1, z0, z1, y) {
-    decks.push({ minX: x0 - 0.02, maxX: x1 + 0.02, minZ: z0, maxZ: z1, y });
-    addBox(mass, x0 + 0.02, x1 - 0.02, base + 0.02, y - 0.035, z0, z1);
-    addBox(carpet, x0 + 0.02, x1 - 0.02, y - 0.042, y, z0, z1);
+  function addLanding(x0, x1, z0, z1, y, innerSign) {
+    const wall = stairWallX(x0, x1, innerSign);
+    decks.push({ minX: x0, maxX: x1, minZ: z0, maxZ: z1, y });
+    addBox(mass, wall.minX, wall.maxX, floorY, y - 0.035, z0, z1);
+    addBox(carpet, x0, x1, y - 0.042, y, z0, z1);
   }
 
   for (let i = 0; i < rows; i++) {
     const zN = zTier0 + i * tierD;
     const zS = zN + tierD;
     const y = base + lifts[i];
-    addBox(mass, west1, east0, base + 0.02, y - 0.04, zN, zS);
+    // 后一面埋进后一排，立面只留后面那一块，两块墙不叠在同一张面上。
+    const zBack = i < rows - 1 ? zS + wallBury : zS;
+    addBox(mass, west1, east0, floorY, y - 0.04, zN, zBack);
     addBox(carpet, west1, east0, y - 0.045, y, zN - (i === 0 ? 0.02 : 0), zS);
     decks.push({ minX: west1 - 0.02, maxX: east0 + 0.02, minZ: zN, maxZ: zS, y });
     pushBlock(blocks, {
@@ -1611,7 +1628,7 @@ function buildViewingStand(floor, room, blocks) {
     });
   }
 
-  addBox(soffit, xL, xR, deckY - 0.16, deckY - 0.04, zCanopyN, zCanopyS);
+  addBox(soffit, xL, xR, deckY - 0.16, deckY - 0.04, zCanopyN - wallBury, zCanopyS);
   addBox(carpet, xL, xR, deckY - 0.045, deckY, zCanopyN - 0.02, zCanopyS);
   decks.push({ minX: xL, maxX: xR, minZ: zCanopyN - 0.02, maxZ: zCanopyS, y: deckY });
   pushBlock(blocks, {
@@ -1627,9 +1644,9 @@ function buildViewingStand(floor, room, blocks) {
   addBalustrade(xL + 0.12, deckY, zCanopyN + 0.08, west0 - 0.02, deckY, zCanopyN + 0.08);
   addBalustrade(east1 + 0.02, deckY, zCanopyN + 0.08, xR - 0.12, deckY, zCanopyN + 0.08);
 
-  function buildSide(x0, x1, outerX, innerX) {
+  function buildSide(x0, x1, outerX, innerX, innerSign) {
     const yFirst = base + lifts[0];
-    addSteps(x0, x1, zApproachN, zTier0, base, yFirst);
+    addSteps(x0, x1, zApproachN, zTier0, base, yFirst, innerSign);
     addBalustrade(outerX, base, zApproachN, outerX, yFirst, zTier0);
     addBalustrade(innerX, base, zApproachN, innerX, yFirst, zTier0);
     for (let i = 0; i < rows; i++) {
@@ -1638,18 +1655,18 @@ function buildViewingStand(floor, room, blocks) {
       const y = base + lifts[i];
       const top = i === rows - 1;
       const zLand = top ? zS : zN + walkD;
-      addLanding(x0, x1, zN, zLand, y);
+      addLanding(x0, x1, zN, zLand, y, innerSign);
       addBalustrade(outerX, y, zN, outerX, y, zLand);
       if (top) continue;
       const yNext = base + lifts[i + 1];
-      addSteps(x0, x1, zLand, zS, y, yNext);
+      addSteps(x0, x1, zLand, zS, y, yNext, innerSign);
       addBalustrade(outerX, y, zLand, outerX, yNext, zS);
       addBalustrade(innerX, y, zLand, innerX, yNext, zS);
     }
   }
 
-  buildSide(west0, west1, west0 + 0.08, west1 - 0.08);
-  buildSide(east0, east1, east1 - 0.08, east0 + 0.08);
+  buildSide(west0, west1, west0 + 0.08, west1 - 0.08, 1);
+  buildSide(east0, east1, east1 - 0.08, east0 + 0.08, -1);
 
   const sofaW = 1.18;
   const sofaD = 1.02;

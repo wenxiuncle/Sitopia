@@ -332,7 +332,10 @@ async function lookupBili(parsed) {
     const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + page.cid + "&qn=64&fnval=1");
     if (!playRes.ok) return { url: "", duration };
     const play = await playRes.json();
-    const url = play && play.data && play.data.durl && play.data.durl[0] && play.data.durl[0].url;
+    const clips = play && play.data && play.data.durl;
+    // 多段地址只拿到第一段，文件会在正片中途结束。这种留给官方播放器播完整段。
+    const clip = clips && clips.length === 1 ? clips[0] : null;
+    const url = clip && clip.url ? clip.url : "";
     return { url: url || "", duration };
   } catch {
     return { url: "", duration: 0 };
@@ -696,6 +699,25 @@ export function createArtHall(art, screenMesh, hooks) {
     return y >= base - 0.45 && y < base + 16;
   }
 
+  // 观影台，加上台前一直到大屏幕的地面。人离开这一带，正片就停，画面回到没播过的黑屏。
+  function inAudience(player) {
+    if (!player || !onArtStorey(player.y)) return false;
+    const span = art.stand && art.stand.span;
+    const inner = art.inner;
+    const screen = art.screen;
+    if (!span || !inner || !screen) return false;
+    const x = player.x;
+    const z = player.z;
+    const y = player.y;
+    const pad = 0.42;
+    if (z >= screen.z - 0.35 && z <= span.zTier0 + pad && x >= inner.x0 - pad && x <= inner.x1 + pad) return true;
+    const side = (x >= span.west0 - pad && x <= span.west1 + pad) || (x >= span.east0 - pad && x <= span.east1 + pad);
+    const middle = x >= span.west1 - pad && x <= span.east0 + pad;
+    if ((side || middle) && z >= span.zApproachN - pad && z <= span.zCanopyN + pad) return true;
+    if (y >= span.deckY - 0.5 && z >= span.zCanopyN - pad && z <= span.zCanopyS + pad && x >= inner.x0 - pad && x <= inner.x1 + pad) return true;
+    return false;
+  }
+
   function placedInside(player) {
     if (!player) {
       insideFlag = false;
@@ -853,9 +875,12 @@ export function createArtHall(art, screenMesh, hooks) {
     endTimer = 0;
   }
 
-  // 墙钟从装上播放器就开始走，本身比正片早一截。再提前最多 0.25 秒，赶在推荐页出现前收掉。
+  // B 站墙钟从装上播放器就开始走，比正片早。提前收会把片子掐掉，改成到点后再多等一会儿。
+  // YouTube 仍提前最多 0.25 秒，赶在推荐页出现前收掉。
   function endAhead() {
     if (!(duration > 0)) return 0;
+    const item = currentItem();
+    if (item && item.platform === "bili") return -8;
     return Math.min(0.25, duration / 2);
   }
 
@@ -1231,6 +1256,8 @@ export function createArtHall(art, screenMesh, hooks) {
     const bili = origin === "https://player.bilibili.com";
     if (!youtube && !bili) return;
     if (!playerEnded(event.data)) return;
+    // 墙钟还没靠近结尾时，B 站偶发的结束信号不算数，避免正片被提前收掉。
+    if (bili && duration > 0 && currentTimeSec() < duration - 1.5) return;
     onClipDone();
   });
 
@@ -1336,6 +1363,7 @@ export function createArtHall(art, screenMesh, hooks) {
     },
     tick(camera, player, ambience) {
       liveAmbience = ambience || liveAmbience;
+      if (mode !== "idle" && !inAudience(player)) stop();
       insideNow = placedInside(player);
       if (playbackEnded()) onClipDone();
       if (!insideNow) {
