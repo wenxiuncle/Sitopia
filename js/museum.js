@@ -185,6 +185,7 @@ let ambience = null;
 let artHall = null;
 let artSky = null;
 let screenHover = false;
+let seatHover = false;
 let artSeatAim = -1;
 let eyeLift = EYE;
 let eyeBob = 0;
@@ -1432,13 +1433,21 @@ function aimHover() {
     if (hoverIndex >= 0) setHover(-1);
     const seats = artSeats();
     const near = seats && seatInReach(seats[artSeatAim]);
-    hoverEl.textContent = near && !(seatRide.mode === "seated" && artSeatAim === seatRide.index) ? "坐下" : "";
-    hoverEl.hidden = !hoverEl.textContent;
+    const showSeat = near && !(seatRide.mode === "seated" && artSeatAim === seatRide.index);
+    hoverEl.textContent = showSeat ? "坐下" : "";
+    hoverEl.hidden = !showSeat;
+    seatHover = showSeat;
     screenHover = false;
     hoverRobot = false;
     hoverUnderCrosshair();
     placeVideoHover(false);
     return;
+  }
+  // 坐下不占用画框序号。看开后 setHover(-1) 发现序号已是 -1 会直接返回，提示要在这里收掉。
+  if (seatHover) {
+    seatHover = false;
+    hoverEl.textContent = "";
+    hoverEl.hidden = true;
   }
   const onScreen = screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist);
   if (onScreen) {
@@ -2752,6 +2761,11 @@ function step(dt, now) {
     }
     if (screenHover) {
       screenHover = false;
+      hoverEl.hidden = true;
+    }
+    if (seatHover) {
+      seatHover = false;
+      hoverEl.textContent = "";
       hoverEl.hidden = true;
     }
     placeVideoHover(false);
@@ -4154,6 +4168,8 @@ async function buildScene(data, arrange) {
         closePanel(false);
         closeGuestbook(false);
         screenHover = false;
+        seatHover = false;
+        hoverEl.textContent = "";
         hoverEl.hidden = true;
         placeVideoHover(false);
       },
