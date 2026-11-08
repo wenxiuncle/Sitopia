@@ -414,8 +414,8 @@ export function createArtHall(art, screenMesh, hooks) {
   }
   fitReflectPicture(reflectFrame);
   fitReflectPicture(reflectCanvas);
-  if (screenMesh && screenMesh.material && screenMesh.material.color) {
-    screenMesh.material.color.setHex(0x101218);
+  if (screenMesh && screenMesh.material && screenMesh.material.color && screen.idle != null) {
+    screenMesh.material.color.setHex(screen.idle);
   }
   const fwd = new THREE.Vector3();
   const ndc = new THREE.Vector3();

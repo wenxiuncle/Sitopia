@@ -1499,8 +1499,9 @@ function buildViewingStand(floor, room, blocks) {
   const tables = [];
   const decks = [];
   const flights = [];
+  const nosings = [];
   const empty = {
-    mass, soffit, carpet, rails, posts, seats, tables,
+    mass, soffit, carpet, rails, posts, seats, tables, nosings,
     surfaces: { decks, flights },
     span: null,
   };
@@ -1603,6 +1604,15 @@ function buildViewingStand(floor, room, blocks) {
       }
       addBox(mass, ix0, ix1, treadBottom, top - 0.035, za, zb);
       addBox(carpet, ix0, ix1, top - 0.042, top, za, zb);
+      // 踏步朝下的那条棱。淡蓝灯贴在棱上，南北厚度是原来的一半。
+      nosings.push({
+        minX: ix0,
+        maxX: ix1,
+        minY: top + 0.003,
+        maxY: top + 0.028,
+        minZ: za + 0.0005,
+        maxZ: za + 0.0335,
+      });
       const along = s * tread;
       const climbed = along > SPRINT_REACH ? slope * (along - SPRINT_REACH) : 0;
       pushSkirt(wall.minX, wall.maxX, za, zb, y0 + climbed);
@@ -1720,7 +1730,7 @@ function buildViewingStand(floor, room, blocks) {
   }
 
   return {
-    mass, soffit, carpet, rails, posts, seats, tables,
+    mass, soffit, carpet, rails, posts, seats, tables, nosings,
     surfaces: { decks, flights },
     span: {
       base,
@@ -1746,7 +1756,7 @@ function describeArt(floor, blocks, cones) {
   const faceN = HALL_A - WALL_T / 2;
   const faceS = HALL_A + WALL_T / 2;
   const walk = base + 0.04;
-  // 厅内墙和星空天棚抬到三倍层高。门帘仍停在原来的天花下沿，不跟着上去。
+  // 厅内墙和深灰天棚抬到三倍层高。门帘仍停在原来的天花下沿，不跟着上去。
   const soffit = base + WALL_H * 3 - 0.06;
   const starY = soffit - 0.02;
   const oldSoffit = base + WALL_H - 0.06;
@@ -1766,10 +1776,44 @@ function describeArt(floor, blocks, cones) {
   const bury = 0.04;
   // 墙皮只埋进结构墙 2 厘米，内侧面仍盖住白衬。不穿到楼体外皮。
   const tuck = 0.02;
-  // 星空盖住整厅，南边埋进全高的门墙。上面再垫一块实顶，缝里不再看见天。
+  // 深灰天棚盖住整厅，南边埋进全高的门墙。上面再垫一块实顶，缝里不再看见天。
   const ceiling = [
     artSlab(xInL - 0.06, xInR + 0.06, starY, starY + 0.012, zInN - 0.06, faceS - 0.02),
   ];
+  // 灯罩顶埋进棚底 2 厘米，和展厅射灯同一套灯头。厅内不挂光锥。
+  const spotApex = starY + 0.028;
+  const spots = [];
+  const spotCols = 6;
+  const spotRows = 4;
+  const spotX0 = xInL + 3.2;
+  const spotX1 = xInR - 3.2;
+  const spotZ0 = zInN + 4.6;
+  const spotZ1 = zInS - 3.2;
+  for (let r = 0; r < spotRows; r++) {
+    const z = spotZ0 + (spotZ1 - spotZ0) * (r / (spotRows - 1));
+    for (let c = 0; c < spotCols; c++) {
+      const x = spotX0 + (spotX1 - spotX0) * (c / (spotCols - 1));
+      spots.push({ x, z, apex: spotApex });
+    }
+  }
+  // 东西墙各两条斜蓝灯。朝银幕（北）降低，朝进门（南）升高。
+  const strips = [];
+  function pushStrip(x, yNorth, ySouth) {
+    strips.push({
+      x0: x,
+      y0: base + yNorth,
+      z0: zInN + 0.85,
+      x1: x,
+      y1: base + ySouth,
+      z1: zInS - 0.7,
+    });
+  }
+  const westStrip = xInL + 0.07;
+  const eastStrip = xInR - 0.07;
+  pushStrip(westStrip, 6.4, 10.2);
+  pushStrip(westStrip, 8.8, 12.6);
+  pushStrip(eastStrip, 6.4, 10.2);
+  pushStrip(eastStrip, 8.8, 12.6);
   const lid = [
     artSlab(xInL - 0.08, xInR + 0.08, starY + 0.004, soffit + bury, zInN - 0.08, faceS + 0.02),
   ];
@@ -1785,7 +1829,7 @@ function describeArt(floor, blocks, cones) {
     // 门帘仍停在原来的天花下。帘子上面这面墙一直收到厅顶。
     artSlab(-DOOR + 0.02, DOOR - 0.02, oldSoffit - 0.04, wallY1, zInS, faceS + 0.02),
   ];
-  // 一层天棚在门墙里的切口。门墙已经全高，星空南沿埋在墙里，不再另补一条竖边。
+  // 一层天棚在门墙里的切口。门墙已经全高，天棚南沿埋在墙里，不再另补一条竖边。
   const lips = [
     artSlab(-INNER + 0.02, INNER - 0.02, base + WALL_H - 0.06, base + WALL_H, faceN + 0.012, faceN + 0.055),
   ];
@@ -1810,6 +1854,8 @@ function describeArt(floor, blocks, cones) {
     z: NORTH + 0.28,
     w: screenW,
     h: screenH,
+    // 没在播时的灰。播完收回这一色。
+    idle: 0x5c5b59,
   };
   pushBlock(blocks, artSlab(-screenW / 2, screenW / 2, screenBottom, screenBottom + screenH, screen.z - 0.1, screen.z + 0.05));
   // 脚灯贴在厅内墙皮上。北墙两盏落在屏幕左右边到东西墙的中点；东西墙按整面宽三等分；门两侧墙各居中一盏。
@@ -1837,7 +1883,7 @@ function describeArt(floor, blocks, cones) {
   const xR = roomX1 - margin;
   const zN = roomZ0 + margin;
   const zS = roomZ1 - margin;
-  // 喇叭从原来的天花下沿再抬高 4 米，仍在星空下面。
+  // 喇叭从原来的天花下沿再抬高 4 米，仍在天棚下面。
   const ySp = oldSoffit - 0.02 - hang + 4;
   const aimX = 0;
   const aimY = walk;
@@ -1872,6 +1918,8 @@ function describeArt(floor, blocks, cones) {
     baseY: base,
     curtainZ,
     ceiling,
+    spots,
+    strips,
     lid,
     lips,
     walls,

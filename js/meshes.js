@@ -2858,146 +2858,132 @@ function footlightRig(lamps) {
   return root;
 }
 
-// 艺术厅天棚。板的范围仍在 layout.js。一整张黑色深空，白点不重复、不拼接。
-function starRand(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function starFieldTexture(worldW, worldD) {
-  const pxPerM = 72;
-  let width = Math.max(2, Math.round(worldW * pxPerM));
-  let height = Math.max(2, Math.round(worldD * pxPerM));
-  const cap = 4096;
-  const longest = Math.max(width, height);
-  if (longest > cap) {
-    const scale = cap / longest;
-    width = Math.max(2, Math.round(width * scale));
-    height = Math.max(2, Math.round(height * scale));
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, width, height);
-  const rand = starRand(0x51a7c0de);
-  const count = Math.max(1, Math.round(worldW * worldD * 2.1));
-  ctx.fillStyle = "#ffffff";
-  for (let i = 0; i < count; i++) {
-    const x = rand() * width;
-    const y = rand() * height;
-    const roll = rand();
-    let radius = 1.15 + rand() * 0.4;
-    let alpha = 0.62 + rand() * 0.28;
-    if (roll > 0.96) {
-      radius = 2.15 + rand() * 0.35;
-      alpha = 1;
-    } else if (roll > 0.8) {
-      radius = 1.6 + rand() * 0.35;
-      alpha = 0.88 + rand() * 0.12;
-    }
-    ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearFilter;
-  tex.generateMipmaps = false;
-  tex.anisotropy = 4;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-function starCeiling(list) {
-  const time = { value: 0 };
-  const twinkle = {
-    value: (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) ? 0 : 1,
-  };
-  const slabs = list || [];
-  let worldW = 1;
-  let worldD = 1;
-  for (let i = 0; i < slabs.length; i++) {
-    const slab = slabs[i];
-    const w = slab.maxX - slab.minX;
-    const d = slab.maxZ - slab.minZ;
-    if (w > worldW) worldW = w;
-    if (d > worldD) worldD = d;
-  }
+// 放映厅天棚。板的范围仍在 layout.js。深灰平板，不再铺星空。
+function darkCeiling(list) {
   const mat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    map: starFieldTexture(worldW, worldD),
+    color: 0x0f0e0e,
     fog: false,
     side: THREE.DoubleSide,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-  mat.customProgramCacheKey = () => "museum-star-field-2";
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uStarTime = time;
-    shader.uniforms.uStarTwinkle = twinkle;
-    const vertex = shader.vertexShader.replace(
-      "#include <begin_vertex>",
-      `#include <begin_vertex>
-      vStarW = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
-    );
-    if (vertex === shader.vertexShader) throw new Error("星空顶点着色器没有对上");
-    shader.vertexShader = "varying vec3 vStarW;\n" + vertex;
-    const fragment = shader.fragmentShader.replace(
-      "vec3 outgoingLight = reflectedLight.indirectDiffuse;",
-      `vec3 outgoingLight = reflectedLight.indirectDiffuse;
-      {
-        float lum = outgoingLight.r;
-        if (lum > 0.08) {
-          vec2 cell = floor(vStarW.xz * 6.0);
-          float n = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
-          float pace = 0.28 + n * 0.55;
-          float wave = 0.5 + 0.5 * sin(uStarTime * pace + n * 6.2831853);
-          float pick = step(0.72, n);
-          outgoingLight *= mix(1.0, mix(0.8, 1.0, wave), pick * uStarTwinkle);
-        }
-      }`,
-    );
-    if (fragment === shader.fragmentShader) throw new Error("星空片元着色器没有对上");
-    shader.fragmentShader = `uniform float uStarTime;
-uniform float uStarTwinkle;
-varying vec3 vStarW;
-` + fragment;
-  };
   const root = new THREE.Group();
+  const slabs = list || [];
   for (let i = 0; i < slabs.length; i++) {
     const slab = slabs[i];
     const w = slab.maxX - slab.minX;
     const d = slab.maxZ - slab.minZ;
     if (w < 0.2 || d < 0.2) continue;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
-    mesh.name = "art-sky";
+    mesh.name = "art-ceiling";
     mesh.rotation.x = CEIL_TILT;
     mesh.position.set((slab.minX + slab.maxX) / 2, slab.minY, (slab.minZ + slab.maxZ) / 2);
     mesh.castShadow = false;
     mesh.receiveShadow = false;
     mesh.frustumCulled = false;
-    mesh.renderOrder = 2;
+    mesh.renderOrder = 1;
     root.add(mesh);
   }
-  return {
-    root,
-    tick(now) {
-      time.value = now * 0.001;
-    },
-  };
+  return root;
+}
+
+// 棚顶射灯。只要灯罩和灯心，不挂光锥。挂点用每盏自己的 apex。
+function artSpotRig(spots) {
+  if (!spots || !spots.length) return null;
+  const shadeMat = new THREE.MeshBasicMaterial({ color: 0x1c1c20, fog: false });
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff3e0, fog: false });
+  const shadeH = 0.1;
+  const lampH = 0.03;
+  const shade = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.045, 0.16, shadeH, 14, 1), shadeMat, spots.length);
+  const lamp = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.055, 0.055, lampH, 12, 1), lampMat, spots.length);
+  for (let i = 0; i < spots.length; i++) {
+    const apex = spots[i].apex;
+    const bottom = apex - shadeH - SPOT_APEX_GAP;
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.position.set(spots[i].x, bottom + shadeH * 0.5, spots[i].z);
+    dummy.updateMatrix();
+    shade.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(spots[i].x, bottom - lampH * 0.5 - 0.004, spots[i].z);
+    dummy.updateMatrix();
+    lamp.setMatrixAt(i, dummy.matrix);
+  }
+  const root = new THREE.Group();
+  root.name = "art-spots";
+  root.add(commit(shade), commit(lamp));
+  return root;
+}
+
+// 沿墙的斜灯带。局部 X 顺着灯带，Y 离开墙面，Z 是灯带的宽。
+function placeWallStrip(mesh, index, strip, thick, wide) {
+  const dx = strip.x1 - strip.x0;
+  const dy = strip.y1 - strip.y0;
+  const dz = strip.z1 - strip.z0;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  const dir = new THREE.Vector3(dx / len, dy / len, dz / len);
+  const into = strip.x0 < 0 ? 1 : -1;
+  const normal = new THREE.Vector3(into, 0, 0);
+  normal.addScaledVector(dir, -normal.dot(dir));
+  if (normal.lengthSq() < 1e-8) normal.set(into, 0, 0);
+  normal.normalize();
+  const side = new THREE.Vector3().crossVectors(dir, normal).normalize();
+  const basis = new THREE.Matrix4().makeBasis(dir, normal, side);
+  dummy.position.set((strip.x0 + strip.x1) * 0.5, (strip.y0 + strip.y1) * 0.5, (strip.z0 + strip.z1) * 0.5);
+  dummy.quaternion.setFromRotationMatrix(basis);
+  dummy.scale.set(len, thick, wide);
+  dummy.updateMatrix();
+  mesh.setMatrixAt(index, dummy.matrix);
+  dummy.quaternion.identity();
+  dummy.rotation.set(0, 0, 0);
+  dummy.scale.set(1, 1, 1);
+}
+
+function wallStripRig(strips) {
+  if (!strips || !strips.length) return null;
+  const n = strips.length;
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xd6ecff,
+    fog: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
+  const bandMat = new THREE.MeshBasicMaterial({
+    color: 0x3d8cff,
+    fog: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0x2a6dff,
+    transparent: true,
+    opacity: 0.4,
+    depthWrite: false,
+    fog: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
+  const core = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), coreMat, n);
+  const band = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bandMat, n);
+  const halo = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), haloMat, n);
+  for (let i = 0; i < n; i++) {
+    placeWallStrip(core, i, strips[i], 0.02, 0.04);
+    placeWallStrip(band, i, strips[i], 0.026, 0.09);
+    placeWallStrip(halo, i, strips[i], 0.034, 0.28);
+  }
+  const root = new THREE.Group();
+  root.name = "art-wall-strips";
+  const coreMesh = commit(core);
+  const bandMesh = commit(band);
+  const haloMesh = commit(halo);
+  coreMesh.renderOrder = 3;
+  bandMesh.renderOrder = 3;
+  haloMesh.renderOrder = 3;
+  root.add(haloMesh, bandMesh, coreMesh);
+  return root;
 }
 
 function standRailMesh(rails, material) {
@@ -3125,6 +3111,25 @@ function viewingStandMeshes(stand, mats) {
   }
   const rails = standRailMesh(stand.rails, mats.rail);
   if (rails) root.add(rails);
+  const nosings = stand.nosings || [];
+  if (nosings.length) {
+    const nosingMat = new THREE.MeshBasicMaterial({
+      color: 0x8eb8f0,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      fog: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    const lip = boxMesh(nosings, nosingMat);
+    if (lip) {
+      lip.name = "art-stair-lights";
+      lip.renderOrder = 3;
+      root.add(lip);
+    }
+  }
   loungeMeshes(root, stand, mats);
   return root.children.length ? root : null;
 }
@@ -3132,8 +3137,12 @@ function viewingStandMeshes(stand, mats) {
 // 艺术厅的天花、墙皮、门帘、屏幕、脚灯和喇叭。屏幕画面本身不带边，边框在画面北侧。
 export function artHallMeshes(art, mats) {
   const root = new THREE.Group();
-  const sky = starCeiling(art.ceiling);
-  if (sky.root.children.length) root.add(sky.root);
+  const ceiling = darkCeiling(art.ceiling);
+  if (ceiling.children.length) root.add(ceiling);
+  const spots = artSpotRig(art.spots);
+  if (spots) root.add(spots);
+  const strips = wallStripRig(art.strips);
+  if (strips) root.add(strips);
   addArtBoxes(root, art.walls, mats.walls);
   addArtBoxes(root, art.lid, mats.lid || mats.lips || mats.walls);
   addArtBoxes(root, art.lips, mats.lips || mats.walls);
@@ -3173,5 +3182,5 @@ export function artHallMeshes(art, mats) {
   }
   const stand = viewingStandMeshes(art.stand, mats);
   if (stand) root.add(stand);
-  return { root, screen: picture, sky };
+  return { root, screen: picture, sky: null };
 }
