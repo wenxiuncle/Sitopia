@@ -1,6 +1,13 @@
 import * as THREE from "../vendor/three.module.js";
 import { FLOOR_TILT, inLiftCar, occupiesHall } from "./layout.js";
 
+let visitorSit = null;
+
+// 坐下不进联机协议。别人的脚落在坐垫上时，由这里判断。
+export function setVisitorSit(fn) {
+  visitorSit = typeof fn === "function" ? fn : null;
+}
+
 // 别人在第一人称里看到的方块人。样子对齐参考海报中间那个：
 // 棕发盖住额头、浅色短袖、深色短裤、方头。正面是局部 -Z，鼻子标记在脸前。
 
@@ -193,16 +200,25 @@ export function createVisitor(material, shadowMaterial) {
     shadow.position.y = 0.035;
     group.add(shadow);
   }
-  return { group, parts: { armL, armR, legL, legR }, shadow };
+  return { group, parts: { body, armL, armR, legL, legR }, shadow };
 }
 
 // amount 为 0 时站直。phase 在 π/2 且 amount 为 1 时，左脚迈向局部 -Z。
-export function poseVisitor(parts, phase, amount) {
-  const step = Math.sin(phase) * 0.65 * amount;
-  parts.legL.rotation.x = step;
-  parts.legR.rotation.x = -step;
-  parts.armL.rotation.x = -step * 0.85;
-  parts.armR.rotation.x = step * 0.85;
+// sit 为 0 到 1：人坐下，髋落到坐垫上，两条腿朝局部 -Z 伸到沙发前面。
+export function poseVisitor(parts, phase, amount, sit) {
+  const u = sit > 0 ? (sit > 1 ? 1 : sit) : 0;
+  const step = Math.sin(phase) * 0.65 * amount * (1 - u);
+  const drop = 0.22 * u;
+  if (parts.body) parts.body.position.y = -drop;
+  parts.armL.position.y = 1.22 - drop;
+  parts.armR.position.y = 1.22 - drop;
+  parts.legL.position.y = 0.61 - drop;
+  parts.legR.position.y = 0.61 - drop;
+  const bend = 1.2 * u;
+  parts.legL.rotation.x = step + bend;
+  parts.legR.rotation.x = -step + bend;
+  parts.armL.rotation.x = -step * 0.85 + 0.45 * u;
+  parts.armR.rotation.x = step * 0.85 + 0.45 * u;
 }
 
 function dropBubble(row) {
@@ -323,11 +339,17 @@ export function createCrowd(scene, material, shadowMaterial) {
         row.yaw += turn * k;
         const moving = Math.hypot(row.x - beforeX, row.z - beforeZ) > 0.0015;
         if (moving) row.phase += dt * 10;
-        row.swing += ((moving ? 1 : 0) - row.swing) * (1 - Math.exp(-dt * 8));
-        poseVisitor(row.visitor.parts, row.phase, row.swing);
-        const idle = Math.sin(now * 0.002 + row.phase) * 0.01;
+        const sit = visitorSit ? visitorSit(row.x, row.feet || 0, row.z) : 0;
+        if (sit > 0.2) {
+          const face = Math.atan2(Math.sin(-row.yaw), Math.cos(-row.yaw));
+          row.yaw += face * sit;
+        }
+        row.swing += ((moving && sit < 0.35 ? 1 : 0) - row.swing) * (1 - Math.exp(-dt * 8));
+        poseVisitor(row.visitor.parts, row.phase, row.swing, sit);
+        const idle = Math.sin(now * 0.002 + row.phase) * 0.01 * (1 - sit);
         row.visitor.group.position.set(row.x, (row.feet || 0) + idle, row.z);
         row.visitor.group.rotation.y = row.yaw;
+        if (row.bubble) row.bubble.position.y = 1.9 - 0.24 * sit;
         row.visitor.group.visible = !(veilHall && occupiesHall(row.x, row.z));
         placeBodyShadow(row.visitor, row.x, row.feet || 0, row.z, row.yaw);
         if (row.bubble && now > row.bubbleUntil) dropBubble(row);

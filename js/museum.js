@@ -1,7 +1,7 @@
 import * as THREE from "../vendor/three.module.js";
 import { createAmbience } from "./ambience.js";
 import { createArtHall } from "./arthall.js";
-import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight } from "./avatar.js";
+import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight, setVisitorSit } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
 import { CITY_SHADOW_MAX, DAYS, dayIndex, findDay, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
@@ -30,6 +30,7 @@ import {
   blocked,
   movePlayer,
   moveAirborne,
+  routeArtSeat,
   stairSupport,
   nearLiftHall,
   pullCamera,
@@ -104,6 +105,7 @@ const where = document.getElementById("where");
 const place = document.getElementById("place");
 const legendEl = document.getElementById("legend");
 const hoverEl = document.getElementById("hover");
+const seatHint = document.getElementById("seat-hint");
 const crosshair = document.getElementById("crosshair");
 const panel = document.getElementById("panel");
 const panelHall = document.getElementById("panel-hall");
@@ -183,6 +185,37 @@ let ambience = null;
 let artHall = null;
 let artSky = null;
 let screenHover = false;
+let artSeatAim = -1;
+let eyeLift = EYE;
+let eyeBob = 0;
+const seatRide = {
+  mode: "",
+  index: -1,
+  path: null,
+  length: 0,
+  travel: 0,
+  vx: 0,
+  vz: 0,
+  phase: 0,
+  stuck: 0,
+  retargets: 0,
+  t: 0,
+  dur: 0,
+  next: "",
+  fromX: 0,
+  fromZ: 0,
+  fromEye: EYE,
+  fromYaw: 0,
+  fromPitch: 0,
+  toX: 0,
+  toZ: 0,
+  toEye: EYE,
+  toYaw: 0,
+  toPitch: 0,
+  pitchBase: 0,
+};
+let seatLookX = 0;
+let seatLookZ = 0;
 let heardGesture = false;
 let dayCursor = dayIndex(params.get("time"));
 let sunShared = null;
@@ -1383,19 +1416,43 @@ function placeVideoHover(on) {
   hoverEl.style.bottom = "auto";
 }
 
+function hoverUnderCrosshair() {
+  hoverEl.style.left = "";
+  hoverEl.style.top = "";
+  hoverEl.style.bottom = "";
+}
+
 function aimHover() {
   const index = pickFrame();
   const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
+  const seatDist = pickArtSeat();
   const screenDist = artHall ? artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz }) : -1;
+  const onSeat = seatDist >= 0 && (screenDist < 0 || seatDist <= screenDist) && (robotDist < 0 || seatDist < robotDist);
+  if (onSeat && seatRide.mode !== "walk" && seatRide.mode !== "pose") {
+    if (hoverIndex >= 0) setHover(-1);
+    const seats = artSeats();
+    const near = seats && seatInReach(seats[artSeatAim]);
+    hoverEl.textContent = near && !(seatRide.mode === "seated" && artSeatAim === seatRide.index) ? "坐下" : "";
+    hoverEl.hidden = !hoverEl.textContent;
+    screenHover = false;
+    hoverRobot = false;
+    hoverUnderCrosshair();
+    placeVideoHover(false);
+    return;
+  }
   const onScreen = screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist);
   if (onScreen) {
     if (hoverIndex >= 0) setHover(-1);
-    const label = artHall.hoverLabel();
-    hoverEl.textContent = label;
-    hoverEl.hidden = !label;
+    const seated = seatRide.mode === "seated";
+    hoverEl.textContent = seated ? artHall.hoverLabel() : "坐到座位上";
+    hoverEl.hidden = !hoverEl.textContent;
     screenHover = true;
     hoverRobot = false;
-    placeVideoHover(true);
+    if (seated) placeVideoHover(true);
+    else {
+      hoverUnderCrosshair();
+      placeVideoHover(false);
+    }
     return;
   }
   placeVideoHover(false);
@@ -1597,6 +1654,8 @@ function pickFrame() {
 }
 
 function resetPose() {
+  if (seatRide.mode === "seated" || seatRide.mode === "pose") leaveSeatScreen();
+  clearArtSeat();
   px = built.spawn.x;
   pz = built.spawn.z;
   py = 0;
@@ -1741,7 +1800,7 @@ function feetOn() {
 }
 
 function tryJump() {
-  if (airborne || !built) return;
+  if (seatBusy() || airborne || !built) return;
   if (lift && inLiftCar(px, pz) && lift.phase === "moving") return;
   const feet = feetOn();
   if (feet == null || Math.abs(py - feet) > 0.12) return;
@@ -2026,8 +2085,9 @@ function poseSelf(pulled) {
   }
   const speed = Math.hypot(vx, vz);
   if (!airborne && speed > 0.2) walkPhase += speed * 0.02;
-  poseVisitor(selfVisitor.parts, walkPhase, !airborne && speed > 0.2 ? 1 : 0);
-  if (airborne) {
+  const sit = selfSitAmount();
+  poseVisitor(selfVisitor.parts, walkPhase, !airborne && speed > 0.2 ? 1 : 0, sit);
+  if (airborne && sit < 0.2) {
     const rise = Math.min(1, Math.max(0, py - takeoffY) / 0.35);
     selfVisitor.parts.legL.rotation.x = 0.45 * rise;
     selfVisitor.parts.legR.rotation.x = 0.45 * rise;
@@ -2053,8 +2113,8 @@ function syncArtPerson() {
 
 function placeCamera() {
   syncArtPerson();
-  const eyeY = py + EYE;
-  const aimY = py + EYE * 0.7;
+  const eyeY = py + eyeLift + eyeBob;
+  const aimY = py + eyeLift * 0.7;
   if (thirdPerson && orbiting) {
     orbitRig.rotation.set(orbitPitch, orbitYaw, 0);
     orbitRig.updateMatrixWorld();
@@ -2100,6 +2160,562 @@ function liftNear() {
   return Math.exp(-horiz * 0.22) * Math.exp(-dy * 0.32);
 }
 
+const SIT_EYE = 1.08;
+const SEAT_WALK = 2.05;
+// 贴着这张沙发的前、左、右或后面才坐下。再远就不自动绕过去。
+const SEAT_REACH = 1.5;
+const SEAT_HALF_X = 0.72;
+const SEAT_HALF_Z = 0.62;
+const SEAT_PATH_MAX = 7;
+
+function smoother(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+function shortAngle(from, to) {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
+function dampAngle(from, to, dt, k) {
+  return from + shortAngle(from, to) * (1 - Math.exp(-k * dt));
+}
+
+function onArtStorey() {
+  const box = built && built.art && built.art.lit;
+  if (!box) return false;
+  return py >= box.minY - 0.45 && py <= box.maxY + 0.2;
+}
+
+function artSeats() {
+  const stand = built && built.art && built.art.stand;
+  return stand && stand.seats ? stand.seats : null;
+}
+
+function seatBusy() {
+  return seatRide.mode !== "";
+}
+
+function syncSeatHint() {
+  if (seatHint) {
+    const show = seatRide.mode === "seated" && !(artHall && artHall.dialogOpen());
+    seatHint.hidden = !show;
+  }
+  if (presence && presence.setTabHintHold) presence.setTabHintHold(seatRide.mode === "seated");
+}
+
+function clearArtSeat() {
+  seatRide.mode = "";
+  seatRide.path = null;
+  seatRide.next = "";
+  seatRide.vx = 0;
+  seatRide.vz = 0;
+  eyeBob = 0;
+  eyeLift = EYE;
+  vx = 0;
+  vz = 0;
+  syncSeatHint();
+}
+
+function rayAabb(ox, oy, oz, dx, dy, dz, minX, minY, minZ, maxX, maxY, maxZ, maxT) {
+  let t0 = 0;
+  let t1 = maxT;
+  const mins = [minX, minY, minZ];
+  const maxs = [maxX, maxY, maxZ];
+  const origin = [ox, oy, oz];
+  const dir = [dx, dy, dz];
+  for (let a = 0; a < 3; a++) {
+    if (Math.abs(dir[a]) < 1e-8) {
+      if (origin[a] < mins[a] || origin[a] > maxs[a]) return null;
+      continue;
+    }
+    let near = (mins[a] - origin[a]) / dir[a];
+    let far = (maxs[a] - origin[a]) / dir[a];
+    if (near > far) {
+      const swap = near;
+      near = far;
+      far = swap;
+    }
+    if (near > t0) t0 = near;
+    if (far < t1) t1 = far;
+    if (t0 > t1) return null;
+  }
+  // 眼睛在盒子里时 t0 是 0，仍要放过，坐下后才能点到银幕。贴得很近的点击要算上。
+  return t0 > 0.04 ? t0 : null;
+}
+
+function raySeatSphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, radius, maxT) {
+  const lx = ox - cx;
+  const ly = oy - cy;
+  const lz = oz - cz;
+  const c = lx * lx + ly * ly + lz * lz - radius * radius;
+  if (c < 0) return null;
+  const b = lx * dx + ly * dy + lz * dz;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const t = -b - Math.sqrt(disc);
+  return t > 0.04 && t < maxT ? t : null;
+}
+
+function pickArtSeat() {
+  artSeatAim = -1;
+  if (!onArtStorey()) return -1;
+  const seats = artSeats();
+  if (!seats) return -1;
+  camera.getWorldDirection(lookDir);
+  const ox = camera.position.x;
+  const oy = camera.position.y;
+  const oz = camera.position.z;
+  const dx = lookDir.x;
+  const dy = lookDir.y;
+  const dz = lookDir.z;
+  let best = -1;
+  let bestT = 8;
+  for (let i = 0; i < seats.length; i++) {
+    const s = seats[i];
+    let t = rayAabb(
+      ox, oy, oz, dx, dy, dz,
+      s.x - 0.78, s.y + 0.02, s.z - 0.74,
+      s.x + 0.78, s.y + 1.2, s.z + 0.64,
+      bestT,
+    );
+    if (t == null) t = raySeatSphere(ox, oy, oz, dx, dy, dz, s.x, s.y + 0.55, s.z, 0.96, bestT);
+    if (t == null) continue;
+    best = i;
+    bestT = t;
+  }
+  artSeatAim = best;
+  return best >= 0 ? bestT : -1;
+}
+
+function seatGap(seat, x, z) {
+  const dx = Math.abs(x - seat.x) - SEAT_HALF_X;
+  const dz = Math.abs(z - seat.z) - SEAT_HALF_Z;
+  const ox = dx > 0 ? dx : 0;
+  const oz = dz > 0 ? dz : 0;
+  return Math.hypot(ox, oz);
+}
+
+function seatInReach(seat) {
+  if (!seat) return false;
+  if (Math.abs(seat.y - py) > 0.55) return false;
+  return seatGap(seat, px, pz) <= SEAT_REACH;
+}
+
+function nearestArtSeat() {
+  const seats = artSeats();
+  if (!seats) return -1;
+  let best = -1;
+  let bestD = SEAT_REACH + 0.001;
+  for (let i = 0; i < seats.length; i++) {
+    const s = seats[i];
+    if (!seatInReach(s)) continue;
+    const d = seatGap(s, px, pz);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// 别人的脚落在坐垫上就当成坐下。走近点离坐点约一米，站在过道里不会被看成坐下。
+function seatSitBlend(x, y, z) {
+  const seats = artSeats();
+  if (!seats) return 0;
+  let best = 0;
+  for (let i = 0; i < seats.length; i++) {
+    const s = seats[i];
+    if (Math.abs(y - s.y) > 0.28) continue;
+    const d = Math.hypot(x - s.x, z - s.sitZ);
+    if (d >= 0.45) continue;
+    const u = 1 - d / 0.45;
+    if (u > best) best = u;
+  }
+  return best;
+}
+setVisitorSit(seatSitBlend);
+
+function selfSitAmount() {
+  if (seatRide.mode === "seated") return 1;
+  if (seatRide.mode === "pose" && seatRide.toEye < seatRide.fromEye - 0.02) {
+    const t = seatRide.dur > 0 ? seatRide.t / seatRide.dur : 1;
+    return smoother(Math.max(0, (t - 0.18) / 0.82));
+  }
+  return seatSitBlend(px, py, pz);
+}
+
+function screenGaze(x, z) {
+  const screen = built.art && built.art.screen;
+  if (!screen) return 0;
+  const aimY = screen.y - screen.h * 0.22;
+  const dist = Math.hypot(screen.x - x, screen.z - z) || 1;
+  let pitch = Math.atan2(aimY - (py + SIT_EYE), dist);
+  if (pitch > 0.42) pitch = 0.42;
+  if (pitch < -0.2) pitch = -0.2;
+  return pitch;
+}
+
+function pathMeters(path) {
+  let n = 0;
+  for (let i = 1; i < path.length; i++) {
+    n += Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z);
+  }
+  return n;
+}
+
+function sampleSeatPath(dist) {
+  const path = seatRide.path;
+  if (!path || !path.length) {
+    seatLookX = px;
+    seatLookZ = pz;
+    return;
+  }
+  if (dist <= 0) {
+    seatLookX = path[0].x;
+    seatLookZ = path[0].z;
+    return;
+  }
+  let left = dist;
+  for (let i = 1; i < path.length; i++) {
+    const dx = path[i].x - path[i - 1].x;
+    const dz = path[i].z - path[i - 1].z;
+    const seg = Math.hypot(dx, dz);
+    if (left <= seg || i === path.length - 1) {
+      const t = seg < 1e-5 ? 1 : Math.min(1, left / seg);
+      seatLookX = path[i - 1].x + dx * t;
+      seatLookZ = path[i - 1].z + dz * t;
+      return;
+    }
+    left -= seg;
+  }
+}
+
+function closestTravel() {
+  const path = seatRide.path;
+  if (!path || path.length < 2) return 0;
+  let best = 0;
+  let bestD = Infinity;
+  let walked = 0;
+  for (let i = 1; i < path.length; i++) {
+    const ax = path[i - 1].x;
+    const az = path[i - 1].z;
+    const dx = path[i].x - ax;
+    const dz = path[i].z - az;
+    const seg = Math.hypot(dx, dz) || 1e-5;
+    let t = ((px - ax) * dx + (pz - az) * dz) / (seg * seg);
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const x = ax + dx * t;
+    const z = az + dz * t;
+    const d = (x - px) * (x - px) + (z - pz) * (z - pz);
+    if (d < bestD) {
+      bestD = d;
+      best = walked + seg * t;
+    }
+    walked += seg;
+  }
+  return best;
+}
+
+function armSeatPose(toX, toZ, toEye, toYaw, toPitch, dur, next) {
+  seatRide.mode = "pose";
+  seatRide.t = 0;
+  seatRide.dur = dur;
+  seatRide.next = next;
+  seatRide.fromX = px;
+  seatRide.fromZ = pz;
+  seatRide.fromEye = eyeLift;
+  seatRide.fromYaw = camera.rotation.y;
+  seatRide.fromPitch = camera.rotation.x;
+  seatRide.toX = toX;
+  seatRide.toZ = toZ;
+  seatRide.toEye = toEye;
+  seatRide.toYaw = toYaw;
+  seatRide.toPitch = toPitch;
+  seatRide.vx = 0;
+  seatRide.vz = 0;
+  eyeBob = 0;
+}
+
+function armSitDown() {
+  const seats = artSeats();
+  const seat = seats && seats[seatRide.index];
+  if (!seat) {
+    clearArtSeat();
+    return;
+  }
+  armSeatPose(seat.x, seat.sitZ, SIT_EYE, 0, screenGaze(seat.x, seat.sitZ), 1.15, "seated");
+}
+
+function alreadyInFront(seat, x, z, y) {
+  return z < seat.z - 0.4
+    && Math.abs(x - seat.x) < 1.05
+    && Math.hypot(seat.x - x, seat.nearZ - z) <= 1.4
+    && Math.abs(seat.y - y) <= 0.35;
+}
+
+function seatFrontClear(x0, z0, x1, z1, y) {
+  const walls = collide();
+  if (blocked(x1, z1, PLAYER_RADIUS, walls, y)) return false;
+  const dist = Math.hypot(x1 - x0, z1 - z0);
+  const steps = Math.max(1, Math.ceil(dist / 0.16));
+  for (let s = 1; s < steps; s++) {
+    const t = s / steps;
+    if (blocked(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t, PLAYER_RADIUS, walls, y)) return false;
+  }
+  return true;
+}
+
+// 先走到沙发北侧。后排过道太窄时，先横到侧面再绕到前面，不穿沙发。
+function routeToSeatFront(seat, x, z, y) {
+  const direct = routeArtSeat(built, x, z, y, seat.x, seat.nearZ, seat.y);
+  if (direct) return direct;
+  const hops = [
+    [seat.x - 1.25, seat.z + 0.9],
+    [seat.x + 1.25, seat.z + 0.9],
+  ];
+  let best = null;
+  let bestLen = Infinity;
+  for (let i = 0; i < hops.length; i++) {
+    const hx = hops[i][0];
+    const hz = hops[i][1];
+    const same = Math.hypot(hx - x, hz - z) < 0.2;
+    if (!same && !seatFrontClear(x, z, hx, hz, y)) continue;
+    const leg = routeArtSeat(built, hx, hz, y, seat.x, seat.nearZ, seat.y);
+    if (!leg || !leg.length) continue;
+    const path = same ? leg.slice() : [{ x, z, y }, { x: hx, z: hz, y }];
+    if (!same) {
+      for (let p = 1; p < leg.length; p++) path.push(leg[p]);
+    }
+    const len = pathMeters(path);
+    if (len < bestLen) {
+      bestLen = len;
+      best = path;
+    }
+  }
+  return best;
+}
+
+function beginArtSeat(index) {
+  if (!onArtStorey() || airborne) return false;
+  const seats = artSeats();
+  const seat = seats && seats[index];
+  if (!seat) return false;
+  if (seatRide.mode === "seated" && seatRide.index === index) return true;
+  if (!seatInReach(seat)) return false;
+  const leaving = seatRide.mode === "seated" || seatRide.mode === "pose";
+  const fromSeat = leaving ? seats[seatRide.index] : null;
+  const x0 = fromSeat ? fromSeat.x : px;
+  const z0 = fromSeat ? fromSeat.nearZ : pz;
+  const y0 = fromSeat ? fromSeat.y : py;
+  let path = routeToSeatFront(seat, x0, z0, y0);
+  if (!path || pathMeters(path) > SEAT_PATH_MAX) {
+    if (!alreadyInFront(seat, x0, z0, y0)) return false;
+    path = [];
+  }
+  seatRide.index = index;
+  seatRide.path = path;
+  seatRide.length = pathMeters(path);
+  seatRide.travel = 0;
+  seatRide.vx = 0;
+  seatRide.vz = 0;
+  seatRide.stuck = 0;
+  seatRide.retargets = 0;
+  seatRide.phase = 0;
+  seatRide.pitchBase = camera.rotation.x;
+  if (fromSeat && (Math.hypot(px - x0, pz - z0) > 0.12 || eyeLift < EYE - 0.05)) {
+    const face = yawAt(px, pz, x0, z0);
+    armSeatPose(x0, z0, EYE, face == null ? camera.rotation.y : face, seatRide.pitchBase, 0.78, path.length ? "walk" : "sit");
+    return true;
+  }
+  if (!path.length) {
+    armSitDown();
+    return true;
+  }
+  seatRide.mode = "walk";
+  seatRide.next = "";
+  syncSeatHint();
+  return true;
+}
+
+function leaveSeatScreen() {
+  if (!artHall) return;
+  artHall.stop();
+  if (artHall.dialogOpen()) artHall.closeDialog();
+}
+
+function beginStandUp() {
+  const seats = artSeats();
+  const seat = seats && seats[seatRide.index];
+  if (!seat) {
+    leaveSeatScreen();
+    clearArtSeat();
+    return;
+  }
+  leaveSeatScreen();
+  armSeatPose(seat.x, seat.nearZ, EYE, 0, seatRide.pitchBase || camera.rotation.x, 0.82, "");
+}
+
+function onSeatKey() {
+  if (!built || !built.art) return false;
+  if (seatRide.mode === "seated") {
+    beginStandUp();
+    return true;
+  }
+  if (seatRide.mode === "pose") {
+    if (seatRide.next === "") return true;
+    if (seatRide.next === "seated" || eyeLift < EYE - 0.08) beginStandUp();
+    else clearArtSeat();
+    return true;
+  }
+  if (seatRide.mode === "walk") {
+    clearArtSeat();
+    return true;
+  }
+  if (insideLift() || !onArtStorey() || airborne) return false;
+  const seats = artSeats();
+  const aimed = pickArtSeat();
+  let index = -1;
+  if (aimed >= 0) {
+    if (!(seats && seatInReach(seats[artSeatAim]))) return false;
+    index = artSeatAim;
+  } else {
+    index = nearestArtSeat();
+  }
+  if (index < 0) return false;
+  return beginArtSeat(index);
+}
+
+function advanceArtSeat(dt) {
+  if (seatRide.mode === "pose") {
+    seatRide.t += dt;
+    const t = seatRide.dur > 0 ? seatRide.t / seatRide.dur : 1;
+    const u = smoother(t);
+    const drop = smoother(Math.max(0, (t - 0.18) / 0.82));
+    const sitting = seatRide.toEye < seatRide.fromEye - 0.02;
+    const moveU = sitting ? u : drop;
+    const eyeU = sitting ? drop : u;
+    px = seatRide.fromX + (seatRide.toX - seatRide.fromX) * moveU;
+    pz = seatRide.fromZ + (seatRide.toZ - seatRide.fromZ) * moveU;
+    eyeLift = seatRide.fromEye + (seatRide.toEye - seatRide.fromEye) * eyeU;
+    camera.rotation.y = seatRide.fromYaw + shortAngle(seatRide.fromYaw, seatRide.toYaw) * u;
+    const dip = Math.sin(Math.min(1, Math.max(0, t)) * Math.PI) * (sitting ? -0.16 : -0.08);
+    camera.rotation.x = seatRide.fromPitch + shortAngle(seatRide.fromPitch, seatRide.toPitch) * u + dip;
+    if (t < 1) {
+      syncSeatHint();
+      return;
+    }
+    px = seatRide.toX;
+    pz = seatRide.toZ;
+    eyeLift = seatRide.toEye;
+    camera.rotation.y = seatRide.toYaw;
+    camera.rotation.x = seatRide.toPitch;
+    const next = seatRide.next;
+    if (next === "seated" || next === "sit") {
+      if (next === "sit") {
+        armSitDown();
+        return;
+      }
+      seatRide.mode = "seated";
+      seatRide.path = null;
+      vx = 0;
+      vz = 0;
+    } else if (next === "walk" && seatRide.path && seatRide.path.length) {
+      seatRide.mode = "walk";
+      seatRide.travel = 0;
+      seatRide.stuck = 0;
+      seatRide.vx = 0;
+      seatRide.vz = 0;
+    } else {
+      clearArtSeat();
+      return;
+    }
+    syncSeatHint();
+    return;
+  }
+  if (seatRide.mode === "seated") {
+    const seats = artSeats();
+    const seat = seats && seats[seatRide.index];
+    if (seat) {
+      px = seat.x;
+      pz = seat.sitZ;
+      py = seat.y;
+    }
+    eyeLift = SIT_EYE;
+    eyeBob = 0;
+    vx = 0;
+    vz = 0;
+    syncSeatHint();
+    return;
+  }
+  if (seatRide.mode !== "walk") return;
+  sampleSeatPath(seatRide.travel + 0.42);
+  const dx = seatLookX - px;
+  const dz = seatLookZ - pz;
+  const dist = Math.hypot(dx, dz);
+  const face = dist > 0.05 ? yawAt(px, pz, seatLookX, seatLookZ) : null;
+  const yawGap = face == null ? 0 : Math.abs(shortAngle(camera.rotation.y, face));
+  const remain = Math.max(0, seatRide.length - seatRide.travel);
+  let want = SEAT_WALK;
+  if (seatRide.travel < 0.35) want *= Math.max(0.25, seatRide.travel / 0.35);
+  if (remain < 0.7) want *= Math.max(0.28, remain / 0.7);
+  if (yawGap > 0.7) want *= 0.25;
+  const turning = seatRide.travel < 0.04 && yawGap > 0.4;
+  if (turning) want = 0;
+  const rate = 1 - Math.exp(-dt * 9);
+  if (dist > 1e-4 && want > 0) {
+    seatRide.vx += ((dx / dist) * want - seatRide.vx) * rate;
+    seatRide.vz += ((dz / dist) * want - seatRide.vz) * rate;
+  } else {
+    seatRide.vx += (0 - seatRide.vx) * rate;
+    seatRide.vz += (0 - seatRide.vz) * rate;
+  }
+  const beforeX = px;
+  const beforeZ = pz;
+  const moved = movePlayer(px, pz, seatRide.vx * dt, seatRide.vz * dt, PLAYER_RADIUS, collide(), py);
+  px = moved.x;
+  pz = moved.z;
+  const stepped = Math.hypot(px - beforeX, pz - beforeZ);
+  seatRide.travel = closestTravel();
+  if (face != null) camera.rotation.y = dampAngle(camera.rotation.y, face, dt, turning ? 7 : 5.5);
+  const speed = Math.hypot(seatRide.vx, seatRide.vz);
+  if (speed > 0.25 && !turning) seatRide.phase += (dt * speed) / 0.62;
+  const bobGate = Math.min(1, speed / 0.9) * (remain < 0.45 ? remain / 0.45 : 1);
+  eyeBob = Math.sin(seatRide.phase * Math.PI * 2) * 0.02 * bobGate;
+  eyeLift = EYE;
+  if (want > 0.2 && stepped < 0.012) seatRide.stuck += dt;
+  else seatRide.stuck = 0;
+  if (seatRide.stuck > 0.55) {
+    seatRide.stuck = 0;
+    seatRide.retargets += 1;
+    if (seatRide.retargets > 2) {
+      clearArtSeat();
+      return;
+    }
+    const seats = artSeats();
+    const seat = seats && seats[seatRide.index];
+    if (!seat) {
+      clearArtSeat();
+      return;
+    }
+    const again = routeToSeatFront(seat, px, pz, py);
+    if (!again || pathMeters(again) > SEAT_PATH_MAX) {
+      if (alreadyInFront(seat, px, pz, py)) armSitDown();
+      else clearArtSeat();
+      return;
+    }
+    seatRide.path = again;
+    seatRide.length = pathMeters(again);
+    seatRide.travel = 0;
+    if (!again.length) armSitDown();
+    return;
+  }
+  if (remain < 0.1 && Math.hypot(seatRide.vx, seatRide.vz) < 0.45) armSitDown();
+  syncSeatHint();
+}
+
 function step(dt, now) {
   for (let f = 0; f < built.floors; f++) {
     const want = floorDoorWanted(f);
@@ -2125,6 +2741,7 @@ function step(dt, now) {
   }
   const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !visitorOut;
   document.body.classList.toggle("walking", locked);
+  const riding = seatBusy();
   if (!locked) {
     vx = 0;
     vz = 0;
@@ -2138,7 +2755,7 @@ function step(dt, now) {
       hoverEl.hidden = true;
     }
     placeVideoHover(false);
-  } else {
+  } else if (!riding) {
     planarBasis(lookSource(), fwd, right);
     let ix = 0;
     let iz = 0;
@@ -2163,8 +2780,25 @@ function step(dt, now) {
       hoverClock = now + 120;
       aimHover();
     }
+  } else {
+    vx = 0;
+    vz = 0;
+    if (now >= hoverClock) {
+      hoverClock = now + 120;
+      aimHover();
+    }
+  }
+  if (riding) advanceArtSeat(dt);
+  else {
+    eyeLift = EYE;
+    eyeBob = 0;
   }
   settleFeet(dt);
+  if (seatRide.mode === "seated") {
+    const seats = artSeats();
+    const seat = seats && seats[seatRide.index];
+    if (seat) py = seat.y;
+  }
   placeCamera();
   updatePlace();
   syncLiftHud();
@@ -2393,9 +3027,13 @@ function bind() {
     if (document.pointerLockElement !== view) return;
     const index = pickFrame();
     const robotDist = reception ? reception.pick(camera.position, lookDir, lookMin()) : -1;
+    const seatDist = pickArtSeat();
     const screenDist = artHall ? artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz }) : -1;
-    if (screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist)) artHall.open();
-    else if (robotDist >= 0 && robotDist < framePickDist) openGuestbook();
+    if (seatDist >= 0 && (screenDist < 0 || seatDist < screenDist) && (robotDist < 0 || seatDist < robotDist)) {
+      beginArtSeat(artSeatAim);
+    } else if (screenDist >= 0 && screenDist < framePickDist && (robotDist < 0 || screenDist < robotDist)) {
+      if (seatRide.mode === "seated") artHall.open();
+    } else if (robotDist >= 0 && robotDist < framePickDist) openGuestbook();
     else if (index >= 0) openFrame(index);
   });
   document.addEventListener("click", (event) => {
@@ -2480,6 +3118,7 @@ function bind() {
     if (event.code === "KeyF") {
       if (event.repeat) return;
       event.preventDefault();
+      if (onSeatKey()) return;
       onFloorKey();
       return;
     }

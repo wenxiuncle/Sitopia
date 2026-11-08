@@ -278,6 +278,282 @@ export function movePlayer(x, z, dx, dz, radius, walls, footY) {
   return { x, z };
 }
 
+// 从脚下走到观影台座位北侧。只在点座位或按 F 时走一次，不进每帧。
+// 格子沿着当前脚面爬楼梯，高度差过大或撞上沙发就不连。
+export function routeArtSeat(built, x0, z0, y0, x1, z1, y1) {
+  const art = built && built.art;
+  const stand = art && art.stand;
+  const span = stand && stand.span;
+  const inner = art && art.inner;
+  if (!span || !inner || !built.walls) return null;
+  const floors = built.floors;
+  const yLo = Math.min(y0, y1, span.base) - 0.5;
+  const yHi = Math.max(y0, y1, span.deckY) + 2.4;
+  const bin = 1.4;
+  const bins = new Map();
+  const all = built.walls;
+  let minX = Math.min(x0, x1, span.west0) - 1.4;
+  let maxX = Math.max(x0, x1, span.east1) + 1.4;
+  let minZ = Math.min(z0, z1, span.zApproachN) - 1.4;
+  let maxZ = Math.max(z0, z1, span.zCanopyS, z0) + 1.2;
+  if (minX < inner.x0 - 0.6) minX = inner.x0 - 0.6;
+  if (maxX > inner.x1 + 0.6) maxX = inner.x1 + 0.6;
+  if (minZ < inner.z0 - 0.6) minZ = inner.z0 - 0.6;
+  const southCap = Math.max(inner.z1 + 0.4, z0 + 0.8);
+  if (maxZ > southCap) maxZ = southCap;
+  // 第三排平台两侧栏杆之间的空档比一格窄。相位若跟着玩家走，格子就会偏出空档，这一排走不上去。
+  // 把这一排平台中线钉成一行格子的中心。
+  const cell = 0.46;
+  const mouthZ = span.zTier0 + 2 * span.tierD + span.walkD * 0.5;
+  const zShift = ((mouthZ - minZ) % cell + cell) % cell;
+  if (zShift > 1e-6) minZ -= cell - zShift;
+  for (let i = 0; i < all.length; i++) {
+    const w = all[i];
+    const base = w.base || 0;
+    const top = base + (w.h == null ? WALL_H : w.h);
+    if (top < yLo || base > yHi) continue;
+    if (w.maxX < minX - 1 || w.minX > maxX + 1 || w.maxZ < minZ - 1 || w.minZ > maxZ + 1) continue;
+    const ix0 = Math.floor(w.minX / bin);
+    const ix1 = Math.floor(w.maxX / bin);
+    const iz0 = Math.floor(w.minZ / bin);
+    const iz1 = Math.floor(w.maxZ / bin);
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const key = ix + iz * 4096;
+        let list = bins.get(key);
+        if (!list) {
+          list = [];
+          bins.set(key, list);
+        }
+        list.push(w);
+      }
+    }
+  }
+  function blockedAt(x, z, footY) {
+    const radius = PLAYER_RADIUS + 0.1;
+    const ix0 = Math.floor((x - radius) / bin);
+    const ix1 = Math.floor((x + radius) / bin);
+    const iz0 = Math.floor((z - radius) / bin);
+    const iz1 = Math.floor((z + radius) / bin);
+    const y0 = footY;
+    const y1 = footY + 1.75;
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const list = bins.get(ix + iz * 4096);
+        if (!list) continue;
+        for (let i = 0; i < list.length; i++) {
+          const w = list[i];
+          const base = w.base || 0;
+          const top = base + (w.h == null ? WALL_H : w.h);
+          if (top <= y0 + 0.08 || base >= y1 - 0.02) continue;
+          if (x > w.minX - radius && x < w.maxX + radius && z > w.minZ - radius && z < w.maxZ + radius) return true;
+        }
+      }
+    }
+    return false;
+  }
+  const nx = Math.ceil((maxX - minX) / cell);
+  const nz = Math.ceil((maxZ - minZ) / cell);
+  if (nx < 2 || nz < 2 || nx * nz > 24000) return null;
+  const count = nx * nz;
+  const height = new Float32Array(count);
+  const stepCost = new Float32Array(count);
+  const parent = new Int32Array(count);
+  height.fill(NaN);
+  stepCost.fill(Infinity);
+  parent.fill(-1);
+  function at(ix, iz) {
+    return iz * nx + ix;
+  }
+  function footOf(x, z, hint) {
+    let g = groundAt(x, z, hint, floors);
+    if (g == null) g = groundAt(x, z, hint + 0.95, floors);
+    if (g == null) g = groundAt(x, z, hint - 0.95, floors);
+    if (g == null || Math.abs(g - hint) > 0.62) return null;
+    if (blockedAt(x, z, g)) return null;
+    return g;
+  }
+  function cellOf(x, z) {
+    let ix = Math.round((x - minX) / cell);
+    let iz = Math.round((z - minZ) / cell);
+    if (ix < 0) ix = 0;
+    else if (ix >= nx) ix = nx - 1;
+    if (iz < 0) iz = 0;
+    else if (iz >= nz) iz = nz - 1;
+    return at(ix, iz);
+  }
+  const start = cellOf(x0, z0);
+  let goal = cellOf(x1, z1);
+  const startY = footOf(x0, z0, y0);
+  const goalY = footOf(x1, z1, y1);
+  if (startY == null || goalY == null) return null;
+  if (Math.hypot(x1 - x0, z1 - z0) < 0.16 && Math.abs(goalY - startY) < 0.35) return [];
+  // 格子中心可能落进沙发。改停在能直视落点的最近空格，路径末尾再补精确落点。
+  {
+    const gix = goal % nx;
+    const giz = (goal / nx) | 0;
+    if (footOf(minX + gix * cell, minZ + giz * cell, goalY) == null) {
+      let best = -1;
+      let bestD = Infinity;
+      for (let dz = -3; dz <= 3; dz++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          if (!dx && !dz) continue;
+          const ix = gix + dx;
+          const iz = giz + dz;
+          if (ix < 0 || iz < 0 || ix >= nx || iz >= nz) continue;
+          const x = minX + ix * cell;
+          const z = minZ + iz * cell;
+          const g = footOf(x, z, goalY);
+          if (g == null) continue;
+          const dist = Math.hypot(x1 - x, z1 - z);
+          if (dist > 1.15) continue;
+          const steps = Math.max(1, Math.ceil(dist / 0.16));
+          let y = g;
+          let clear = true;
+          for (let s = 1; s < steps; s++) {
+            const t = s / steps;
+            const hit = footOf(x + (x1 - x) * t, z + (z1 - z) * t, y);
+            if (hit == null) {
+              clear = false;
+              break;
+            }
+            y = hit;
+          }
+          if (!clear || dist >= bestD) continue;
+          bestD = dist;
+          best = at(ix, iz);
+        }
+      }
+      if (best < 0) return null;
+      goal = best;
+    }
+  }
+  height[start] = startY;
+  stepCost[start] = 0;
+  const heap = [{ id: start, g: 0, f: Math.hypot(x0 - x1, z0 - z1) }];
+  function heapUp(i) {
+    const node = heap[i];
+    const s = node.f;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heap[p].f <= s) break;
+      heap[i] = heap[p];
+      i = p;
+    }
+    heap[i] = node;
+  }
+  function heapDown(i) {
+    const node = heap[i];
+    const s = node.f;
+    const n = heap.length;
+    for (;;) {
+      let c = i * 2 + 1;
+      if (c >= n) break;
+      if (c + 1 < n && heap[c + 1].f < heap[c].f) c += 1;
+      if (heap[c].f >= s) break;
+      heap[i] = heap[c];
+      i = c;
+    }
+    heap[i] = node;
+  }
+  function push(id, g, f) {
+    heap.push({ id, g, f });
+    heapUp(heap.length - 1);
+  }
+  function pop() {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length && last !== top) {
+      heap[0] = last;
+      heapDown(0);
+    }
+    return top;
+  }
+  const closed = new Uint8Array(count);
+  const dirs = [
+    [1, 0], [-1, 0], [0, 1], [0, -1],
+    [1, 1], [1, -1], [-1, 1], [-1, -1],
+  ];
+  let guard = 0;
+  let found = false;
+  while (heap.length && guard < 16000) {
+    guard += 1;
+    const node = pop();
+    const cur = node.id;
+    if (closed[cur] || node.g > stepCost[cur] + 1e-4) continue;
+    closed[cur] = 1;
+    if (cur === goal) {
+      found = true;
+      break;
+    }
+    const ix = cur % nx;
+    const iz = (cur / nx) | 0;
+    const cy = height[cur];
+    for (let d = 0; d < 8; d++) {
+      const sx = dirs[d][0];
+      const sz = dirs[d][1];
+      const jx = ix + sx;
+      const jz = iz + sz;
+      if (jx < 0 || jz < 0 || jx >= nx || jz >= nz) continue;
+      const id = at(jx, jz);
+      if (closed[id]) continue;
+      const x = minX + jx * cell;
+      const z = minZ + jz * cell;
+      const g = footOf(x, z, cy);
+      if (g == null) continue;
+      if (sx !== 0 && sz !== 0) {
+        const sideA = footOf(minX + (ix + sx) * cell, minZ + iz * cell, cy);
+        const sideB = footOf(minX + ix * cell, minZ + (iz + sz) * cell, cy);
+        if (sideA == null || sideB == null) continue;
+      }
+      const step = cell * Math.hypot(sx, sz) + Math.abs(g - cy) * 0.35;
+      const next = stepCost[cur] + step;
+      if (next >= stepCost[id]) continue;
+      height[id] = g;
+      stepCost[id] = next;
+      parent[id] = cur;
+      push(id, next, next + Math.hypot(x - x1, z - z1));
+    }
+  }
+  if (!found) return null;
+  const chain = [];
+  for (let id = goal; id >= 0; id = parent[id]) {
+    const ix = id % nx;
+    const iz = (id / nx) | 0;
+    chain.push({ x: minX + ix * cell, z: minZ + iz * cell, y: height[id] });
+    if (id === start) break;
+    if (chain.length > count) return null;
+  }
+  chain.reverse();
+  if (!chain.length) return null;
+  chain[0] = { x: x0, z: z0, y: startY };
+  chain.push({ x: x1, z: z1, y: goalY });
+  function sees(a, b) {
+    const dist = Math.hypot(b.x - a.x, b.z - a.z);
+    const steps = Math.max(1, Math.ceil(dist / 0.16));
+    let y = a.y;
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const x = a.x + (b.x - a.x) * t;
+      const z = a.z + (b.z - a.z) * t;
+      const g = footOf(x, z, y);
+      if (g == null) return false;
+      y = g;
+    }
+    return true;
+  }
+  const pulled = [chain[0]];
+  let anchor = 0;
+  for (let i = 1; i < chain.length; i++) {
+    const last = i === chain.length - 1;
+    if (!last && sees(chain[anchor], chain[i + 1])) continue;
+    pulled.push(chain[i]);
+    anchor = i;
+  }
+  if (pulled.length < 2) return [];
+  return pulled;
+}
+
 const SOLE_SKIN = 0.012;
 
 function soleClears(x, z, sole, floors) {
@@ -1708,7 +1984,12 @@ function buildViewingStand(floor, room, blocks) {
     for (let c = 0; c < 6; c++) {
       const x = origin + sofaW * 0.5 + c * pitch;
       const tx = x + sofaW * 0.5 + tableGap + tableW * 0.5;
-      seats.push({ x, y, z });
+      // 人面朝银幕（-Z）。坐点在坐垫上。走近点在沙发北沿外，不进这只碰撞盒。
+      seats.push({
+        x, y, z,
+        sitZ: z - 0.05,
+        nearZ: z - 1.1,
+      });
       tables.push({ x: tx, y, z: z - 0.04 });
       pushBlock(blocks, {
         minX: x - sofaW / 2,

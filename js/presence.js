@@ -192,6 +192,7 @@ export function mountPresence(options) {
   let showMap = false;
   let showOnline = false;
   let freshHint = false;
+  let tabHintHold = false;
   try {
     freshHint = !readConfirmed() && localStorage.getItem(TAB_HINT_KEY) !== "1";
   } catch {
@@ -1044,7 +1045,15 @@ export function mountPresence(options) {
     if (!tabHint) return;
     const opening = document.body.classList.contains("opening");
     const gating = nameGate && !nameGate.hidden;
-    tabHint.hidden = !(freshHint && !opening && !gating);
+    // 还没按过 Tab 时，坐下只留「按 F 离开座位」。起来后再把这条提示放回来。
+    tabHint.hidden = !(freshHint && !opening && !gating && !tabHintHold);
+  }
+
+  function setTabHintHold(held) {
+    const next = !!held;
+    if (next === tabHintHold) return;
+    tabHintHold = next;
+    syncTabHint();
   }
 
   function dismissTabHint() {
@@ -1485,6 +1494,7 @@ export function mountPresence(options) {
     },
     closeRoster() { setRoster(false); },
     syncTabHint,
+    setTabHintHold,
     dismiss(keepRoster) {
       if (!keepRoster) setRoster(false);
       if (corner.classList.contains("nav-open")) setDrawer(false);

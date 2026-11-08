@@ -699,25 +699,6 @@ export function createArtHall(art, screenMesh, hooks) {
     return y >= base - 0.45 && y < base + 16;
   }
 
-  // 观影台，加上台前一直到大屏幕的地面。人离开这一带，正片就停，画面回到没播过的黑屏。
-  function inAudience(player) {
-    if (!player || !onArtStorey(player.y)) return false;
-    const span = art.stand && art.stand.span;
-    const inner = art.inner;
-    const screen = art.screen;
-    if (!span || !inner || !screen) return false;
-    const x = player.x;
-    const z = player.z;
-    const y = player.y;
-    const pad = 0.42;
-    if (z >= screen.z - 0.35 && z <= span.zTier0 + pad && x >= inner.x0 - pad && x <= inner.x1 + pad) return true;
-    const side = (x >= span.west0 - pad && x <= span.west1 + pad) || (x >= span.east0 - pad && x <= span.east1 + pad);
-    const middle = x >= span.west1 - pad && x <= span.east0 + pad;
-    if ((side || middle) && z >= span.zApproachN - pad && z <= span.zCanopyN + pad) return true;
-    if (y >= span.deckY - 0.5 && z >= span.zCanopyN - pad && z <= span.zCanopyS + pad && x >= inner.x0 - pad && x <= inner.x1 + pad) return true;
-    return false;
-  }
-
   function placedInside(player) {
     if (!player) {
       insideFlag = false;
@@ -1144,6 +1125,8 @@ export function createArtHall(art, screenMesh, hooks) {
     resumeSec = 0;
     stamp = 0;
     duration = 0;
+    leaveAt = 0;
+    clearPictureDim();
     clearVideo();
     clearIframe();
     clearReflectFrame();
@@ -1325,6 +1308,7 @@ export function createArtHall(art, screenMesh, hooks) {
     resize,
     open,
     closeDialog,
+    stop,
     dialogOpen() {
       return !!(gate && !gate.hidden);
     },
@@ -1363,7 +1347,6 @@ export function createArtHall(art, screenMesh, hooks) {
     },
     tick(camera, player, ambience) {
       liveAmbience = ambience || liveAmbience;
-      if (mode !== "idle" && !inAudience(player)) stop();
       insideNow = placedInside(player);
       if (playbackEnded()) onClipDone();
       if (!insideNow) {
