@@ -2800,7 +2800,7 @@ function curtainMesh(curtain, outsideMat, insideMat) {
   return group;
 }
 
-// 半圆脚灯：上半深灰，下半暖光，地面一块椭圆光池。灯心朝厅内，不往墙面铺光。
+// 半圆脚灯：上半深灰，下半暖光。灯心朝厅内。地面只留着色器里的那一层光，不再另贴黄圆。
 function footlightRig(lamps) {
   if (!lamps || !lamps.length) return null;
   const n = lamps.length;
@@ -2808,16 +2808,17 @@ function footlightRig(lamps) {
   const capMat = new THREE.MeshBasicMaterial({ color: 0x32363c });
   const glowMat = new THREE.MeshBasicMaterial({ color: 0xffe2b4 });
   const ledMat = new THREE.MeshBasicMaterial({ color: 0xfffaf3 });
-  const poolMat = new THREE.MeshBasicMaterial({
-    color: 0xffc98a,
-    map: spotPoolTexture(),
-    transparent: true,
-    opacity: 0.4,
-    depthWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-  });
+  // 墙皮往镜头拉了 -2，楼板拉了 -1。脚灯贴在墙根，离远看这层偏移会把灯盖住。
+  // 灯要比这两层更靠近镜头。
+  function pullForward(mat) {
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -4;
+    mat.polygonOffsetUnits = -8;
+  }
+  pullForward(shellMat);
+  pullForward(capMat);
+  pullForward(glowMat);
+  pullForward(ledMat);
   const shellGeo = new THREE.CylinderGeometry(0.094, 0.094, 0.034, 28);
   shellGeo.rotateX(Math.PI / 2);
   shellGeo.translate(0, 0, 0.017);
@@ -2827,15 +2828,10 @@ function footlightRig(lamps) {
   glowGeo.translate(0, 0, 0.036);
   const ledGeo = new THREE.CircleGeometry(0.012, 12);
   ledGeo.translate(0, -0.016, 0.04);
-  const poolGeo = new THREE.CircleGeometry(1, 28);
   const shell = new THREE.InstancedMesh(shellGeo, shellMat, n);
   const cap = new THREE.InstancedMesh(capGeo, capMat, n);
   const glow = new THREE.InstancedMesh(glowGeo, glowMat, n);
   const led = new THREE.InstancedMesh(ledGeo, ledMat, n);
-  const pool = new THREE.InstancedMesh(poolGeo, poolMat, n);
-  const across = new THREE.Vector3();
-  const along = new THREE.Vector3();
-  const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < n; i++) {
     const lamp = lamps[i];
     const y = (lamp.y || 0) + (lamp.lift || 0);
@@ -2848,18 +2844,17 @@ function footlightRig(lamps) {
     cap.setMatrixAt(i, dummy.matrix);
     glow.setMatrixAt(i, dummy.matrix);
     led.setMatrixAt(i, dummy.matrix);
-    const fx = Math.sin(yaw);
-    const fz = Math.cos(yaw);
-    across.set(fz * 0.82, 0, -fx * 0.82);
-    // 椭圆沿朝向只伸出 0.7 米，远端停在墙皮内侧，不铺进墙和地面的交缝。
-    along.set(fx * 0.7, 0, fz * 0.7);
-    dummy.matrix.makeBasis(across, along, up);
-    dummy.matrix.setPosition(lamp.x + fx * 0.78, (lamp.y || 0) + 0.062, lamp.z + fz * 0.78);
-    pool.setMatrixAt(i, dummy.matrix);
   }
-  pool.renderOrder = 1;
+  const shellMesh = commit(shell);
+  const capMesh = commit(cap);
+  const glowMesh = commit(glow);
+  const ledMesh = commit(led);
+  shellMesh.renderOrder = 2;
+  capMesh.renderOrder = 2;
+  glowMesh.renderOrder = 2;
+  ledMesh.renderOrder = 2;
   const root = new THREE.Group();
-  root.add(commit(shell), commit(cap), commit(glow), commit(led), commit(pool));
+  root.add(shellMesh, capMesh, glowMesh, ledMesh);
   return root;
 }
 
@@ -3085,48 +3080,37 @@ function loungeMeshes(root, stand, mats) {
     const lz = leg % 2 === 0 ? -0.15 : 0.15;
     tableAt(table, lx, 0.2, lz);
   });
-  if (!mats.vase) return;
-  addStandPart(root, new THREE.CylinderGeometry(0.055, 0.062, 0.018, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.456, 0));
-  addStandPart(root, new THREE.CylinderGeometry(0.048, 0.062, 0.14, 14), mats.vase, tn, (i) => tableAt(i, 0, 0.53, 0));
-  addStandPart(root, new THREE.CylinderGeometry(0.026, 0.04, 0.07, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.63, 0));
-  addStandPart(root, new THREE.CylinderGeometry(0.046, 0.03, 0.02, 12), mats.vase, tn, (i) => tableAt(i, 0, 0.672, 0));
-  const blooms = [
-    { x: 0.045, y: 0.8, z: 0.02, s: 1.05 },
-    { x: -0.04, y: 0.84, z: -0.015, s: 0.95 },
-    { x: 0.01, y: 0.88, z: -0.04, s: 0.9 },
-    { x: -0.015, y: 0.78, z: 0.045, s: 0.88 },
-  ];
-  const flowers = mats.flowers || [];
-  for (let b = 0; b < blooms.length; b++) {
-    const bloom = blooms[b];
-    const flower = flowers[b] || mats.vase;
-    if (mats.leaf) {
-      addStandPart(root, new THREE.CylinderGeometry(0.006, 0.006, 0.16, 5), mats.leaf, tn, (i) => {
-        tableAt(i, bloom.x, bloom.y - 0.1, bloom.z);
-      });
-    }
-    addStandPart(root, new THREE.SphereGeometry(0.038, 8, 6), flower, tn, (i) => {
-      dummy.scale.set(bloom.s, bloom.s * 0.92, bloom.s);
-      tableAt(i, bloom.x, bloom.y, bloom.z);
-    });
-  }
-  if (!mats.leaf) return;
-  const leaves = [
-    { x: 0.07, y: 0.74, z: 0, s: 1.2 },
-    { x: -0.06, y: 0.76, z: 0.03, s: 1 },
-    { x: 0.02, y: 0.73, z: -0.06, s: 0.9 },
-  ];
-  for (let leaf = 0; leaf < leaves.length; leaf++) {
-    const bit = leaves[leaf];
-    addStandPart(root, new THREE.SphereGeometry(0.028, 7, 5), mats.leaf, tn, (i) => {
-      dummy.scale.set(bit.s, 0.45, bit.s * 0.7);
-      tableAt(i, bit.x, bit.y, bit.z);
-    });
-  }
+}
+
+// 观影台地毯。斜纹按世界坐标铺，踏步和台面接得上。只画朝上的面，立面仍是纯色。
+function attachCarpetWeave(material) {
+  if (!material || material.userData.carpetWeave) return;
+  material.userData.carpetWeave = true;
+  const prevCompile = material.onBeforeCompile;
+  const prevKey = material.customProgramCacheKey;
+  material.onBeforeCompile = (shader) => {
+    if (prevCompile) prevCompile(shader);
+    const next = shader.fragmentShader.replace(
+      "outgoingLight *= sunTint * shade;",
+      `outgoingLight *= sunTint * shade;
+      if (vSunN.y > 0.55) {
+        float weave = vSunW.x * 4.2 + vSunW.z * 5.6;
+        float fw = fwidth(weave);
+        float band = fract(weave);
+        float ridge = smoothstep(0.02 - fw, 0.22 + fw, band) * (1.0 - smoothstep(0.62 - fw, 0.92 + fw, band));
+        vec3 groove = outgoingLight * vec3(0.66, 0.62, 0.52);
+        outgoingLight = mix(groove, outgoingLight, ridge);
+      }`,
+    );
+    if (next === shader.fragmentShader) throw new Error("观影台地毯纹没有对上");
+    shader.fragmentShader = next;
+  };
+  material.customProgramCacheKey = () => (prevKey ? prevKey() : "carpet") + "-weave-1";
 }
 
 function viewingStandMeshes(stand, mats) {
   if (!stand || !mats) return null;
+  attachCarpetWeave(mats.carpet);
   const root = new THREE.Group();
   root.name = "viewing-stand";
   const boxes = [

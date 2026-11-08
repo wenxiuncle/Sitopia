@@ -1565,6 +1565,21 @@ function buildViewingStand(floor, room, blocks) {
     };
   }
 
+  // 快跑一帧约 0.56 米（museum.js 的 SPRINT * MAX_STEP），身体半径再向前探。
+  // 裙墙顶沿坡让过这段距离。脚还在下面时，墙顶不高于脚面，上台阶不会被绊住。
+  const SPRINT_REACH = 0.56 + PLAYER_RADIUS;
+  function pushSkirt(x0, x1, z0, z1, solidTop) {
+    if (solidTop <= base + 0.02) return;
+    pushBlock(blocks, {
+      minX: x0,
+      maxX: x1,
+      minY: base,
+      maxY: solidTop,
+      minZ: z0,
+      maxZ: z1,
+    });
+  }
+
   function addSteps(x0, x1, z0, z1, y0, y1, innerSign) {
     const rise = y1 - y0;
     const run = z1 - z0;
@@ -1572,6 +1587,7 @@ function buildViewingStand(floor, room, blocks) {
     const n = Math.max(2, Math.round(rise / 0.17));
     const riser = rise / n;
     const tread = run / n;
+    const slope = rise / run;
     flights.push({ minX: x0, maxX: x1, z0: z0 - 0.03, z1: z1 + 0.03, y0, y1 });
     const ix0 = x0 + 0.05;
     const ix1 = x1 - 0.05;
@@ -1587,26 +1603,19 @@ function buildViewingStand(floor, room, blocks) {
       }
       addBox(mass, ix0, ix1, treadBottom, top - 0.035, za, zb);
       addBox(carpet, ix0, ix1, top - 0.042, top, za, zb);
-      // 快跑一帧能跨过大约半米，脚还停在下一级。裙墙顶要低于这只脚，才不会被墙挡住。
-      const solidTop = prev - 0.7;
-      if (solidTop > base + 0.35) {
-        pushBlock(blocks, {
-          minX: x0,
-          maxX: x1,
-          minY: base,
-          maxY: solidTop,
-          minZ: za,
-          maxZ: zb,
-        });
-      }
+      const along = s * tread;
+      const climbed = along > SPRINT_REACH ? slope * (along - SPRINT_REACH) : 0;
+      pushSkirt(wall.minX, wall.maxX, za, zb, y0 + climbed);
     }
   }
 
-  function addLanding(x0, x1, z0, z1, y, innerSign) {
+  function addLanding(x0, x1, z0, z1, y, innerSign, slope) {
     const wall = stairWallX(x0, x1, innerSign);
     decks.push({ minX: x0, maxX: x1, minZ: z0, maxZ: z1, y });
     addBox(mass, wall.minX, wall.maxX, floorY, y - 0.035, z0, z1);
     addBox(carpet, x0, x1, y - 0.042, y, z0, z1);
+    const lag = Math.max(0.12, (slope || 0) * SPRINT_REACH);
+    pushSkirt(wall.minX, wall.maxX, z0, z1, y - lag);
   }
 
   for (let i = 0; i < rows; i++) {
@@ -1646,6 +1655,8 @@ function buildViewingStand(floor, room, blocks) {
 
   function buildSide(x0, x1, outerX, innerX, innerSign) {
     const yFirst = base + lifts[0];
+    const approach = zTier0 - zApproachN;
+    let climbSlope = approach > 0 ? (yFirst - base) / approach : 0;
     addSteps(x0, x1, zApproachN, zTier0, base, yFirst, innerSign);
     addBalustrade(outerX, base, zApproachN, outerX, yFirst, zTier0);
     addBalustrade(innerX, base, zApproachN, innerX, yFirst, zTier0);
@@ -1655,10 +1666,12 @@ function buildViewingStand(floor, room, blocks) {
       const y = base + lifts[i];
       const top = i === rows - 1;
       const zLand = top ? zS : zN + walkD;
-      addLanding(x0, x1, zN, zLand, y, innerSign);
+      addLanding(x0, x1, zN, zLand, y, innerSign, climbSlope);
       addBalustrade(outerX, y, zN, outerX, y, zLand);
       if (top) continue;
       const yNext = base + lifts[i + 1];
+      const stepRun = zS - zLand;
+      climbSlope = stepRun > 0 ? (yNext - y) / stepRun : climbSlope;
       addSteps(x0, x1, zLand, zS, y, yNext, innerSign);
       addBalustrade(outerX, y, zLand, outerX, yNext, zS);
       addBalustrade(innerX, y, zLand, innerX, yNext, zS);

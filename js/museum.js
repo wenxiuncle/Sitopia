@@ -3494,25 +3494,17 @@ async function buildScene(data, arrange) {
       post: lit(0x8d8882, "room"),
       mass: lit(0x2a2c30, "artWall"),
       soffit: lit(0x32343a, "artWall"),
-      carpet: lit(0x3a3e44, "artWall", {
+      carpet: lit(0x2a2f40, "artWall", {
         polygonOffset: true,
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
       }),
       rail: lit(0x5c6168, "artWall"),
-      leather: lit(0x4e535a, "artWall"),
-      cushion: lit(0x6a6f76, "artWall"),
-      pillow: lit(0x62666e, "artWall"),
+      leather: lit(0x5a2430, "artWall"),
+      cushion: lit(0x743844, "artWall"),
+      pillow: lit(0x8a5160, "artWall"),
       bronze: lit(0x1c1e22, "artWall"),
       stone: lit(0x8a8f96, "artWall"),
-      vase: lit(0xf4f0ea, "artWall"),
-      leaf: lit(0x3e6b46, "artWall"),
-      flowers: [
-        lit(0xd24b4b, "artWall"),
-        lit(0xe7c14a, "artWall"),
-        lit(0xf7f3ea, "artWall"),
-        lit(0xd46a8c, "artWall"),
-      ],
     });
     hold(artRig.root);
     artSky = artRig.sky;
