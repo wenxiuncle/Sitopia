@@ -2855,7 +2855,7 @@ const fpsReadout = document.getElementById("fps");
 const lagReadout = document.getElementById("lag");
 let fpsCount = 0;
 let fpsStamp = 0;
-let lagBusy = false;
+let lagText = "";
 let lagNext = 0;
 
 function noteFps(now) {
@@ -2869,33 +2869,20 @@ function noteFps(now) {
   fpsStamp = now;
 }
 
-function noteLag(now) {
-  if (!lagReadout || lagBusy || document.hidden || now < lagNext) return;
-  lagNext = now + 2000;
-  lagBusy = true;
-  const url = new URL(location.href);
-  url.hash = "";
-  url.searchParams.set("_lag", String(Math.floor(now)));
-  const start = performance.now();
-  fetch(url, { method: "HEAD", cache: "no-store" })
-    .then((res) => {
-      if (res.ok) return null;
-      if (res.status !== 405 && res.status !== 501) throw new Error(String(res.status));
-      return fetch(url, { cache: "no-store" }).then((got) => {
-        if (!got.ok) throw new Error(String(got.status));
-        return got.arrayBuffer();
-      });
-    })
-    .then(() => {
-      const ms = Math.max(0, Math.round(performance.now() - start));
-      lagReadout.textContent = "延迟 " + ms + " ms";
-    })
-    .catch(() => {
-      lagReadout.textContent = "延迟 –";
-    })
-    .finally(() => {
-      lagBusy = false;
-    });
+// 这个数字是联机延迟：大厅 WebSocket 一个来回的时间，由 js/presence.js 每 2.5 秒量一次。
+// 以前这里是对本站打一个不可缓存的 HEAD，量的是浏览器到 Cloudflare 边缘的往返——
+// 既是另一件事，又每隔两秒往源站打一次请求。没连上大厅显示破折号，单机模式不显示。
+function noteRtt(now) {
+  if (!lagReadout || document.hidden || now < lagNext) return;
+  lagNext = now + 500;
+  const solo = presence ? presence.solo() : false;
+  const live = presence ? presence.linked() : false;
+  const ms = presence ? presence.rtt() : 0;
+  const text = solo ? "" : (live && ms > 0 ? "延迟 " + ms + " ms" : "延迟 —");
+  if (text === lagText) return;
+  lagText = text;
+  lagReadout.textContent = text;
+  lagReadout.hidden = !text;
 }
 
 function makeBeacons(roofs) {
@@ -2971,7 +2958,7 @@ function animate(now) {
   // 落地后的第一帧先揭开。update 在这一帧的 render 之前，人已经在真实位置。
   if (hallVeiled) veilHallBodies(false);
   noteFps(now);
-  noteLag(now);
+  noteRtt(now);
   paintBeacons(now);
   const dt = Math.min(MAX_STEP, seconds(now));
   step(dt, now);

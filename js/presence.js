@@ -210,6 +210,21 @@ export function mountPresence(options) {
   let sawHall = false;
   let wasInHall = false;
   let musicTimer = 0;
+  // 联机延迟：每 2.5 秒往大厅发一个 rtt 探针，服务端原样回，往返时间就是读数。
+  let rttMs = 0;
+  let rttAt = 0;
+  let rttNext = 0;
+  let rttSeq = 0;
+  const rttPending = new Map();
+  const RTT_EVERY = 2500;
+
+  function resetRtt() {
+    rttMs = 0;
+    rttAt = 0;
+    rttNext = 0;
+    rttSeq = 0;
+    rttPending.clear();
+  }
 
   corner.hidden = false;
 
@@ -622,6 +637,17 @@ export function mountPresence(options) {
   }
 
   function onMessage(msg) {
+    if (msg.t === "rtt") {
+      // 服务端原样退回的探针，用本机时间算往返，不掺两边的时钟差。
+      const at = rttPending.get(msg.n);
+      if (at !== undefined) {
+        rttPending.delete(msg.n);
+        const got = performance.now();
+        rttMs = Math.max(0, Math.round(got - at));
+        rttAt = got;
+      }
+      return;
+    }
     if (msg.t === "ping") {
       send({ t: "pong" });
       if (msg.music && onMusic) onMusic(msg.music);
@@ -820,6 +846,7 @@ export function mountPresence(options) {
     const address = session.address;
     stopHttp(session);
     linked = false;
+    resetRtt();
     if (id) beaconLeave(address, id);
     online.textContent = solo ? "单人" : (confirmed ? "未连接" : "先起个名字");
     window.clearTimeout(retry);
@@ -918,6 +945,7 @@ export function mountPresence(options) {
       if (socket !== ws) return;
       socket = null;
       linked = false;
+      resetRtt();
       if (stillKicked()) {
         online.textContent = "已请出";
         return;
@@ -1150,6 +1178,7 @@ export function mountPresence(options) {
   function dropLink() {
     window.clearTimeout(retry);
     linked = false;
+    resetRtt();
     const ws = socket;
     socket = null;
     if (ws) {
@@ -1457,6 +1486,7 @@ export function mountPresence(options) {
     },
     holdHall(on) { crowd.holdHall(on); },
     linked() { return linked; },
+    rtt() { return linked && socketLive() ? rttMs : 0; },
     solo() { return solo; },
     myId() { return me ? me.id : ""; },
     name() { return myName || ""; },
@@ -1516,6 +1546,20 @@ export function mountPresence(options) {
         selfBubbleUntil = 0;
       }
       if (!linked || document.hidden) return;
+      // 只有走 WebSocket 时才量。HTTP 轮询那条路一次往返好几秒，量出来没有意义。
+      if (now >= rttNext) {
+        rttNext = now + RTT_EVERY;
+        if (socketLive()) {
+          rttSeq += 1;
+          rttPending.set(rttSeq, performance.now());
+          for (const key of rttPending.keys()) {
+            if (key <= rttSeq - 4) rttPending.delete(key);
+          }
+          send({ t: "rtt", n: rttSeq });
+        }
+        // 七秒没有回音就作废，别把上一次的数字一直挂在屏幕上。
+        if (rttMs && now - rttAt > 7000) rttMs = 0;
+      }
       const turn = Math.atan2(Math.sin(pose.yaw - sentYaw), Math.cos(pose.yaw - sentYaw));
       const moved = !Number.isFinite(sentX)
         || Math.hypot(pose.x - sentX, pose.z - sentZ) > 0.03

@@ -1100,6 +1100,11 @@ export function onClientMessage(people, log, person, msg, now, room) {
     return { close: false, out };
   }
   person.seen = now;
+  if (msg.t === "rtt") {
+    // 探针原样退回，让页面用本机时间算一个来回。不带别的字段，也不广播。
+    if (Number.isFinite(msg.n)) out.push({ who: "self", obj: { t: "rtt", n: msg.n } });
+    return { close: false, out };
+  }
   if (msg.t === "hi") {
     const dropped = adoptSeat(people, person, msg.seat);
     for (let i = 0; i < dropped.length; i++) {
