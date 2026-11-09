@@ -3,21 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>趣站博物馆</title>
+  <title>趣站博物馆｜可以走进去逛的 3D 网址博物馆</title>
+  <meta name="description" content="趣站博物馆是有趣网址之家的 3D 虚拟展厅：像玩游戏一样在展厅里走动，点开画框就能读 2476 个精选网站的原文。免费在线玩，无需安装。">
+  <meta name="keywords" content="趣站博物馆,有趣网址,3D博物馆,虚拟展厅,网址导航,有趣网站">
+  <meta name="author" content="有趣网址之家">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="https://sitopia.youquhome.com/">
+  <meta name="theme-color" content="#070b16">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="趣站博物馆">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:title" content="趣站博物馆｜可以走进去逛的 3D 网址博物馆">
+  <meta property="og:description" content="像玩游戏一样在 3D 展厅里走动，点开画框就能读 2476 个精选网站的原文。免费在线玩，无需安装。">
+  <meta property="og:url" content="https://sitopia.youquhome.com/">
+  <meta property="og:image" content="https://sitopia.youquhome.com/og-cover.jpg">
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="趣站博物馆：深色展厅里挂着金色画框，写着可以走进去逛的 3D 网址博物馆">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="趣站博物馆｜可以走进去逛的 3D 网址博物馆">
+  <meta name="twitter:description" content="像玩游戏一样在 3D 展厅里走动，点开画框就能读 2476 个精选网站的原文。免费在线玩，无需安装。">
+  <meta name="twitter:image" content="https://sitopia.youquhome.com/og-cover.jpg">
+  <meta name="twitter:image:alt" content="趣站博物馆：可以走进去逛的 3D 网址博物馆">
+
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://img.youquhome.com" crossorigin>
+  <link rel="dns-prefetch" href="//img.youquhome.com">
+  <link rel="dns-prefetch" href="//lobby.youquhome.com">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://sitopia.youquhome.com/#website",
+        "url": "https://sitopia.youquhome.com/",
+        "name": "趣站博物馆",
+        "alternateName": "Sitopia Museum",
+        "description": "有趣网址之家的 3D 虚拟展厅：在展厅里走动，点开画框阅读 2476 个精选网站的原文。",
+        "inLanguage": "zh-CN",
+        "about": { "@id": "https://sitopia.youquhome.com/#game" },
+        "publisher": { "@id": "https://sitopia.youquhome.com/#organization" }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://sitopia.youquhome.com/#organization",
+        "name": "有趣网址之家",
+        "url": "https://youquhome.com/",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://sitopia.youquhome.com/icon-512.png",
+          "width": 512,
+          "height": 512
+        }
+      },
+      {
+        "@type": "VideoGame",
+        "@id": "https://sitopia.youquhome.com/#game",
+        "name": "趣站博物馆",
+        "url": "https://sitopia.youquhome.com/",
+        "description": "一个可以走进去逛的 3D 网址博物馆：像玩游戏一样在展厅里走动，点开画框阅读 2476 个精选网站的原文。",
+        "image": "https://sitopia.youquhome.com/og-cover.jpg",
+        "applicationCategory": "Game",
+        "operatingSystem": "Web",
+        "gamePlatform": "Web browser",
+        "inLanguage": "zh-CN",
+        "isAccessibleForFree": true,
+        "author": { "@id": "https://sitopia.youquhome.com/#organization" },
+        "publisher": { "@id": "https://sitopia.youquhome.com/#organization" },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "CNY"
+        }
+      }
+    ]
+  }
+  </script>
+
   <link rel="stylesheet" href="museum.css">
+  <noscript><style>#loading-foot{display:none}</style></noscript>
 </head>
 <body class="opening">
-  <canvas id="view" tabindex="-1"></canvas>
-  <div id="loading" role="status">
+  <canvas id="view" tabindex="-1" aria-label="趣站博物馆 3D 虚拟展厅">趣站博物馆是一个可以走进去逛的 3D 网址博物馆，展出 2476 个有趣网站。</canvas>
+  <div id="loading">
     <div id="loading-sky" aria-hidden="true">
       <div class="load-earth"></div>
       <div class="load-stars"></div>
     </div>
     <div id="loading-center">
-      <p id="loading-title">趣站博物馆</p>
-      <p id="loading-credit">有趣网址之家 出品</p>
+      <h1 id="loading-title">趣站博物馆</h1>
+      <p id="loading-credit">由 <a href="https://youquhome.com/">有趣网址之家</a> 出品</p>
+      <p id="loading-intro">一个可以走进去逛的 3D 网址博物馆：2476 个有趣网站挂在画框里，走近、点开，就能读原文。</p>
+      <p id="loading-hint">免费在线玩 · 无需安装 · WASD / 方向键走动，鼠标转视角</p>
+      <noscript>
+        <p id="loading-nojs">当前浏览器没有启用 JavaScript。3D 展厅需要 JavaScript 才能进入；你可以先<a href="https://youquhome.com/" style="color:#ffe6a8">去有趣网址之家</a>浏览全部网站。</p>
+      </noscript>
       <div id="loading-foot">
-        <p id="loading-label">正在布置展厅…</p>
+        <p id="loading-label" role="status">正在布置展厅…</p>
         <div id="loading-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="6" aria-label="布置进度">
           <div id="loading-track"><span id="loading-bar"></span></div>
         </div>
@@ -34,7 +124,7 @@
   <p id="lift-hint" hidden></p>
   <div id="lower">
   <div id="boot" hidden>
-    <h1>欢迎来到趣站博物馆</h1>
+    <h2>欢迎来到趣站博物馆</h2>
     <p class="boot-sub">有趣网址之家荣誉出品</p>
     <p>这里是有趣网址之家3D虚拟展厅，你可以在这个三维空间里走动，像参观博物馆一样浏览各种有趣的网站；走近画框单击左键即可看到趣站的介绍和链接；馆内左侧有电梯，可以快速到达指定层，虽然可能走楼梯更快。。。如果有多人在线，还可以和小伙伴一起浏览、聊天。</p>
     <ol id="legend"></ol>

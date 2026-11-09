@@ -1,0 +1,28 @@
+{
+  "id": "/",
+  "name": "趣站博物馆",
+  "short_name": "趣站博物馆",
+  "description": "一个可以走进去逛的 3D 网址博物馆：2476 个有趣网站挂在画框里，走近、点开，就能读原文。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#070b16",
+  "theme_color": "#070b16",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

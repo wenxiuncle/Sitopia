@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sitopia.youquhome.com/sitemap.xml
