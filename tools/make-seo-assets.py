@@ -351,7 +351,8 @@ def make_og() -> None:
     draw_spaced(draw, "可以走进去逛的 3D 网址博物馆", sub_font, (226, 208, 176), 600, 494, 1.5)
 
     small_font = font(SANS, 17)
-    draw_spaced(draw, "2476 个有趣网站 · 4 个展厅 · 免费在线玩", small_font, (166, 151, 125), 600, 552, 1)
+    # 数量由清单决定，分享图里写死会过期，所以这里只写不会变的部分。
+    draw_spaced(draw, "4 个展厅 · 免费在线玩", small_font, (166, 151, 125), 600, 552, 1)
 
     # a thin gold rule under the title block
     draw.line((470, 600, 730, 600), fill=(212, 170, 86, 90), width=1)

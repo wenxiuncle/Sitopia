@@ -225,6 +225,9 @@ body.opening #seat-hint {
   text-indent: 0.12em;
 }
 
+/* 展品数跟着清单变，等宽数字让换数字时这一行不跟着跳。 */
+#loading-count { font-variant-numeric: tabular-nums; }
+
 #loading-nojs {
   max-width: 600px;
   margin: 18px auto 0;

@@ -98,6 +98,7 @@ const params = new URLSearchParams(location.search);
 const view = document.getElementById("view");
 const loading = document.getElementById("loading");
 const loadingLabel = document.getElementById("loading-label");
+const loadingCount = document.getElementById("loading-count");
 const loadingBar = document.getElementById("loading-bar");
 const loadingMeter = document.getElementById("loading-meter");
 const boot = document.getElementById("boot");
@@ -402,6 +403,28 @@ function showFatal(message) {
   if (loadingLabel) loadingLabel.textContent = message;
   else loading.textContent = message;
 }
+
+// 加载页上的展品数就是馆里的展品数，不在页面里写死。先问 data/refresh.json 里那一行
+// 小字（和清单在同一个提交里更新），清单读到了再用清单本身对一次。以后抓来新展品，
+// 这里不用再手改。
+function showExhibitCount(value) {
+  const count = Math.floor(Number(value));
+  if (!loadingCount || !(count > 0) || loadingCount.textContent === String(count)) return;
+  loadingCount.textContent = String(count);
+}
+
+function askExhibitCount() {
+  try {
+    fetch("data/refresh.json", { cache: "no-store", signal: AbortSignal.timeout(4000) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => showExhibitCount(data && data.count))
+      .catch(() => {});
+  } catch {
+    // 老浏览器没有 AbortSignal.timeout 就算了，等清单读到时再对一次数字。
+  }
+}
+
+askExhibitCount();
 
 resize();
 renderer.clear();
@@ -5084,6 +5107,7 @@ fetch("data/sites.json")
     return res.json();
   })
   .then((data) => {
+    showExhibitCount(Array.isArray(data.sites) ? data.sites.length : data.count);
     setLoadProgress(LOAD_LIST);
     loadCeil = 0.13;
     return yieldPaint().then(() => loadArrange().then((arrange) => ({ data, arrange })));
