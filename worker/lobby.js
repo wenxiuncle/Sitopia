@@ -108,6 +108,18 @@ function json(body, status, request) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+// 门户取人数用的只读回包。10 秒边缘缓存写在 Cache API 里，
+// 这里只负责把头和身体摆正，别让 /lobby/count 被当成 no-store。
+function countReply(body) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "public, max-age=10",
+    },
+  });
+}
+
 async function readJson(request, limit) {
   const text = await request.text();
   if (text.length > (limit || 2048)) return null;
@@ -679,6 +691,10 @@ export class SitopiaLobby extends DurableObject {
       view.videos = videoPack(this.videos);
       return json(view, 200, request);
     }
+    // 只读人数：口径和馆内右上角那个数字一致（namedCount），不占座、不广播、不进名单。
+    if (url.pathname === "/lobby/count" && request.method === "GET") {
+      return json({ online: namedCount(this.roster()) }, 200);
+    }
     if (url.pathname === "/lobby/beat") {
       if (request.method !== "POST") return new Response("method", { status: 405 });
       return this.beat(request);
@@ -910,6 +926,28 @@ export default {
       if (!allow(request.headers.get("Origin"))) return new Response("forbidden", { status: 403 });
       const stub = env.LOBBY.get(env.LOBBY.idFromName("hall"));
       return stub.fetch(request);
+    }
+    // 公开只读人数，给门户的徽章用。不查 Origin：这条不是给浏览器跨域调的，
+    // 门户由服务端来取；10 秒边缘缓存兜住重复问。
+    if (url.pathname === "/lobby/count") {
+      if (request.method !== "GET") return new Response("method", { status: 405 });
+      const key = new Request(url.origin + "/lobby/count", { method: "GET" });
+      try {
+        const hit = await caches.default.match(key);
+        if (hit) return countReply(await hit.text());
+      } catch {
+        /* 缓存不可用就直接问。 */
+      }
+      const stub = env.LOBBY.get(env.LOBBY.idFromName("hall"));
+      const live = await stub.fetch(key);
+      if (!live.ok) return new Response("error", { status: 502 });
+      const body = await live.text();
+      try {
+        await caches.default.put(key, countReply(body));
+      } catch {
+        /* 记不住就下次再问。 */
+      }
+      return countReply(body);
     }
     if (url.pathname === "/lobby/beat" || url.pathname === "/lobby/leave") {
       if (request.method === "OPTIONS") return preflight(request);

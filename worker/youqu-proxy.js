@@ -250,6 +250,7 @@ export default {
     if (url.pathname === "/bili-duration") return biliDuration(request, url);
     if (
       url.pathname === "/lobby" ||
+      url.pathname === "/lobby/count" ||
       url.pathname === "/lobby/beat" ||
       url.pathname === "/lobby/leave" ||
       url.pathname === "/lobby/music" ||

@@ -2,6 +2,10 @@ name = "sitopia-lobby"
 main = "worker/lobby.js"
 compatibility_date = "2026-09-24"
 
+# 房间 Worker 和反代不在同一个 Cloudflare 账号上。账号写死在这里，
+# 本机同时登录两个账号时 npx wrangler deploy 也不必再问去哪。
+account_id = "04bc6bb60f89d062ab7e8aabdae77c6d"
+
 [[durable_objects.bindings]]
 name = "LOBBY"
 class_name = "SitopiaLobby"
