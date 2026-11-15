@@ -436,8 +436,19 @@ setLoadProgress(0.02);
 requestAnimationFrame(pumpLoad);
 
 function resize() {
-  const w = window.innerWidth;
-  const h = Math.max(1, window.innerHeight);
+  const touch = document.body.classList.contains("touch-play");
+  let w = touch ? view.clientWidth : window.innerWidth;
+  let h = touch ? view.clientHeight : window.innerHeight;
+  if (!w) w = window.innerWidth;
+  if (!h) h = window.innerHeight;
+  if (touch) {
+    const rect = view.getBoundingClientRect();
+    const root = document.documentElement;
+    root.style.setProperty("--aim-x", (rect.left + rect.width / 2) + "px");
+    root.style.setProperty("--aim-y", (rect.top + rect.height / 2) + "px");
+  }
+  w = Math.round(w);
+  h = Math.max(1, Math.round(h));
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
@@ -2798,39 +2809,11 @@ function openAway(url) {
   link.remove();
 }
 
-// 站到画框正面、并且朝着这面墙时才算出按钮。视线已经对准某一幅时，用那一幅。
 function frameBeforePlayer() {
-  if (!built || !framesReady) return -1;
-  const floor = playerFloor();
-  if (hoverIndex >= 0 && framePickDist < 3.2) {
-    const aimed = built.frames[hoverIndex];
-    if (aimed && aimed.floor === floor) return hoverIndex;
-  }
-  planarBasis(camera, fwd, right);
-  const eye = py + EYE;
-  const frames = built.frames;
-  let best = -1;
-  let bestScore = Infinity;
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
-    if (frame.floor !== floor) continue;
-    const dx = px - frame.x;
-    const dz = pz - frame.z;
-    const into = dx * frame.nx + dz * frame.nz;
-    if (into < 0.35 || into > 2.3) continue;
-    const lateral = Math.abs(dx * frame.nz - dz * frame.nx);
-    if (lateral > FRAME.w * 0.5 + 0.35) continue;
-    const facing = fwd.x * frame.nx + fwd.z * frame.nz;
-    if (facing > -0.45) continue;
-    const dy = Math.abs(eye - frame.y);
-    if (dy > FRAME.h * 0.5 + 0.85) continue;
-    const score = into + lateral * 0.35 + dy * 0.15;
-    if (score < bestScore) {
-      bestScore = score;
-      best = i;
-    }
-  }
-  return best;
+  if (!built || !framesReady || hoverIndex < 0) return -1;
+  const aimed = built.frames[hoverIndex];
+  if (!aimed || aimed.floor !== playerFloor()) return -1;
+  return hoverIndex;
 }
 
 function artTouchActions() {
@@ -2868,7 +2851,18 @@ function syncTouchActions(active) {
   }
   touchFrame = -1;
   let actions = null;
-  if (insideLift()) {
+  const aimedFrame = frameBeforePlayer();
+  if (aimedFrame >= 0) {
+    touchSeat = -1;
+    const site = sites[built.frames[aimedFrame].siteIndex];
+    const list = [];
+    if (site && site.portal) list.push({ id: "portal", label: "进入这个趣站" });
+    if (site && site.article) list.push({ id: "article", label: "看原文" });
+    if (list.length) {
+      touchFrame = aimedFrame;
+      actions = list;
+    }
+  } else if (insideLift()) {
     touchSeat = -1;
     actions = [{ id: "door", label: "开门" }, { id: "floors", label: "选楼层" }];
   } else if (hoverRobot) {
@@ -2880,20 +2874,7 @@ function syncTouchActions(active) {
     else if (atLiftDoor()) {
       touchSeat = -1;
       actions = [{ id: "call", label: "呼叫电梯" }];
-    } else {
-      touchSeat = -1;
-      const index = frameBeforePlayer();
-      if (index >= 0) {
-        const site = sites[built.frames[index].siteIndex];
-        const list = [];
-        if (site && site.portal) list.push({ id: "portal", label: "进入这个趣站" });
-        if (site && site.article) list.push({ id: "article", label: "看原文" });
-        if (list.length) {
-          touchFrame = index;
-          actions = list;
-        }
-      }
-    }
+    } else touchSeat = -1;
   }
   setTouchActions(actions);
 }

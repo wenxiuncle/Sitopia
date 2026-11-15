@@ -203,6 +203,9 @@ export function mountTouch(hooks) {
     if (document.body.classList.contains("touch-play")) event.preventDefault();
   });
   if (window.visualViewport && hooks && hooks.onResize) {
-    window.visualViewport.addEventListener("resize", () => hooks.onResize());
+    const fit = () => hooks.onResize();
+    window.visualViewport.addEventListener("resize", fit);
+    window.visualViewport.addEventListener("scroll", fit);
+    fit();
   }
 }
