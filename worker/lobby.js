@@ -108,14 +108,19 @@ function json(body, status, request) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
-// 门户取人数用的只读回包。10 秒边缘缓存写在 Cache API 里，
-// 这里只负责把头和身体摆正，别让 /lobby/count 被当成 no-store。
+// 门户取人数用的只读回包。人数是个徽章，晚半分钟没人看得出来，
+// 但每问一次都会把休眠的 DO 叫起来重跑构造函数（SQLite 每次唤醒都在花 rows_read），
+// 所以这里宁可多缓存一会儿：30 秒。
+const COUNT_TTL_MS = 30000;
+let countCachedAt = 0;
+let countCachedBody = "";
+
 function countReply(body) {
   return new Response(body, {
     status: 200,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "public, max-age=10",
+      "cache-control": "public, max-age=30",
     },
   });
 }
@@ -130,6 +135,8 @@ async function readJson(request, limit) {
     return null;
   }
 }
+
+let visitsSchemaReady = false;
 
 export class SitopiaLobby extends DurableObject {
   constructor(ctx, env) {
@@ -156,14 +163,29 @@ export class SitopiaLobby extends DurableObject {
     this.visits = createVisitBook();
     this.visitPruned = 0;
     ctx.blockConcurrencyWhile(async () => {
-      this.log = (await ctx.storage.get("log")) || [];
-      const max = cleanMax(await ctx.storage.get("maxPeople"));
-      if (max) this.maxPeople = max;
-      this.arrange = cleanArrange(await ctx.storage.get("arrange"));
-      this.kicks = pruneKicks((await ctx.storage.get("kicks")) || {}, Date.now());
-      const saved = (await ctx.storage.get("solo")) || {};
-      const seats = Object.keys(saved);
       const now = Date.now();
+      // 一次取齐。休眠中的 DO 每被叫醒一次都会重跑这个构造函数，
+      // 而 SQLite 后端每次 get 都是一次查询、都要按行计 rows_read，
+      // 所以别十个键一个个 get，也别顺手写回任何东西。
+      const store = await ctx.storage.get([
+        "log",
+        "maxPeople",
+        "arrange",
+        "kicks",
+        "solo",
+        "music",
+        "videos",
+        "robot",
+        "notes",
+        "lift",
+      ]);
+      this.log = store.get("log") || [];
+      const max = cleanMax(store.get("maxPeople"));
+      if (max) this.maxPeople = max;
+      this.arrange = cleanArrange(store.get("arrange"));
+      this.kicks = pruneKicks(store.get("kicks") || {}, now);
+      const saved = store.get("solo") || {};
+      const seats = Object.keys(saved);
       for (let i = 0; i < seats.length; i++) {
         const row = saved[seats[i]];
         const seat = cleanSeat(seats[i]);
@@ -190,13 +212,15 @@ export class SitopiaLobby extends DurableObject {
       this.loadOpenVisits();
       const swept = this.sweepSolo(now);
       if (swept) await this.persistSolo();
-      this.music = restoreMusic(await ctx.storage.get("music"), now);
-      this.videos = restoreVideos(await ctx.storage.get("videos"));
+      this.music = restoreMusic(store.get("music"), now);
+      this.videos = restoreVideos(store.get("videos"));
       syncMusic(this.music, this.roster(), this.solo, now);
-      await this.persistMusic(now, true);
-      this.robot = restoreRobot(await ctx.storage.get("robot"));
-      this.notes = restoreNotes(await ctx.storage.get("notes"));
-      this.lift = restoreSharedLift(await ctx.storage.get("lift"), Date.now());
+      // 这里原来有一句 persistMusic(now, true)，也就是每次唤醒都写一次磁盘。
+      // 曲目位置是「基准点 + 流逝时间」算出来的，不写回也不会错；
+      // 等真的有人在线时 alarm 会落盘。
+      this.robot = restoreRobot(store.get("robot"));
+      this.notes = restoreNotes(store.get("notes"));
+      this.lift = restoreSharedLift(store.get("lift"), Date.now());
     });
   }
 
@@ -205,6 +229,9 @@ export class SitopiaLobby extends DurableObject {
   }
 
   ensureVisits() {
+    // 建表和建索引每个 isolate 跑一次就够了。原来每次唤醒都跑四条 DDL，
+    // 而唤醒是常态（休眠中的 DO 收到任何事件都会重跑构造函数）。
+    if (visitsSchemaReady) return;
     this.sql(
       "CREATE TABLE IF NOT EXISTS visits (" +
       "id INTEGER PRIMARY KEY AUTOINCREMENT," +
@@ -220,6 +247,10 @@ export class SitopiaLobby extends DurableObject {
     );
     this.sql("CREATE INDEX IF NOT EXISTS visits_entered ON visits(entered)");
     this.sql("CREATE INDEX IF NOT EXISTS visits_open_seat ON visits(seat, left_at)");
+    // 下面这条是关键的：没有它，loadOpenVisits 的 WHERE left_at = 0 只能全表扫，
+    // 每唤醒一次就读掉整张 visits 表（表是只增不删的，越扫越贵）。
+    this.sql("CREATE INDEX IF NOT EXISTS visits_left ON visits(left_at)");
+    visitsSchemaReady = true;
   }
 
   loadOpenVisits() {
@@ -840,6 +871,9 @@ export class SitopiaLobby extends DurableObject {
       }
     }
     this.reconcileVisits(now);
+    // 清理过期来访挪到心跳里做（自带一小时节流），
+    // 原来只有人打开后台“来访”页才清，于是表只增不删、每次唤醒都要扫一遍。
+    this.pruneVisitStore(now);
     const swept = this.sweepSolo(now);
     if (swept) await this.persistSolo();
     const ev = await this.noteMusic(this.roster(), now);
@@ -928,13 +962,21 @@ export default {
       return stub.fetch(request);
     }
     // 公开只读人数，给门户的徽章用。不查 Origin：这条不是给浏览器跨域调的，
-    // 门户由服务端来取；10 秒边缘缓存兜住重复问。
+    // 门户由服务端来取。人数变化很慢，先看 isolate 里的 30 秒 memo，
+    // 再看 Cache API（workers.dev 上常常不生效），都落了空才叫醒 DO。
     if (url.pathname === "/lobby/count") {
       if (request.method !== "GET") return new Response("method", { status: 405 });
+      const now = Date.now();
+      if (countCachedBody && now - countCachedAt < COUNT_TTL_MS) return countReply(countCachedBody);
       const key = new Request(url.origin + "/lobby/count", { method: "GET" });
       try {
         const hit = await caches.default.match(key);
-        if (hit) return countReply(await hit.text());
+        if (hit) {
+          const body = await hit.text();
+          countCachedAt = now;
+          countCachedBody = body;
+          return countReply(body);
+        }
       } catch {
         /* 缓存不可用就直接问。 */
       }
@@ -942,6 +984,8 @@ export default {
       const live = await stub.fetch(key);
       if (!live.ok) return new Response("error", { status: 502 });
       const body = await live.text();
+      countCachedAt = now;
+      countCachedBody = body;
       try {
         await caches.default.put(key, countReply(body));
       } catch {
