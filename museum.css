@@ -1,6 +1,7 @@
 html, body {
   --plate: rgba(255, 252, 248, 0.94);
   height: 100%;
+  height: 100dvh;
   margin: 0;
   overflow: hidden;
   background: #8ec8f2;
@@ -42,7 +43,8 @@ body.opening #panel,
 body.opening #guestbook,
 body.opening #chat-bar,
 body.opening #tab-hint,
-body.opening #seat-hint {
+body.opening #seat-hint,
+body.opening #touch-pad {
   display: none;
 }
 
@@ -1676,6 +1678,145 @@ body.dark-sky #seat-hint {
 }
 #screen-autonext input { margin: 0; }
 #screen-gate button:focus, #screen-url:focus, #screen-volume:focus, #screen-autonext-box:focus { outline: 1px solid #2c2926; outline-offset: 2px; }
+
+.help-touch { display: none; }
+body.touch-play .help-touch { display: list-item; }
+
+html.touch-play,
+html.touch-play body,
+html.touch-play #view {
+  touch-action: none;
+  overscroll-behavior: none;
+}
+html.touch-play #guestbook,
+html.touch-play #panel,
+html.touch-play #screen-gate,
+html.touch-play #drawer,
+html.touch-play #roster,
+html.touch-play #lift-list,
+html.touch-play #chat-bar,
+html.touch-play #name-gate,
+html.touch-play textarea {
+  touch-action: pan-y;
+}
+
+body.touch-play #lift-hint,
+body.touch-play #seat-hint,
+body.touch-play #tab-hint { display: none; }
+
+body.touch-play #chat-bar {
+  bottom: calc(156px + env(safe-area-inset-bottom, 0px));
+}
+body.touch-play #self-bubble {
+  bottom: calc(156px + 62px + env(safe-area-inset-bottom, 0px));
+}
+body.touch-play #roster,
+body.touch-play #lift-pad { padding-bottom: 120px; }
+
+body.touch-play:has(#guestbook:not([hidden])) #touch-pad,
+body.touch-play:has(#screen-gate:not([hidden])) #touch-pad,
+body.touch-play:has(#name-gate:not([hidden])) #touch-pad,
+body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
+
+#touch-pad {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  user-select: none;
+}
+#touch-pad[hidden] { display: none; }
+
+#stick {
+  position: fixed;
+  left: calc(16px + env(safe-area-inset-left, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: 128px;
+  height: 128px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12), 0 6px 18px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+  touch-action: none;
+}
+#stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: rgba(236, 236, 236, 0.95);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.85);
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#stick-knob::after {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.98);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+#touch-cluster {
+  position: fixed;
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  width: 76px;
+  height: 76px;
+  pointer-events: none;
+}
+#touch-orbit { position: absolute; inset: 0; }
+#touch-jump {
+  position: absolute;
+  inset: 0;
+  width: 76px;
+  height: 76px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(42, 46, 54, 0.88);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  color: #fff;
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#touch-jump:active { transform: scale(0.96); }
+.touch-act {
+  position: absolute;
+  z-index: 1;
+  margin: 0;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(48, 52, 60, 0.84);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+.touch-act:active { filter: brightness(1.12); }
+
+@media (max-width: 380px) {
+  #stick { width: 112px; height: 112px; }
+  #stick-knob { width: 48px; height: 48px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   #drawer, #panel, #chatter li, #loading, #name-gate { transition: none; }

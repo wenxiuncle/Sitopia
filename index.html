@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>趣站博物馆｜可以走进去逛的 3D 网址博物馆</title>
   <meta name="description" content="趣站博物馆是有趣网址之家的 3D 虚拟展厅：像玩游戏一样在展厅里走动，点开画框就能读精选网站的原文。免费在线玩，无需安装。">
   <meta name="keywords" content="趣站博物馆,有趣网址,3D博物馆,虚拟展厅,网址导航,有趣网站">
@@ -221,6 +221,7 @@
             <li><kbd>R</kbd> 回到广场</li>
             <li><kbd>M</kbd> 开关琴声和环境声</li>
             <li><kbd>[</kbd> <kbd>]</kbd> 切换时辰</li>
+            <li class="help-touch">左侧摇杆走动，滑动画面转视角，右下圆圈跳跃。圆圈旁的方块是当前能做的事</li>
           </ul>
           </div>
           <div class="drawer-foot">
@@ -314,6 +315,17 @@
     </div>
     <button id="guestbook-close" type="button">关闭</button>
   </aside>
+  <div id="touch-pad" hidden>
+    <div id="stick">
+      <div id="stick-knob"></div>
+    </div>
+    <div id="touch-cluster">
+      <div id="touch-orbit"></div>
+      <button id="touch-jump" type="button" aria-label="跳跃">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M6 14.5 12 8.5 18 14.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
   <script type="module" src="js/museum.js"></script>
 </body>
 </html>

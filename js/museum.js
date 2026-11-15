@@ -3,6 +3,7 @@ import { createAmbience } from "./ambience.js";
 import { createArtHall } from "./arthall.js";
 import { createVisitor, placeBodyShadow, poseVisitor, setBodyLight, setVisitorSit } from "./avatar.js";
 import { planarBasis, yawFacing } from "./basis.js";
+import { enableTouch, mountTouch, releaseStick, setTouchActions, takeTouchJump, touchStick } from "./touch.js";
 import { CITY_SHADOW_MAX, DAYS, dayIndex, findDay, nightSpillQuads, openingQuads, shapeShadowOpacity, sunVector } from "./day.js";
 import { createLift } from "./lift.js";
 import {
@@ -153,7 +154,10 @@ let planPeopleKey = "";
 let guestPlaceKey = "";
 let remoteFace = null;
 let robotLookHeld = false;
+let robotAimSent = false;
 let robotCardWas = false;
+let touchFrame = -1;
+let touchSeat = -1;
 let framePickDist = Infinity;
 const dayNav = document.getElementById("day");
 const corner = document.getElementById("corner");
@@ -480,6 +484,10 @@ function hideEscCard() {
 function requestWalk() {
   if (visitorOut) return;
   parkFocus();
+  if (document.body.classList.contains("touch-play")) {
+    document.body.classList.add("walking");
+    return;
+  }
   const pending = view.requestPointerLock();
   if (pending && typeof pending.catch === "function") pending.catch(() => {});
 }
@@ -523,7 +531,7 @@ function closePanel(relock) {
 
 function interactiveTarget(target) {
   return !!(target && target.closest && target.closest(
-    "#panel, #guestbook, #screen-gate, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, a, button, input, textarea, label",
+    "#panel, #guestbook, #screen-gate, #roster, #drawer, #name-gate, #kick-gate, #chat-bar, #lift-pad, #boot, #day, #hud-row, #drawer-toggle, #map-card, #map-switch, #touch-pad, a, button, input, textarea, label",
   ));
 }
 
@@ -1288,19 +1296,19 @@ function renderGuestbook() {
 function closeGuestbook(relock) {
   const wasOpen = !guestbook.hidden;
   guestbook.hidden = true;
-  if (wasOpen && presence && presence.linked() && presence.sendRobotFaceOff) presence.sendRobotFaceOff();
+  if (wasOpen && !hoverRobot && presence && presence.linked() && presence.sendRobotFaceOff) presence.sendRobotFaceOff();
   if (panel.hidden) document.body.classList.remove("reading");
   if (!relock || corner.classList.contains("nav-open")) return;
   requestWalk();
 }
 
-function openGuestbook() {
+function openGuestbook(which) {
   if (!panel.hidden) closePanel(false);
   renderGuestbook();
   guestbook.hidden = false;
   document.body.classList.add("reading");
   placeGuestbook();
-  showGuestTab("plan");
+  showGuestTab(which === "notes" ? "notes" : "plan");
   guestbook.style.pointerEvents = "none";
   ignoreUntil = performance.now() + 420;
   window.setTimeout(() => {
@@ -1577,13 +1585,14 @@ function updateReception(dt, now) {
   // 没连上、房间还没指定司机、或司机就是这一页，才由这里往前走。
   const driving = !visitorOut && !document.hidden && (!linked || !receptionDriver || mine === receptionDriver);
   if (remoteFace && !guestStillHere(remoteFace.id)) remoteFace = null;
-  const watchGuest = !!(driving && !card && remoteFace);
-  // 卡片开着，或有人正在看卡片：停在原地，慢慢转向那个人。关上后再转回点击前的方向。
-  const attending = (card && driving) || watchGuest;
+  // 视线中心落在机器人身上时，它停步并转向这名玩家。卡片开着时同样停。
+  const lookHere = hoverRobot && !visitorOut && document.body.classList.contains("touch-play");
+  const watchGuest = !!(driving && !card && !lookHere && remoteFace);
+  const attending = ((card || lookHere) && driving) || watchGuest;
   if (attending) {
     if (!robotLookHeld) rememberRobotHeading(receptionState);
-    const tx = card ? px : remoteFace.x;
-    const tz = card ? pz : remoteFace.z;
+    const tx = (card || lookHere) ? px : remoteFace.x;
+    const tz = (card || lookHere) ? pz : remoteFace.z;
     aimRobot(receptionState, tx, tz);
     turnRobot(receptionState, dt);
     receptionRender.x = receptionState.x;
@@ -1603,8 +1612,9 @@ function updateReception(dt, now) {
     receptionRender.yaw = receptionState.yaw;
     pinRobotFollow();
     if (linked && mine && mine === receptionDriver) presence.sendRobot(receptionState);
-  } else if (card) {
+  } else if (card || lookHere) {
     if (linked && presence.sendRobotFace) presence.sendRobotFace(px, pz);
+    robotAimSent = true;
     // 卡片盖住时也跟着房间里的位置走，只把朝向转到看卡片的人。关上才不会从冻住的旧坐标跳过去。
     followRobotPos(dt, false);
     const face = yawAt(receptionRender.x, receptionRender.z, px, pz);
@@ -1615,7 +1625,11 @@ function updateReception(dt, now) {
     // 两个人同时开着卡片时，这一页先对着自己转；关上后若一下子对齐房间朝向，转身就会很快。
     receptionRender.yaw = stepYaw(receptionRender.yaw, receptionFollow.yaw, dt);
   }
-  reception.place(receptionRender, now, card || watchGuest);
+  if (robotAimSent && !card && !lookHere) {
+    robotAimSent = false;
+    if (linked && presence && presence.sendRobotFaceOff) presence.sendRobotFaceOff();
+  }
+  reception.place(receptionRender, now, card || watchGuest || lookHere);
   if (card) {
     placeGuestbook();
     syncMuseumPlan(false);
@@ -2748,6 +2762,177 @@ function advanceArtSeat(dt) {
   syncSeatHint();
 }
 
+function applyLook(dx, dy) {
+  if (corner.classList.contains("nav-open")) return;
+  if (orbiting) {
+    orbitYaw -= dx * 0.0022;
+    orbitPitch -= dy * 0.0022;
+    if (orbitPitch > 1.15) orbitPitch = 1.15;
+    if (orbitPitch < -1.05) orbitPitch = -1.05;
+    return;
+  }
+  camera.rotation.y -= dx * 0.0022;
+  camera.rotation.x -= dy * 0.0022;
+  if (camera.rotation.x > 1.15) camera.rotation.x = 1.15;
+  if (camera.rotation.x < -1.15) camera.rotation.x = -1.15;
+}
+
+function touchModal() {
+  if (!guestbook.hidden || !panel.hidden) return true;
+  if (artHall && artHall.dialogOpen()) return true;
+  const gate = document.getElementById("name-gate");
+  if (gate && !gate.hidden) return true;
+  const kick = document.getElementById("kick-gate");
+  if (kick && !kick.hidden) return true;
+  return openingNow();
+}
+
+function openAway(url) {
+  if (!url) return;
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+// 站到画框正面、并且朝着这面墙时才算出按钮。视线已经对准某一幅时，用那一幅。
+function frameBeforePlayer() {
+  if (!built || !framesReady) return -1;
+  const floor = playerFloor();
+  if (hoverIndex >= 0 && framePickDist < 3.2) {
+    const aimed = built.frames[hoverIndex];
+    if (aimed && aimed.floor === floor) return hoverIndex;
+  }
+  planarBasis(camera, fwd, right);
+  const eye = py + EYE;
+  const frames = built.frames;
+  let best = -1;
+  let bestScore = Infinity;
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    if (frame.floor !== floor) continue;
+    const dx = px - frame.x;
+    const dz = pz - frame.z;
+    const into = dx * frame.nx + dz * frame.nz;
+    if (into < 0.35 || into > 2.3) continue;
+    const lateral = Math.abs(dx * frame.nz - dz * frame.nx);
+    if (lateral > FRAME.w * 0.5 + 0.35) continue;
+    const facing = fwd.x * frame.nx + fwd.z * frame.nz;
+    if (facing > -0.45) continue;
+    const dy = Math.abs(eye - frame.y);
+    if (dy > FRAME.h * 0.5 + 0.85) continue;
+    const score = into + lateral * 0.35 + dy * 0.15;
+    if (score < bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function artTouchActions() {
+  if (!onArtStorey() || !artHall) return null;
+  const seated = seatRide.mode === "seated";
+  const moving = seatRide.mode === "pose" || seatRide.mode === "walk";
+  camera.getWorldDirection(lookDir);
+  const screenDist = artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz });
+  if (seated || moving) {
+    const list = [];
+    if (seated && screenDist >= 0) {
+      const label = artHall.hoverLabel();
+      list.push({ id: "screen", label: label || "画面" });
+    }
+    list.push({ id: "stand", label: "起身" });
+    return list;
+  }
+  const seats = artSeats();
+  const seatDist = pickArtSeat();
+  let index = -1;
+  if (seatDist >= 0 && seats && seatInReach(seats[artSeatAim])) index = artSeatAim;
+  else index = nearestArtSeat();
+  if (index < 0) return null;
+  touchSeat = index;
+  return [{ id: "sit", label: "坐下" }];
+}
+
+function syncTouchActions(active) {
+  if (!document.body.classList.contains("touch-play")) return;
+  if (!active) {
+    touchFrame = -1;
+    touchSeat = -1;
+    setTouchActions(null);
+    return;
+  }
+  touchFrame = -1;
+  let actions = null;
+  if (insideLift()) {
+    touchSeat = -1;
+    actions = [{ id: "door", label: "开门" }, { id: "floors", label: "选楼层" }];
+  } else if (hoverRobot) {
+    touchSeat = -1;
+    actions = [{ id: "plan", label: "博物馆示意图" }, { id: "notes", label: "访客留言簿" }];
+  } else {
+    const art = artTouchActions();
+    if (art) actions = art;
+    else if (atLiftDoor()) {
+      touchSeat = -1;
+      actions = [{ id: "call", label: "呼叫电梯" }];
+    } else {
+      touchSeat = -1;
+      const index = frameBeforePlayer();
+      if (index >= 0) {
+        const site = sites[built.frames[index].siteIndex];
+        const list = [];
+        if (site && site.portal) list.push({ id: "portal", label: "进入这个趣站" });
+        if (site && site.article) list.push({ id: "article", label: "看原文" });
+        if (list.length) {
+          touchFrame = index;
+          actions = list;
+        }
+      }
+    }
+  }
+  setTouchActions(actions);
+}
+
+function onTouchAction(id) {
+  noteGesture();
+  if (id === "portal" || id === "article") {
+    const index = touchFrame >= 0 ? touchFrame : frameBeforePlayer();
+    if (index < 0 || !built) return;
+    const site = sites[built.frames[index].siteIndex];
+    if (!site) return;
+    openAway(id === "portal" ? site.portal : site.article);
+    return;
+  }
+  if (id === "call" || id === "door") {
+    onDoorKey();
+    return;
+  }
+  if (id === "floors") {
+    onFloorKey();
+    return;
+  }
+  if (id === "plan" || id === "notes") {
+    openGuestbook(id === "notes" ? "notes" : "plan");
+    return;
+  }
+  if (id === "sit") {
+    const index = touchSeat >= 0 ? touchSeat : nearestArtSeat();
+    if (index >= 0) beginArtSeat(index);
+    return;
+  }
+  if (id === "stand") {
+    if (seatRide.mode === "seated") beginStandUp();
+    else if (seatRide.mode === "pose" || seatRide.mode === "walk") onSeatKey();
+    return;
+  }
+  if (id === "screen" && artHall && seatRide.mode === "seated") artHall.open();
+}
+
 function step(dt, now) {
   for (let f = 0; f < built.floors; f++) {
     const want = floorDoorWanted(f);
@@ -2771,9 +2956,13 @@ function step(dt, now) {
       liftDoors.update(opens, lift.y);
     }
   }
-  const locked = document.pointerLockElement === view && !corner.classList.contains("nav-open") && !visitorOut;
+  const touchOn = document.body.classList.contains("touch-play");
+  const modal = touchOn && touchModal();
+  if (touchOn && (modal || corner.classList.contains("nav-open"))) releaseStick();
+  const locked = (document.pointerLockElement === view || (touchOn && !modal)) && !corner.classList.contains("nav-open") && !visitorOut;
   document.body.classList.toggle("walking", locked);
   const riding = seatBusy();
+  if (takeTouchJump() && locked && !riding) tryJump();
   if (!locked) {
     vx = 0;
     vz = 0;
@@ -2792,16 +2981,23 @@ function step(dt, now) {
       hoverEl.hidden = true;
     }
     placeVideoHover(false);
+    syncTouchActions(false);
   } else if (!riding) {
     planarBasis(lookSource(), fwd, right);
     let ix = 0;
     let iz = 0;
-    if (down.has("KeyW") || down.has("ArrowUp")) { ix += fwd.x; iz += fwd.z; }
-    if (down.has("KeyS") || down.has("ArrowDown")) { ix -= fwd.x; iz -= fwd.z; }
-    if (down.has("KeyD") || down.has("ArrowRight")) { ix += right.x; iz += right.z; }
-    if (down.has("KeyA") || down.has("ArrowLeft")) { ix -= right.x; iz -= right.z; }
+    let keyed = false;
+    if (down.has("KeyW") || down.has("ArrowUp")) { ix += fwd.x; iz += fwd.z; keyed = true; }
+    if (down.has("KeyS") || down.has("ArrowDown")) { ix -= fwd.x; iz -= fwd.z; keyed = true; }
+    if (down.has("KeyD") || down.has("ArrowRight")) { ix += right.x; iz += right.z; keyed = true; }
+    if (down.has("KeyA") || down.has("ArrowLeft")) { ix -= right.x; iz -= right.z; keyed = true; }
+    const pad = touchStick();
+    if (pad.x || pad.y) {
+      ix += fwd.x * pad.y + right.x * pad.x;
+      iz += fwd.z * pad.y + right.z * pad.x;
+    }
     const len = Math.hypot(ix, iz);
-    if (len > 0) { ix /= len; iz /= len; }
+    if (len > 1 || (keyed && len > 0)) { ix /= len; iz /= len; }
     const speed = down.has("ShiftLeft") || down.has("ShiftRight") ? SPRINT : WALK;
     const rate = 1 - Math.exp(-dt * 12);
     vx += (ix * speed - vx) * rate;
@@ -2816,6 +3012,7 @@ function step(dt, now) {
     if (now >= hoverClock) {
       hoverClock = now + 120;
       aimHover();
+      syncTouchActions(true);
     }
   } else {
     vx = 0;
@@ -2823,6 +3020,7 @@ function step(dt, now) {
     if (now >= hoverClock) {
       hoverClock = now + 120;
       aimHover();
+      syncTouchActions(true);
     }
   }
   if (riding) advanceArtSeat(dt);
@@ -3063,6 +3261,7 @@ function bind() {
   document.addEventListener("click", (event) => {
     if (openingNow()) return;
     noteGesture();
+    if (document.body.classList.contains("touch-play")) return;
     const selecting = suppressWalkClick;
     if (selecting) suppressWalkClick = false;
     if (performance.now() < ignoreUntil) return;
@@ -3078,17 +3277,7 @@ function bind() {
     if (draggingField) return;
     if (corner.classList.contains("nav-open")) return;
     if (document.pointerLockElement !== view) return;
-    if (orbiting) {
-      orbitYaw -= event.movementX * 0.0022;
-      orbitPitch -= event.movementY * 0.0022;
-      if (orbitPitch > 1.15) orbitPitch = 1.15;
-      if (orbitPitch < -1.05) orbitPitch = -1.05;
-      return;
-    }
-    camera.rotation.y -= event.movementX * 0.0022;
-    camera.rotation.x -= event.movementY * 0.0022;
-    if (camera.rotation.x > 1.15) camera.rotation.x = 1.15;
-    if (camera.rotation.x < -1.15) camera.rotation.x = -1.15;
+    applyLook(event.movementX, event.movementY);
   });
   document.addEventListener("click", (event) => {
     if (performance.now() > clickShieldUntil) return;
@@ -3257,6 +3446,18 @@ function bind() {
     renderGuestbook();
   });
   window.addEventListener("resize", resize);
+  document.addEventListener("pointerdown", () => {
+    if (document.body.classList.contains("touch-play")) noteGesture();
+  }, true);
+  mountTouch({
+    onLook(dx, dy) {
+      if (openingNow()) return;
+      if (!document.body.classList.contains("walking")) return;
+      applyLook(dx * 2, dy * 2);
+    },
+    onAction: onTouchAction,
+    onResize: resize,
+  });
 }
 
 function markDay(index) {
@@ -4528,6 +4729,7 @@ async function buildScene(data, arrange) {
     hideEscCard();
     where.hidden = false;
     crosshair.hidden = false;
+    if (enableTouch()) requestWalk();
     if (gateOpen()) {
       const input = document.getElementById("name-input");
       if (input) input.focus();
