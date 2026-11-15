@@ -1,5 +1,6 @@
 // 广场的风、鸟、空场，人的脚步，展厅大门，电梯的门、机械、按键和到层。
 // 全部在进馆后合成，不另放录音。总开关在 ambience：关掉声音或切到后台时一起淡掉。
+import { CRUISE } from "./lift.js";
 
 const BED = 0.05;
 const LEAF = 0.05;
@@ -11,8 +12,7 @@ const HUM = 0.045;
 const RUMBLE = 0.05;
 const CHIME = 0.04;
 const CLICK = 0.08;
-// 轿厢巡航大约 2.53 米/秒。机械声按这个收满。
-const CRUISE = 2.53125;
+// 机械声按轿厢巡航收满。最高速度在 lift.js。
 
 function mulberry(seed) {
   let a = seed >>> 0;
@@ -629,8 +629,8 @@ export function createSounds(ctx) {
     const dt = info.dt || 0;
     if (prevY != null && dt > 0.001 && dt < 0.08) vy = (info.liftY - prevY) / dt;
     prevY = info.liftY || 0;
-    if (vy > 3) vy = 3;
-    if (vy < -3) vy = -3;
+    if (vy > CRUISE) vy = CRUISE;
+    if (vy < -CRUISE) vy = -CRUISE;
     onHall(info.hallHeld, info.hallNear);
     const phase = info.liftPhase || "idle";
     const near = Math.min(1, Math.max(0, info.liftNear || 0));

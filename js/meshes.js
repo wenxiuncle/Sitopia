@@ -1781,7 +1781,7 @@ const backFaceMat = new THREE.MeshBasicMaterial({ color: 0x141210 });
 const backEdgeMat = new THREE.MeshBasicMaterial({ color: 0x6b5436 });
 
 // 字模铺一层发虚的暖白，贴在立体字背面。正面挡住字心，边上露出一圈光。
-function letterHalo(raster, box) {
+function letterHalo(raster, box, gain) {
   const pad = Math.max(12, Math.round(raster.height * 0.7));
   const src = document.createElement("canvas");
   src.width = raster.width;
@@ -1809,6 +1809,17 @@ function letterHalo(raster, box) {
   ctx.shadowColor = "rgba(255, 250, 242, 1)";
   ctx.shadowBlur = Math.max(8, pad * 0.2);
   for (let i = 0; i < 3; i++) ctx.drawImage(src, pad, pad);
+  // 方向字的光比厅外名牌暗。厅外名牌不传 gain。
+  if (gain != null && gain < 1) {
+    const dimmed = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = dimmed.data;
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = Math.round(data[i] * gain);
+      data[i + 1] = Math.round(data[i + 1] * gain);
+      data[i + 2] = Math.round(data[i + 2] * gain);
+    }
+    ctx.putImageData(dimmed, 0, 0);
+  }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
@@ -1862,13 +1873,142 @@ export function setFacadeSignNight(glow) {
   facadeMat.color.set(glow ? 0xb0aba2 : 0x2c2926);
 }
 
+function offsetSeg(ax, ay, bx, by, dist) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = (-dy / len) * dist;
+  const ny = (dx / len) * dist;
+  return { ax: ax + nx, ay: ay + ny, bx: bx + nx, by: by + ny };
+}
+
+function lineHit(a, b) {
+  const dax = a.bx - a.ax;
+  const day = a.by - a.ay;
+  const dbx = b.bx - b.ax;
+  const dby = b.by - b.ay;
+  const det = dax * dby - day * dbx;
+  if (Math.abs(det) < 1e-8) return [a.bx, a.by];
+  const t = ((b.ax - a.ax) * dby - (b.ay - a.ay) * dbx) / det;
+  return [a.ax + dax * t, a.ay + day * t];
+}
+
+function polyArea(poly) {
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    area += p[0] * q[1] - q[0] * p[1];
+  }
+  return area / 2;
+}
+
+function ensureCcw(poly) {
+  if (polyArea(poly) < 0) poly.reverse();
+  return poly;
+}
+
+// 等宽折线。端头垂直于笔画，尖角用交点，不另加圆角。
+function chevronBand(pts, width) {
+  const hw = width / 2;
+  const leftS = [];
+  const rightS = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    leftS.push(offsetSeg(a[0], a[1], b[0], b[1], hw));
+    rightS.push(offsetSeg(a[0], a[1], b[0], b[1], -hw));
+  }
+  const left = [[leftS[0].ax, leftS[0].ay]];
+  const right = [[rightS[0].ax, rightS[0].ay]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    left.push(lineHit(leftS[i - 1], leftS[i]));
+    right.push(lineHit(rightS[i - 1], rightS[i]));
+  }
+  const lastL = leftS[leftS.length - 1];
+  const lastR = rightS[rightS.length - 1];
+  left.push([lastL.bx, lastL.by]);
+  right.push([lastR.bx, lastR.by]);
+  return ensureCcw(left.concat(right.reverse()));
+}
+
+function polyBounds(polys) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < polys.length; i++) {
+    const poly = polys[i];
+    for (let p = 0; p < poly.length; p++) {
+      const x = poly[p][0];
+      const y = poly[p][1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return { minX, maxX, minY, maxY, w: maxX - minX, h: maxY - minY };
+}
+
+// << >> 用折线，不走字体像素。圆角只收汉字的像素台阶，用在尖括号上会把笔画收糊，字和光对不齐。
+function chevronMark(kind, px) {
+  if (kind !== "<<" && kind !== ">>") return null;
+  const stroke = px * 0.2;
+  const half = px * 0.34;
+  const span = px * 0.42;
+  const gap = px * 0.12;
+  const one = (apex) => chevronBand([[apex + span, half], [apex, 0], [apex + span, -half]], stroke);
+  let polys = [one(0), one(span + gap)];
+  let box = polyBounds(polys);
+  const fit = px / box.h;
+  polys = polys.map((poly) => poly.map((p) => [(p[0] - box.minX) * fit, (p[1] - box.minY) * fit]));
+  if (kind === ">>") {
+    box = polyBounds(polys);
+    polys = polys.map((poly) => poly.map((p) => [box.w - p[0], p[1]]));
+  }
+  for (let i = 0; i < polys.length; i++) ensureCcw(polys[i]);
+  box = polyBounds(polys);
+  const marginX = Math.round(px * 0.18);
+  const width = Math.max(8, Math.ceil(box.w + marginX * 2));
+  const height = Math.max(8, Math.ceil(px * 1.4));
+  const ox = (width - box.w) / 2 - box.minX;
+  const oy = (height - box.h) / 2 - box.minY;
+  const shapes = [];
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#fff";
+  for (let i = 0; i < polys.length; i++) {
+    const pts = [];
+    ctx.beginPath();
+    for (let p = 0; p < polys[i].length; p++) {
+      const x = polys[i][p][0] + ox;
+      const y = polys[i][p][1] + oy;
+      pts.push([x, y]);
+      if (p === 0) ctx.moveTo(x, height - y);
+      else ctx.lineTo(x, height - y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    shapes.push({ pts, holes: [] });
+  }
+  const image = ctx.getImageData(0, 0, width, height);
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < mask.length; i++) mask[i] = image.data[i * 4 + 3] > 96 ? 1 : 0;
+  return { raster: { mask, width, height, canvas }, shapes };
+}
+
 function solidSign(sign) {
   try {
     const px = sign.backlight ? 176 : (sign.h > 0.5 ? 64 : 48);
-    const raster = rasterMask(sign.text, px, sign.backlight ? 700 : 600);
-    const shapes = maskPaths(raster.mask, raster.width, raster.height);
+    const built = sign.mark ? chevronMark(sign.mark, px) : null;
+    const raster = built ? built.raster : rasterMask(sign.text, px, sign.backlight ? 700 : 600);
+    const shapes = built ? built.shapes : maskPaths(raster.mask, raster.width, raster.height);
     if (!shapes.length) return null;
-    if (sign.backlight) {
+    if (sign.backlight && !built) {
       for (let i = 0; i < shapes.length; i++) {
         shapes[i].pts = roundClosed(shapes[i].pts);
         for (let h = 0; h < shapes[i].holes.length; h++) shapes[i].holes[h] = roundClosed(shapes[i].holes[h]);
@@ -1896,7 +2036,7 @@ function solidSign(sign) {
       group.add(mesh);
     }
     if (sign.backlight) {
-      const halo = letterHalo(raster, box);
+      const halo = letterHalo(raster, box, sign.mark ? 0.64 : 1);
       // 字背离门墙只有 1 厘米。光卡片按像素塞到墙里会被深度测试吃掉，收到字背后面 4 毫米。
       halo.position.z = -0.004 / scale;
       group.add(halo);
@@ -3150,8 +3290,6 @@ export function artHallMeshes(art, mats) {
   if (curtain) root.add(curtain);
   const foots = footlightRig(art.foots);
   if (foots) root.add(foots);
-  addArtBoxes(root, art.board, mats.board);
-  addArtBoxes(root, art.post, mats.post);
   const screen = art.screen;
   const picture = new THREE.Mesh(new THREE.PlaneGeometry(screen.w, screen.h), mats.screen);
   picture.position.set(screen.x, screen.y, screen.z);

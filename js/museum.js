@@ -4153,8 +4153,6 @@ async function buildScene(data, arrange) {
       frame: new THREE.MeshBasicMaterial({ color: 0x2c2e34 }),
       speaker: new THREE.MeshBasicMaterial({ color: 0x141518 }),
       grille: new THREE.MeshBasicMaterial({ color: 0x07080a }),
-      board: lit(0xd8d4cc, "room"),
-      post: lit(0x8d8882, "room"),
       mass: lit(0x2a2c30, "artWall"),
       soffit: lit(0x32343a, "artWall"),
       carpet: lit(0x2a2f40, "artWall", {

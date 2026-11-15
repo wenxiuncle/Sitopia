@@ -937,7 +937,7 @@ function onClientMessage(array &$people, array &$log, array &$person, array $msg
 const LIFT_STORY = 5.4;
 const LIFT_FLOORS = 64;
 // 与 js/lift.js 的 CRUISE、ACCEL 相同。
-const LIFT_CRUISE = 2.53125;
+const LIFT_CRUISE = 3.796875;
 const LIFT_ACCEL = 2.15625;
 const LIFT_DOOR_SPEED = 0.833333333333;
 const LIFT_DWELL = 3.1;

@@ -2030,7 +2030,7 @@ function buildViewingStand(floor, room, blocks) {
   };
 }
 
-// 艺术厅只描述这一层。门帘无碰撞。牌子和大屏幕挡人。天花、墙皮、喇叭不挡人。
+// 艺术厅只描述这一层。门帘无碰撞。大屏幕挡人。天花、墙皮、喇叭不挡人。
 // 喇叭正面是物体本地 +Z。有 aim 时朝地面中心，否则 yaw 0 朝 +Z（南）。
 function describeArt(floor, blocks, cones) {
   const base = floor * STORY;
@@ -2121,11 +2121,6 @@ function describeArt(floor, blocks, cones) {
     width: DOOR * 2 + 0.16,
     floorJoin,
   };
-  const signZ = faceS + 0.02 + 2;
-  const board = [artSlab(-0.9, 0.9, base + 1.32, base + 2.18, signZ - 0.03, signZ + 0.03)];
-  const post = [artSlab(-0.07, 0.07, walk, base + 1.32, signZ - 0.05, signZ + 0.05)];
-  pushBlock(blocks, board[0]);
-  pushBlock(blocks, post[0]);
   const screenW = 7.11 * 3;
   const screenH = 4 * 3;
   const screenBottom = walk + 0.04;
@@ -2194,6 +2189,10 @@ function describeArt(floor, blocks, cones) {
   );
   const stand = buildViewingStand(floor, { xInL, xInR, zInN, zInS }, blocks);
   artSurfaces = stand.surfaces;
+  // 进门后第一面墙是观影台南立面。左右落在厅门两侧，字背贴墙，朝通道挤出。
+  const span = stand.span;
+  const markY = span ? ((base + 0.04) + (span.deckY - 0.16)) / 2 : 0;
+  const markZ = span ? span.zCanopyN + 0.03 : 0;
   return {
     floor,
     baseY: base,
@@ -2206,8 +2205,6 @@ function describeArt(floor, blocks, cones) {
     walls,
     curtain,
     foots,
-    board,
-    post,
     screen,
     speakers,
     stand,
@@ -2222,15 +2219,6 @@ function describeArt(floor, blocks, cones) {
       minY: base - 0.08,
       maxY: artWallTopAt(floor) + 0.14,
     },
-    sign: {
-      text: "正在施工",
-      x: 0,
-      y: base + 1.75,
-      z: signZ + 0.05,
-      yaw: 0,
-      w: 1.6,
-      h: 0.34,
-    },
     // 厅门墙朝门厅的那一面，门东侧居中。字背贴墙，朝南挤出。楼层名仍用 ART_NAME。
     nameSign: {
       text: "趣站放映厅",
@@ -2242,6 +2230,31 @@ function describeArt(floor, blocks, cones) {
       depth: 0.1,
       backlight: true,
     },
+    // 观影台下那面墙。左右跟厅门对齐：门左一块，门右一块。字形走 mark。
+    marks: span ? [
+      {
+        text: "<<",
+        mark: "<<",
+        x: -DOOR,
+        y: markY,
+        z: markZ,
+        yaw: 0,
+        h: 0.78,
+        depth: 0.1,
+        backlight: true,
+      },
+      {
+        text: ">>",
+        mark: ">>",
+        x: DOOR,
+        y: markY,
+        z: markZ,
+        yaw: 0,
+        h: 0.78,
+        depth: 0.1,
+        backlight: true,
+      },
+    ] : [],
   };
 }
 
@@ -2699,8 +2712,10 @@ export function buildMuseum(sites, arrange, sortMode) {
     });
   }
   const art = describeArt(artIndex, blocks, cones);
-  signs.push(art.sign);
   if (art.nameSign) signs.push(art.nameSign);
+  if (art.marks) {
+    for (let i = 0; i < art.marks.length; i++) signs.push(art.marks[i]);
+  }
 
   const walls = stone.concat(corners, white, ceilWalls, curb, blocks);
   let minX = Infinity;
