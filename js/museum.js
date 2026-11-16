@@ -439,6 +439,8 @@ const aimPoint = { x: 0, y: 0, w: 1, h: 1, left: 0, top: 0 };
 const aimNdc = new THREE.Vector2();
 const aimProj = new THREE.Vector3();
 const aimRayDir = new THREE.Vector3();
+const aimVp = new THREE.Vector4();
+const aimSize = new THREE.Vector2();
 let aimDot = null;
 // 上一次取景射线打中画框的地方，换算成离画框中心偏了多少米（?aim=1 时显示）。
 const aimHit = { x: 0, y: 0, t: 0 };
@@ -499,6 +501,9 @@ function paintAimDebug(rect) {
   const ndcX = (aimPoint.x / aimPoint.w) * 2 - 1;
   const ndcY = 1 - (aimPoint.y / aimPoint.h) * 2;
   const cross = crosshair.getBoundingClientRect();
+  const vpr = renderer.getPixelRatio();
+  renderer.getViewport(aimVp);
+  renderer.getSize(aimSize);
   aimDebugEl.textContent = [
     "canvas " + Math.round(rect.width) + "x" + Math.round(rect.height) + " @" + Math.round(rect.left) + "," + Math.round(rect.top),
     vv
@@ -508,6 +513,9 @@ function paintAimDebug(rect) {
     "cross " + Math.round(cross.left + cross.width / 2) + "," + Math.round(cross.top + cross.height / 2),
     "dpr " + (window.devicePixelRatio || 1).toFixed(2) + " buffer " + renderer.domElement.width + "x" + renderer.domElement.height,
     "ar css " + (rect.width / Math.max(1, rect.height)).toFixed(4) + " buf " + (renderer.domElement.width / Math.max(1, renderer.domElement.height)).toFixed(4),
+    // 视口按 CSS 像素存，three 渲染时再乘 pixelRatio。跟画布尺寸对不上，画面就会整体放大挪位。
+    "vp " + Math.round(aimVp.x) + "," + Math.round(aimVp.y) + " " + Math.round(aimVp.z) + "x" + Math.round(aimVp.w) +
+      " size " + Math.round(aimSize.x) + "x" + Math.round(aimSize.y) + " pr " + vpr,
     aimFrameLines,
   ].join("\n");
 }
@@ -536,6 +544,18 @@ if (params.has("aim")) {
       t: framePickDist,
       hit: [+aimHit.x.toFixed(2), +aimHit.y.toFixed(2)],
       aim: [Math.round(aimPoint.x), Math.round(aimPoint.y), Math.round(aimPoint.w), Math.round(aimPoint.h)],
+    });
+  };
+  // 视口 / 位图 / 像素比：视口按 CSS 像素存，渲染时由 three 乘 pixelRatio。
+  window.__vp = () => {
+    renderer.getViewport(aimVp);
+    renderer.getSize(aimSize);
+    return JSON.stringify({
+      vp: [+aimVp.x.toFixed(1), +aimVp.y.toFixed(1), +aimVp.z.toFixed(1), +aimVp.w.toFixed(1)],
+      size: [aimSize.x, aimSize.y],
+      buf: [renderer.domElement.width, renderer.domElement.height],
+      pr: renderer.getPixelRatio(),
+      aspect: +camera.aspect.toFixed(5),
     });
   };
 }
@@ -4038,7 +4058,10 @@ async function warmFresh(markFrom, markTo, intoView) {
   if (scene.fog) probe.fog = scene.fog;
   const prevTarget = renderer.getRenderTarget();
   const viewSize = new THREE.Vector2();
-  renderer.getDrawingBufferSize(viewSize);
+  // setViewport 收的是 CSS 像素，渲染时 three 自己再乘 pixelRatio。
+  // 这里取 getDrawingBufferSize 会把位图尺寸再存进视口，等于乘两次 pixelRatio：
+  // 画面整体放大 1.25 倍、往左下角贴，准星和射线还在正中，手机上就成了「热点偏下偏左」。
+  renderer.getSize(viewSize);
   try {
     for (let i = 0; i < list.length; i++) {
       const obj = list[i];
