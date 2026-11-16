@@ -202,15 +202,9 @@ export function mountTouch(hooks) {
   document.addEventListener("contextmenu", (event) => {
     if (document.body.classList.contains("touch-play")) event.preventDefault();
   });
-  if (hooks && hooks.onResize) {
+  if (window.visualViewport && hooks && hooks.onResize) {
     const fit = () => hooks.onResize();
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", fit);
-      window.visualViewport.addEventListener("scroll", fit);
-    }
-    // 进页时地址栏还在让位，紧接着的一帧才是竖屏真正的可见高度。
+    window.visualViewport.addEventListener("resize", fit);
     fit();
-    window.setTimeout(fit, 80);
-    window.setTimeout(fit, 320);
   }
 }

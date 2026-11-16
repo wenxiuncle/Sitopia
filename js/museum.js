@@ -430,58 +430,26 @@ function askExhibitCount() {
 
 askExhibitCount();
 
-let fittedKey = "";
+let sizedW = 0;
+let sizedH = 0;
 resize();
 renderer.clear();
 setLoadProgress(0.02);
 requestAnimationFrame(pumpLoad);
 
-function typingField() {
-  const el = document.activeElement;
-  if (!el || !el.tagName) return false;
-  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
-}
-
 function resize() {
   const touch = document.body.classList.contains("touch-play");
-  // 打字时键盘会把可见高度压矮。这时不跟着缩，否则画面被键盘挤扁；键盘收起后下一次 resize 再对齐。
-  if (touch && typingField()) return;
   let w = touch ? view.clientWidth : window.innerWidth;
   let h = touch ? view.clientHeight : window.innerHeight;
-  let ox = 0;
-  let oy = 0;
-  // 第一次竖屏，100dvh / clientHeight 常常还是「地址栏收起」的高，而且这次落差不发 window.resize。
-  // 转横再转回来会强制重排，所以只有第一次竖屏对不齐。可见区域以 visualViewport 为准。
-  const vv = touch ? window.visualViewport : null;
-  if (vv && vv.width > 1 && vv.height > 1) {
-    w = vv.width;
-    h = vv.height;
-    ox = vv.offsetLeft || 0;
-    oy = vv.offsetTop || 0;
-  }
   if (!w) w = window.innerWidth;
   if (!h) h = window.innerHeight;
   w = Math.round(w);
   h = Math.max(1, Math.round(h));
-  ox = Math.round(ox);
-  oy = Math.round(oy);
-  const ratio = Math.min(window.devicePixelRatio || 1, 1.25);
-  const key = (touch ? "t" : "d") + w + "x" + h + "@" + ox + "," + oy + ":" + ratio;
-  if (key === fittedKey) return;
-  fittedKey = key;
-  if (touch) {
-    // 准星是 position:fixed，原点在布局视口。getBoundingClientRect 的原点在可见视口，差一个 offset。
-    // 画布和准星都钉在同一块可见区域上，射线中心才和十字重合。
-    view.style.position = "fixed";
-    view.style.left = ox + "px";
-    view.style.top = oy + "px";
-    view.style.width = w + "px";
-    view.style.height = h + "px";
-    const root = document.documentElement;
-    root.style.setProperty("--aim-x", (ox + w / 2) + "px");
-    root.style.setProperty("--aim-y", (oy + h / 2) + "px");
-  }
-  renderer.setPixelRatio(ratio);
+  // 尺寸没变就别再 setSize。iOS 上反复改画布位图，页面会自己越放越大。
+  if (w === sizedW && h === sizedH) return;
+  sizedW = w;
+  sizedH = h;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -3467,22 +3435,8 @@ function bind() {
     renderGuestbook();
   });
   window.addEventListener("resize", resize);
-  // 转向当下读到的宽高经常还是上一帧的。晚一点再量一次，竖屏回来才不会沿用横屏的尺寸。
-  window.addEventListener("orientationchange", () => {
-    resize();
-    window.setTimeout(resize, 80);
-    window.setTimeout(resize, 320);
-  });
-  if (typeof ResizeObserver === "function") {
-    const boxWatch = new ResizeObserver(() => resize());
-    boxWatch.observe(view);
-  }
   document.addEventListener("pointerdown", () => {
-    if (!document.body.classList.contains("touch-play")) return;
-    noteGesture();
-    // 有的浏览器第一次竖屏要等点一下才把可见高度改对，而且不发 resize。
-    resize();
-    window.setTimeout(resize, 80);
+    if (document.body.classList.contains("touch-play")) noteGesture();
   }, true);
   mountTouch({
     onLook(dx, dy) {
