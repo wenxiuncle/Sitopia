@@ -24,7 +24,7 @@ INK = (247, 237, 216)
 GOLD = (212, 170, 86)
 GOLD_LIGHT = (244, 214, 140)
 MUTED = (185, 169, 140)
-MARK = (68, 68, 68, 255)
+MARK = (77, 77, 77, 255)
 PAPER = (247, 243, 234)
 
 
@@ -106,39 +106,50 @@ def draw_spaced(
         x += draw.textlength(ch, font=fnt) + spacing
 
 
-def mark_layer(size: int, color: tuple[int, ...] = MARK) -> Image.Image:
-    """Render the framed-Q reference mark on transparent pixels.
+def mark_layer(size: int, color: tuple[int, ...] = MARK, tight: bool = False) -> Image.Image:
+    """Render the 512-unit reference mark on transparent pixels.
 
-    The source artwork is a 64-unit pixel grid, so every edge lands on an
-    integer coordinate at the sizes used by the site (16/32/48/64/192/512).
+    The supplied artwork is 512x512 with the 320x320 Q centred at (128,128).
+    Keeping that padding makes every PNG match the reference; tight=True crops
+    the padding for small badges where the mark would otherwise be illegible.
     """
     scale = 1 if size % 64 == 0 else 4
     canvas = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    u = size * scale / 64.0
+    u = size * scale / 512.0
     rects = (
-        (8, 0, 56, 8),
-        (8, 56, 56, 64),
-        (0, 8, 8, 56),
-        (56, 8, 64, 56),
-        (16, 16, 48, 24),
-        (16, 24, 24, 40),
-        (40, 24, 48, 40),
-        (16, 40, 48, 48),
-        (40, 48, 56, 56),    )
-    for x0, y0, x1, y1 in rects:
-        draw.rectangle(
-            (round(x0 * u), round(y0 * u), round(x1 * u) - 1, round(y1 * u) - 1),
-            fill=color,
+        (128, 128, 384, 192),
+        (128, 192, 192, 320),
+        (320, 192, 384, 320),
+        (128, 320, 384, 384),
+        (320, 384, 448, 448),
+    )
+    if tight:
+        lo, span = 128, 320
+        u = size * scale / span
+        rects = tuple(
+            ((x0 - lo) * u, (y0 - lo) * u, (x1 - lo) * u, (y1 - lo) * u)
+            for x0, y0, x1, y1 in rects
         )
+        for x0, y0, x1, y1 in rects:
+            draw.rectangle(
+                (round(x0), round(y0), round(x1) - 1, round(y1) - 1),
+                fill=color,
+            )
+    else:
+        for x0, y0, x1, y1 in rects:
+            draw.rectangle(
+                (round(x0 * u), round(y0 * u), round(x1 * u) - 1, round(y1 * u) - 1),
+                fill=color,
+            )
     return canvas.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_logo_svg() -> None:
     """Vector copy of the same mark, used as the scalable favicon."""
-    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges">
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" shape-rendering="crispEdges">
   <title>趣站博物馆</title>
-  <path fill="#444444" d="M8 0h48v8H8zM8 56h48v8H8zM0 8h8v48H0zM56 8h8v48h-8zM16 16h32v8H16zM16 24h8v16h-8zM40 24h8v16h-8zM16 40h32v8H16zM40 48h16v8H40z"/>
+  <path fill="#4d4d4d" d="M128 128h256v64H128zM128 192h64v128h-64zM320 192h64v128h-64zM128 320h256v64H128zM320 384h128v64H320z"/>
 </svg>
 """
     (ROOT / "logo.svg").write_text(svg, encoding="utf-8")
@@ -323,7 +334,7 @@ def make_og() -> None:
         outline=(212, 170, 86, 120),
         width=1,
     )
-    img.alpha_composite(mark_layer(30), (bx + 7, by + 7))
+    img.alpha_composite(mark_layer(30, tight=True), (bx + 7, by + 7))
     draw = ImageDraw.Draw(img)
     label_font = font(SERIF_BOLD, 14)
     label = "SITOPIA MUSEUM"
@@ -360,14 +371,12 @@ def make_og() -> None:
     img.convert("RGB").save(ROOT / "og-cover.jpg", "JPEG", quality=91, optimize=True, progressive=True)
 
 
-def make_icon(size: int, out: Path, opaque: bool = False, padding: float = 0.05) -> None:
+def make_icon(size: int, out: Path, opaque: bool = False) -> None:
     if opaque:
         img = Image.new("RGBA", (size, size), PAPER + (255,))
-        pad = round(size * 0.12)
     else:
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        pad = round(size * padding)
-    img.alpha_composite(mark_layer(size - pad * 2), (pad, pad))
+    img.alpha_composite(mark_layer(size))
     if opaque:
         img = img.convert("RGB")
     img.save(out, "PNG", optimize=True)
@@ -385,7 +394,7 @@ def main() -> None:
     make_og()
     make_icon(512, ROOT / "icon-512.png")
     make_icon(192, ROOT / "icon-192.png")
-    make_icon(180, ROOT / "apple-touch-icon.png", opaque=True, padding=0.12)
+    make_icon(180, ROOT / "apple-touch-icon.png", opaque=True)
     make_favicon()
     write_logo_svg()
     print("wrote og-cover.jpg, icon-512.png, icon-192.png, apple-touch-icon.png, favicon.ico, logo.svg")
