@@ -436,8 +436,15 @@ askExhibitCount();
 // 但只挪准星和射线，不动画布位图（反复 setSize 会让 iOS 页面自己放大）。
 const aimPoint = { x: 0, y: 0, w: 1, h: 1, left: 0, top: 0 };
 const aimNdc = new THREE.Vector2();
+const aimProj = new THREE.Vector3();
+const aimRayDir = new THREE.Vector3();
+let aimDot = null;
+// 上一次取景射线打中画框的地方，换算成离画框中心偏了多少米（?aim=1 时显示）。
+const aimHit = { x: 0, y: 0, t: 0 };
 let aimKey = "";
 let aimDebugEl = null;
+let aimMarkEl = null;
+let aimFrameLines = "hover none";
 
 function placeAim() {
   const rect = view.getBoundingClientRect();
@@ -485,6 +492,7 @@ function aimDirection(out) {
 // ?aim=1 时在左上角显示可见区域、画布、准星中心的读数，方便实机核对。
 function paintAimDebug(rect) {
   if (!params.has("aim")) return;
+  rect = rect || view.getBoundingClientRect();
   if (!aimDebugEl) {
     aimDebugEl = document.createElement("pre");
     aimDebugEl.id = "aim-debug";
@@ -509,7 +517,94 @@ function paintAimDebug(rect) {
     "aim " + Math.round(aimPoint.x) + "," + Math.round(aimPoint.y) + " ndc " + ndcX.toFixed(3) + "," + ndcY.toFixed(3),
     "cross " + Math.round(cross.left + cross.width / 2) + "," + Math.round(cross.top + cross.height / 2),
     "dpr " + (window.devicePixelRatio || 1).toFixed(2) + " buffer " + renderer.domElement.width + "x" + renderer.domElement.height,
+    "ar css " + (rect.width / Math.max(1, rect.height)).toFixed(4) + " buf " + (renderer.domElement.width / Math.max(1, renderer.domElement.height)).toFixed(4),
+    aimFrameLines,
   ].join("\n");
+}
+
+// ?aim=1 时在准星射线上放一颗洋红小球：它按定义就投影在准星那一像素上。
+// 实机上看它有没有被十字盖住，就能分清是「画面被浏览器挪了」还是「画框数据不对」。
+if (params.has("aim")) {
+  aimDot = new THREE.Mesh(new THREE.SphereGeometry(0.02, 10, 8), new THREE.MeshBasicMaterial({ color: 0xff2bd1 }));
+  aimDot.renderOrder = 999;
+  scene.add(aimDot);
+}
+
+// ?aim=1 时把内部量摊在左上角，手机上对着看就行（没法开控制台时也能读）。
+// 另外在控制台可以直接 __aim() 拿一份同样的 JSON。
+if (params.has("aim")) {
+  window.__aim = () => {
+    const pick = pickFrame();
+    return JSON.stringify({
+      ready: framesReady,
+      n: built ? built.frames.length : -1,
+      floors: built ? built.floors : -1,
+      floor: playerFloor(),
+      cam: [camera.position.x, camera.position.y, camera.position.z].map((v) => +v.toFixed(2)),
+      dir: [lookDir.x, lookDir.y, lookDir.z].map((v) => +v.toFixed(3)),
+      pick,
+      t: framePickDist,
+      hit: [+aimHit.x.toFixed(2), +aimHit.y.toFixed(2)],
+      aim: [Math.round(aimPoint.x), Math.round(aimPoint.y), Math.round(aimPoint.w), Math.round(aimPoint.h)],
+    });
+  };
+}
+
+// 世界坐标 → 画布里的 CSS 像素。
+function aimProject(x, y, z) {
+  aimProj.set(x, y, z).project(camera);
+  return {
+    x: aimPoint.left + (aimProj.x * 0.5 + 0.5) * aimPoint.w,
+    y: aimPoint.top + (-aimProj.y * 0.5 + 0.5) * aimPoint.h,
+  };
+}
+
+// ?aim=1 时把那本画框投回屏幕上画个虚线框：正常应该正好套住墙上那张画框。
+// 框没套住、或者画框中心跟十字差出几十像素，就说明取景点和看得见的画框不是一回事。
+function paintAimFrame(index) {
+  if (!params.has("aim") || !aimDebugEl) return;
+  if (index < 0 || !built || !built.frames[index]) {
+    aimFrameLines = "hover none";
+    if (aimMarkEl) aimMarkEl.hidden = true;
+  } else {
+    const f = built.frames[index];
+    const site = sites[f.siteIndex];
+    const half = { w: FRAME.w / 2, h: FRAME.h / 2 };
+    const a = aimProject(f.x - half.w, f.y + half.h, f.z);
+    const b = aimProject(f.x + half.w, f.y - half.h, f.z);
+    const left = Math.min(a.x, b.x);
+    const top = Math.min(a.y, b.y);
+    const width = Math.abs(b.x - a.x);
+    const height = Math.abs(b.y - a.y);
+    const cx = aimPoint.left + aimPoint.x;
+    const cy = aimPoint.top + aimPoint.y;
+    if (!aimMarkEl) {
+      aimMarkEl = document.createElement("div");
+      aimMarkEl.id = "aim-mark";
+      aimMarkEl.style.cssText =
+        "position:fixed;z-index:19;pointer-events:none;border:1px dashed #6cf;box-sizing:border-box";
+      document.body.appendChild(aimMarkEl);
+    }
+    aimMarkEl.hidden = false;
+    aimMarkEl.style.left = left.toFixed(1) + "px";
+    aimMarkEl.style.top = top.toFixed(1) + "px";
+    aimMarkEl.style.width = width.toFixed(1) + "px";
+    aimMarkEl.style.height = height.toFixed(1) + "px";
+    const dx = left + width / 2 - cx;
+    const dy = top + height / 2 - cy;
+    aimFrameLines = [
+      "hover #" + index + " " + (site ? site.title : ""),
+      "box " + Math.round(width) + "x" + Math.round(height) + " d " + dx.toFixed(0) + "," + dy.toFixed(0),
+      "hit " + aimHit.x.toFixed(2) + "," + aimHit.y.toFixed(2) + " t " + aimHit.t.toFixed(2) + "m",
+      "min " + lookMin().toFixed(2) + "m third " + (thirdPerson ? 1 : 0),
+    ].join("\n");
+  }
+  paintAimDebug(view.getBoundingClientRect());
+}
+
+// 每次取景检查之后都刷一遍读数：光标和虚线框跟着画面走，不能只在序号变了才更新。
+function paintAimMaybe() {
+  if (params.has("aim")) paintAimFrame(hoverIndex);
 }
 
 let sizedW = 0;
@@ -1790,6 +1885,9 @@ function pickFrame() {
     if (along > FRAME.w * 0.5) continue;
     best = i;
     bestT = t;
+    aimHit.x = Math.abs(frame.nz) > 0.5 ? hx - frame.x : hz - frame.z;
+    aimHit.y = hy - frame.y;
+    aimHit.t = t;
   }
   framePickDist = best >= 0 ? bestT : Infinity;
   return best;
@@ -3086,6 +3184,7 @@ function step(dt, now) {
     if (now >= hoverClock) {
       hoverClock = now + 120;
       aimHover();
+      paintAimMaybe();
       syncTouchActions(true);
     }
   } else {
@@ -3094,6 +3193,7 @@ function step(dt, now) {
     if (now >= hoverClock) {
       hoverClock = now + 120;
       aimHover();
+      paintAimMaybe();
       syncTouchActions(true);
     }
   }
@@ -3257,6 +3357,7 @@ function animate(now) {
   paintBeacons(now);
   const dt = Math.min(MAX_STEP, seconds(now));
   step(dt, now);
+  if (aimDot) aimDot.position.copy(camera.position).addScaledVector(aimDirection(aimRayDir), 1.2);
   if (horizon) horizon.drift(now);
   if (artSky) artSky.tick(now);
   renderer.render(scene, camera);
