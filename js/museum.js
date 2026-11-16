@@ -430,10 +430,11 @@ function askExhibitCount() {
 
 askExhibitCount();
 
-// 准星和取景射线对准同一处：人眼下真正看得见的那块画面的中心。
-// 手机地址栏展开时布局视口高度不变、可见高度先变；只按 50% 摆，十字就偏低，
-// 射线也从偏下的地方出去，跟十字对不上。可见区域一律以 visualViewport 为准，
-// 但只挪准星和射线，不动画布位图（反复 setSize 会让 iOS 页面自己放大）。
+// 准星和取景射线对准同一处：画布正中。
+// 画布在手机上是 position:fixed; inset:0，画布多大，看得见的那块就多大，
+// 画布正中本来就是可见区域正中；再叠一层 visualViewport 的偏移等于重复算，
+// 地址栏一动就把准星和射线一起挪几十像素（画面停在旧帧上，看着就像热点偏了）。
+// 只挪准星和射线，不动画布位图（反复 setSize 会让 iOS 页面自己放大）。
 const aimPoint = { x: 0, y: 0, w: 1, h: 1, left: 0, top: 0 };
 const aimNdc = new THREE.Vector2();
 const aimProj = new THREE.Vector3();
@@ -450,19 +451,8 @@ function placeAim() {
   const rect = view.getBoundingClientRect();
   const w = rect.width || window.innerWidth || 1;
   const h = rect.height || window.innerHeight || 1;
-  let x = w / 2;
-  let y = h / 2;
-  const vv = window.visualViewport;
-  if (document.body.classList.contains("touch-play") && vv && vv.width > 1 && vv.height > 1) {
-    const cx = vv.offsetLeft + vv.width / 2 - rect.left;
-    const cy = vv.offsetTop + vv.height / 2 - rect.top;
-    // 只认画布中间这一段：地址栏最多吃掉百来像素，量出更大的偏差说明
-    // 那个可见区域跟画布根本不是一回事，宁可按画面中心来。
-    const padX = Math.min(w * 0.15, 60);
-    const padY = Math.min(h * 0.15, 120);
-    if (cx > padX && cx < w - padX) x = cx;
-    if (cy > padY && cy < h - padY) y = cy;
-  }
+  const x = w / 2;
+  const y = h / 2;
   aimPoint.x = x;
   aimPoint.y = y;
   aimPoint.w = w;
