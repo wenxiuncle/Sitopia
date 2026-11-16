@@ -627,23 +627,53 @@ requestAnimationFrame(pumpLoad);
 function resize() {
   // 先摆准星：地址栏收起时画布尺寸可能一点没变，准星照样得跟着挪。
   placeAim();
-  const touch = document.body.classList.contains("touch-play");
-  let w = touch ? view.clientWidth : window.innerWidth;
-  let h = touch ? view.clientHeight : window.innerHeight;
-  if (!w) w = window.innerWidth;
-  if (!h) h = window.innerHeight;
-  w = Math.round(w);
-  h = Math.max(1, Math.round(h));
+  fitView();
+}
+
+// 画面铺多大，只认画布自己的 CSS 盒子。转屏那一刻 window.innerWidth 和
+// visualViewport 常常还是上一屏的数字，照它们算出来的位图和盒子对不上，
+// 整幅画就被拉扁。
+function viewBox() {
+  let w = view.clientWidth || 0;
+  let h = view.clientHeight || 0;
+  if (!w || !h) {
+    const rect = view.getBoundingClientRect();
+    w = rect.width || window.innerWidth || 1;
+    h = rect.height || window.innerHeight || 1;
+  }
+  return { w: Math.round(w), h: Math.max(1, Math.round(h)) };
+}
+
+// 只对尺寸。轮询时每一帧都调它，盒子没变就读两个数走开。
+function fitView() {
+  const box = viewBox();
   // 尺寸没变就别再 setSize。iOS 上反复改画布位图，页面会自己越放越大。
-  if (w === sizedW && h === sizedH) return;
-  sizedW = w;
-  sizedH = h;
+  if (box.w === sizedW && box.h === sizedH) return;
+  sizedW = box.w;
+  sizedH = box.h;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
+  renderer.setSize(box.w, box.h, false);
+  camera.aspect = box.w / box.h;
   camera.updateProjectionMatrix();
+  // 盒子变了，准星和取景射线的中心跟着换。
+  placeAim();
   placeGuestbook();
-  if (artHall) artHall.resize(w, h);
+  if (artHall) artHall.resize(box.w, box.h);
+}
+
+// 转屏那一瞬量到的盒子常常还是上一屏的，而且这一次可能再不发 resize：
+// 只量一次就一直沿用横屏的位图，竖屏回来画面被左右压扁。转完连量一会儿，
+// 盒子真变了才 setSize，所以多量几次不会把页面放大。
+let fitGen = 0;
+function settleView(ms) {
+  const gen = ++fitGen;
+  const until = performance.now() + (ms || 1000);
+  fitView();
+  (function again() {
+    if (gen !== fitGen) return;
+    fitView();
+    if (performance.now() < until) requestAnimationFrame(again);
+  })();
 }
 
 function setHover(index) {
@@ -3359,7 +3389,15 @@ function veilHallBodies(on) {
   if (presence && presence.holdHall) presence.holdHall(hallVeiled);
 }
 
+let sizeTick = 0;
+
 function animate(now) {
+  // 转屏、切后台回来的时候，事件可能一个都没来。半秒对一次画布盒子，
+  // 画面就不会长期停在「位图还是上一屏」的压扁状态。
+  if (++sizeTick >= 30) {
+    sizeTick = 0;
+    fitView();
+  }
   // 落地后的第一帧先揭开。update 在这一帧的 render 之前，人已经在真实位置。
   if (hallVeiled) veilHallBodies(false);
   noteFps(now);
@@ -3631,6 +3669,21 @@ function bind() {
     renderGuestbook();
   });
   window.addEventListener("resize", resize);
+  // 转屏当下量到的盒子常是上一屏的：晚一点再量几遍，盒子稳定了才算数。
+  window.addEventListener("orientationchange", () => settleView(1200));
+  if (screen.orientation && screen.orientation.addEventListener) {
+    screen.orientation.addEventListener("change", () => settleView(1200));
+  }
+  if (typeof ResizeObserver === "function") {
+    // 画布盒子的变化不一定带 resize（地址栏收放、转屏后的重排），这里直接盯着它。
+    const boxWatch = new ResizeObserver(() => requestAnimationFrame(resize));
+    boxWatch.observe(view);
+  }
+  // 切到别的应用里转好屏再回来，常常一个 resize 都没有。
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) settleView(400);
+  });
+  window.addEventListener("pageshow", () => settleView(400));
   document.addEventListener("pointerdown", () => {
     if (!document.body.classList.contains("touch-play")) return;
     noteGesture();
