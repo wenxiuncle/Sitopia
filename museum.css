@@ -1683,8 +1683,7 @@ body.dark-sky #seat-hint {
 body.touch-play .help-touch { display: list-item; }
 
 html.touch-play,
-html.touch-play body,
-html.touch-play #view {
+html.touch-play body {
   touch-action: none;
   overscroll-behavior: none;
 }
@@ -1693,6 +1692,18 @@ html.touch-play #view {
   inset: 0;
   width: 100%;
   height: 100%;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+/* 准星和画面提示都跟着可见区域的中心走：手机地址栏占掉的高度不算在画面中心，
+   摆 50%/50% 会偏低，而且跟取景射线打出去的那一点对不上。 */
+html.touch-play #crosshair {
+  left: var(--aim-x, 50%);
+  top: var(--aim-y, 50%);
+}
+html.touch-play #hover {
+  left: var(--aim-x, 50%);
+  top: calc(var(--aim-y, 50%) + 22px);
 }
 html.touch-play #guestbook,
 html.touch-play #panel,

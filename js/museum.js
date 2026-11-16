@@ -430,6 +430,88 @@ function askExhibitCount() {
 
 askExhibitCount();
 
+// 准星和取景射线对准同一处：人眼下真正看得见的那块画面的中心。
+// 手机地址栏展开时布局视口高度不变、可见高度先变；只按 50% 摆，十字就偏低，
+// 射线也从偏下的地方出去，跟十字对不上。可见区域一律以 visualViewport 为准，
+// 但只挪准星和射线，不动画布位图（反复 setSize 会让 iOS 页面自己放大）。
+const aimPoint = { x: 0, y: 0, w: 1, h: 1, left: 0, top: 0 };
+const aimNdc = new THREE.Vector2();
+let aimKey = "";
+let aimDebugEl = null;
+
+function placeAim() {
+  const rect = view.getBoundingClientRect();
+  const w = rect.width || window.innerWidth || 1;
+  const h = rect.height || window.innerHeight || 1;
+  let x = w / 2;
+  let y = h / 2;
+  const vv = window.visualViewport;
+  if (document.body.classList.contains("touch-play") && vv && vv.width > 1 && vv.height > 1) {
+    const cx = vv.offsetLeft + vv.width / 2 - rect.left;
+    const cy = vv.offsetTop + vv.height / 2 - rect.top;
+    // 只认画布中间这一段：地址栏最多吃掉百来像素，量出更大的偏差说明
+    // 那个可见区域跟画布根本不是一回事，宁可按画面中心来。
+    const padX = Math.min(w * 0.15, 60);
+    const padY = Math.min(h * 0.15, 120);
+    if (cx > padX && cx < w - padX) x = cx;
+    if (cy > padY && cy < h - padY) y = cy;
+  }
+  aimPoint.x = x;
+  aimPoint.y = y;
+  aimPoint.w = w;
+  aimPoint.h = h;
+  aimPoint.left = rect.left;
+  aimPoint.top = rect.top;
+  const key =
+    Math.round(x * 2) + "," + Math.round(y * 2) + "," +
+    Math.round(w) + "x" + Math.round(h) + "," +
+    Math.round(rect.left) + "," + Math.round(rect.top);
+  if (key !== aimKey) {
+    aimKey = key;
+    const root = document.documentElement.style;
+    root.setProperty("--aim-x", (rect.left + x).toFixed(1) + "px");
+    root.setProperty("--aim-y", (rect.top + y).toFixed(1) + "px");
+  }
+  paintAimDebug(rect);
+}
+
+// 取景射线：从相机穿过准星那一点，跟十字看到的是同一处。
+function aimDirection(out) {
+  camera.updateMatrixWorld();
+  aimNdc.set((aimPoint.x / aimPoint.w) * 2 - 1, 1 - (aimPoint.y / aimPoint.h) * 2);
+  return out.set(aimNdc.x, aimNdc.y, 0.5).unproject(camera).sub(camera.position).normalize();
+}
+
+// ?aim=1 时在左上角显示可见区域、画布、准星中心的读数，方便实机核对。
+function paintAimDebug(rect) {
+  if (!params.has("aim")) return;
+  if (!aimDebugEl) {
+    aimDebugEl = document.createElement("pre");
+    aimDebugEl.id = "aim-debug";
+    aimDebugEl.style.cssText =
+      "position:fixed;left:8px;top:8px;z-index:20;margin:0;padding:6px 8px;border-radius:4px;" +
+      "font:11px/1.45 ui-monospace,Menlo,monospace;background:rgba(0,0,0,.72);color:#fff;" +
+      "pointer-events:none;white-space:pre";
+    document.body.appendChild(aimDebugEl);
+    // 读数要能对上十字，先把它显出来。
+    crosshair.hidden = false;
+    crosshair.style.opacity = "1";
+  }
+  const vv = window.visualViewport;
+  const ndcX = (aimPoint.x / aimPoint.w) * 2 - 1;
+  const ndcY = 1 - (aimPoint.y / aimPoint.h) * 2;
+  const cross = crosshair.getBoundingClientRect();
+  aimDebugEl.textContent = [
+    "canvas " + Math.round(rect.width) + "x" + Math.round(rect.height) + " @" + Math.round(rect.left) + "," + Math.round(rect.top),
+    vv
+      ? "vv " + Math.round(vv.width) + "x" + Math.round(vv.height) + " @" + Math.round(vv.offsetLeft) + "," + Math.round(vv.offsetTop) + " s" + (vv.scale || 1).toFixed(2)
+      : "vv none",
+    "aim " + Math.round(aimPoint.x) + "," + Math.round(aimPoint.y) + " ndc " + ndcX.toFixed(3) + "," + ndcY.toFixed(3),
+    "cross " + Math.round(cross.left + cross.width / 2) + "," + Math.round(cross.top + cross.height / 2),
+    "dpr " + (window.devicePixelRatio || 1).toFixed(2) + " buffer " + renderer.domElement.width + "x" + renderer.domElement.height,
+  ].join("\n");
+}
+
 let sizedW = 0;
 let sizedH = 0;
 resize();
@@ -438,6 +520,8 @@ setLoadProgress(0.02);
 requestAnimationFrame(pumpLoad);
 
 function resize() {
+  // 先摆准星：地址栏收起时画布尺寸可能一点没变，准星照样得跟着挪。
+  placeAim();
   const touch = document.body.classList.contains("touch-play");
   let w = touch ? view.clientWidth : window.innerWidth;
   let h = touch ? view.clientHeight : window.innerHeight;
@@ -1445,8 +1529,9 @@ function placeVideoHover(on) {
     return;
   }
   hoverNdc.set(spot.x, spot.y, spot.z).project(camera);
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  // 标签跟着画布量，不要按 window.innerHeight：iOS 上那个是可见高度，比画布矮。
+  const w = aimPoint.w;
+  const h = aimPoint.h;
   const behind = hoverNdc.z < -1 || hoverNdc.z > 1;
   let sx = behind ? w / 2 : (hoverNdc.x * 0.5 + 0.5) * w;
   let sy = behind ? h - 28 : (-hoverNdc.y * 0.5 + 0.5) * h + 12;
@@ -1454,8 +1539,8 @@ function placeVideoHover(on) {
   if (sx > w - 24) sx = w - 24;
   if (sy > h - 28) sy = h - 28;
   if (sy < 12) sy = 12;
-  hoverEl.style.left = sx + "px";
-  hoverEl.style.top = sy + "px";
+  hoverEl.style.left = (aimPoint.left + sx) + "px";
+  hoverEl.style.top = (aimPoint.top + sy) + "px";
   hoverEl.style.bottom = "auto";
 }
 
@@ -1681,7 +1766,7 @@ function pickFrame() {
     framePickDist = Infinity;
     return -1;
   }
-  camera.getWorldDirection(lookDir);
+  aimDirection(lookDir);
   const ox = camera.position.x;
   const oy = camera.position.y;
   const oz = camera.position.z;
@@ -2328,7 +2413,7 @@ function pickArtSeat() {
   if (!onArtStorey()) return -1;
   const seats = artSeats();
   if (!seats) return -1;
-  camera.getWorldDirection(lookDir);
+  aimDirection(lookDir);
   const ox = camera.position.x;
   const oy = camera.position.y;
   const oz = camera.position.z;
@@ -2828,7 +2913,7 @@ function artTouchActions() {
   if (!onArtStorey() || !artHall) return null;
   const seated = seatRide.mode === "seated";
   const moving = seatRide.mode === "pose" || seatRide.mode === "walk";
-  camera.getWorldDirection(lookDir);
+  aimDirection(lookDir);
   const screenDist = artHall.pick(camera, lookDir, lookMin(), { x: px, y: py, z: pz });
   if (seated || moving) {
     const list = [];
@@ -3436,7 +3521,10 @@ function bind() {
   });
   window.addEventListener("resize", resize);
   document.addEventListener("pointerdown", () => {
-    if (document.body.classList.contains("touch-play")) noteGesture();
+    if (!document.body.classList.contains("touch-play")) return;
+    noteGesture();
+    // 地址栏可能刚收起，可见高度变了却不一定发 resize，这里再量一次。
+    placeAim();
   }, true);
   mountTouch({
     onLook(dx, dy) {

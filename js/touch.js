@@ -205,6 +205,8 @@ export function mountTouch(hooks) {
   if (window.visualViewport && hooks && hooks.onResize) {
     const fit = () => hooks.onResize();
     window.visualViewport.addEventListener("resize", fit);
+    // 地址栏收放时可见区域先挪，布局视口没变，不一定发 resize。
+    window.visualViewport.addEventListener("scroll", fit);
     fit();
   }
 }
