@@ -1705,7 +1705,7 @@ body.touch-play #seat-hint,
 body.touch-play #tab-hint { display: none; }
 
 body.touch-play #corner {
-  top: max(44px, calc(env(safe-area-inset-top, 0px) + 12px));
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
   right: calc(env(safe-area-inset-right, 0px) + 12px);
 }
 body.touch-play #where {
@@ -1726,8 +1726,32 @@ body.touch-play #chat-bar {
 body.touch-play #self-bubble {
   bottom: calc(192px + 62px + env(safe-area-inset-bottom, 0px));
 }
-body.touch-play #roster,
-body.touch-play #lift-pad { padding-bottom: 120px; }
+body.touch-play #roster { padding-bottom: 120px; }
+
+body.touch-play #hud-row { justify-content: flex-end; }
+
+body.touch-play #lift-toggle {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 50%;
+  padding-left: 4px;
+  padding-right: 4px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 选层卡片离开右上角，竖向卡在时辰和摇杆之间，左右留白。 */
+body.touch-play #lift-pad {
+  position: fixed;
+  left: 50%;
+  top: calc(max(44px, env(safe-area-inset-top, 0px) + 12px) + 124px);
+  bottom: calc(52px + 128px + 14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 5;
+  width: min(280px, calc(100vw - 48px));
+  flex: none;
+  padding-bottom: 12px;
+}
 
 body.touch-play:has(#guestbook:not([hidden])) #touch-pad,
 body.touch-play:has(#screen-gate:not([hidden])) #touch-pad,
@@ -1751,8 +1775,9 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
   height: 128px;
   box-sizing: border-box;
   border-radius: 50%;
-  border: 2px solid rgba(224, 224, 228, 0.92);
-  background: rgba(0, 0, 0, 0.42);
+  /* 大圆比上一档再透 30%：底 0.42→0.294，边 0.92→0.644。旋钮不跟着透。 */
+  border: 2px solid rgba(138, 142, 148, 0.644);
+  background: rgba(42, 44, 48, 0.294);
   box-shadow: none;
   pointer-events: auto;
   touch-action: none;
@@ -1764,7 +1789,7 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
   width: 54px;
   height: 54px;
   border-radius: 50%;
-  background: #dcdce1;
+  background: #3a3e44;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
   transform: translate(-50%, -50%);
   display: flex;
@@ -1778,8 +1803,8 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
   height: 16px;
   border-radius: 50%;
   box-sizing: border-box;
-  border: 2px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  border: 2px solid rgba(198, 202, 208, 0.9);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
 #touch-cluster {
@@ -1800,15 +1825,16 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: #dcdce1;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
-  color: #2a2c30;
+  background: #3a3e44;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+  color: #e8eaee;
   pointer-events: auto;
   touch-action: none;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+#touch-jump svg path { stroke: currentColor; }
 #touch-jump:active { transform: scale(0.96); }
 .touch-act {
   position: absolute;
@@ -1832,6 +1858,9 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
 @media (max-width: 380px) {
   #stick { width: 112px; height: 112px; }
   #stick-knob { width: 48px; height: 48px; }
+  body.touch-play #lift-pad {
+    bottom: calc(52px + 112px + 14px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1952,8 +1952,15 @@ function closeLiftPad() {
   if (liftToggle) liftToggle.setAttribute("aria-expanded", "false");
 }
 
+/* 右栏 overflow 会裁掉 fixed。手机把选层卡片挂到 body，电脑仍留在栏里。 */
+function placeTouchLiftPad() {
+  if (!liftPad || !document.body.classList.contains("touch-play")) return;
+  if (liftPad.parentElement !== document.body) document.body.appendChild(liftPad);
+}
+
 function openLiftPad() {
   if (!liftPad || liftPadOpen) return;
+  placeTouchLiftPad();
   liftPadOpen = true;
   liftPassingShown = -2;
   liftPad.hidden = false;
@@ -1986,6 +1993,7 @@ function fillLiftPad() {
       pushLift(f, !chosen);
       paintLiftChoices();
       if (!chosen) requestWalk();
+      if (document.body.classList.contains("touch-play")) closeLiftPad();
     });
     list.appendChild(button);
   }
