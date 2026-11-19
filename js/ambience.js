@@ -21,7 +21,47 @@ const LEVEL = 0.31;
 const DRY = 0.62;
 // 厅堂尾音叠在一起会抬上来，湿声收很多，空间听得见，琴还在前面。
 const WET = 0.04;
-const DRIFT_MS = 350;
+// 进度不逐帧对。seek 一次要一两百毫秒（手机走网络更慢），拿音轨时钟硬比房间
+// 时钟会变成「差 0.4 秒→跳一下→跳完又差 0.4 秒」，一路都在断，听起来就是
+// 卡顿。只在进厅、换曲、离开回来这些事上对一次，中间让它自己走。
+const CHECK_MS = 900;
+const RESYNC_MS = 9000;
+const RESYNC_GAP_MS = 30000;
+const TAIL_MS = 5000;
+const START_TIMEOUT_MS = 10000;
+
+// 房间此刻放哪一首、播放器要不要动。纯函数，selftest 直接跑这份判断。
+// room: { playing, pos }，pos 是这一轮播放表里的毫秒进度。
+// el:   播放器的样子 { index, playing, starting, seeking, ended, readyState, timeMs, durationMs }。
+export function syncStep(room, el, tracks, nowMs, lastFixMs) {
+  if (!room || !room.playing || !Array.isArray(tracks) || !tracks.length) return { act: "quiet" };
+  const place = scoreAt(room.pos, tracks);
+  if (place.index < 0) return { act: "quiet" };
+  // 正在装载或跳转，等它自己出声。
+  if (el.starting) return { act: "hold" };
+  if (el.index !== place.index) {
+    // 房间已经翻到下一首，我们这首还剩个尾巴：让它自然收完，别掐。
+    const tail = Number.isFinite(el.durationMs) ? el.durationMs - el.timeMs : 0;
+    if (el.playing && !el.seeking && !el.ended && tail > 0 && tail <= TAIL_MS) return { act: "hold" };
+    return { act: "start", index: place.index, into: place.into };
+  }
+  if (el.seeking) return { act: "hold" };
+  if (el.ended) {
+    // 同一首放完了：房间还在这一首尾巴上就等它翻面；房间已经绕回开头
+    // （清单里只有一首时）就从头接上。
+    const len = Number(tracks[place.index] && tracks[place.index].ms) || 0;
+    if (len > 0 && len - place.into > TAIL_MS) return { act: "start", index: place.index, into: place.into };
+    return { act: "hold" };
+  }
+  // 同一首却停着（被系统打断、或者从厅外回来）：接上房间的进度。
+  if (!el.playing) return { act: "start", index: place.index, into: place.into };
+  const off = Math.abs(el.timeMs - place.into);
+  // 差得不多就别碰，手机上一次跳转就是一个空档。
+  if (off > RESYNC_MS && nowMs - lastFixMs > RESYNC_GAP_MS && el.readyState >= 3) {
+    return { act: "start", index: place.index, into: place.into };
+  }
+  return { act: "hold" };
+}
 
 function rand(i) {
   let x = Math.imul(i ^ 0x9e3779b9, 0x7feb352d);
@@ -256,6 +296,10 @@ export function createAmbience() {
     playlistKey = key;
     playlist = list && list.length ? list : [];
     clipIndex = -1;
+    // 上一份播放表还没接上就别管了。
+    gen += 1;
+    starting = false;
+    stopStartTimer();
     audio.dataset.track = "";
   }
 
@@ -270,15 +314,30 @@ export function createAmbience() {
   }
 
   let held = false;
+  // 叫了 play 还没出声。这期间别再叫一次，否则手机上来回打断。
+  let starting = false;
+  let startTimer = 0;
+  // 上次把播放器挪到房间位置的时间（performance.now），重开靠它冷却。
+  let lastFix = 0;
+  let lastCheck = 0;
+
+  function stopStartTimer() {
+    if (startTimer) {
+      clearTimeout(startTimer);
+      startTimer = 0;
+    }
+  }
 
   function quiet() {
     if (held && audio.paused) return;
     held = true;
     gen += 1;
+    starting = false;
+    stopStartTimer();
     if (!audio.paused) audio.pause();
   }
 
-  function beginAt(index, into) {
+  function beginAt(index, into, nowMs) {
     const row = playlist[index];
     if (!row) return;
     ensureMedia();
@@ -286,6 +345,15 @@ export function createAmbience() {
     held = false;
     const mine = ++gen;
     const seconds = Math.max(0, into / 1000);
+    const now = Number.isFinite(nowMs) ? nowMs : performance.now();
+    lastFix = now;
+    starting = true;
+    stopStartTimer();
+    // play 一直不出声（网断了之类）也别把后面的对齐卡死。
+    startTimer = setTimeout(() => {
+      starting = false;
+      startTimer = 0;
+    }, START_TIMEOUT_MS);
     const seekAndPlay = () => {
       if (mine !== gen) return;
       let at = seconds;
@@ -298,15 +366,19 @@ export function createAmbience() {
         /* 元数据还没到，等 loadedmetadata。 */
       }
       const pending = audio.play();
-      if (pending && pending.catch) pending.catch(() => {});
-      clipIndex = index;
+      if (pending && pending.catch) {
+        pending.catch(() => {
+          if (mine === gen) starting = false;
+        });
+      }
     };
-    if (audio.dataset.track !== String(index)) {
-      clipIndex = -1;
-      audio.dataset.track = String(index);
-      audio.src = new URL("../audio/" + row.file, import.meta.url).href;
-      const pending = audio.play();
-      if (pending && pending.catch) pending.catch(() => {});
+    clipIndex = index;
+    audio.dataset.track = String(index);
+    const url = new URL("../audio/" + row.file, import.meta.url).href;
+    if (audio.src !== url) {
+      // 换曲只设 src，等元数据到了再跳一次再放：src 刚换就 play，手机会先
+      // 从 0 放一下再被打断，多一次解码器 flush。
+      audio.src = url;
       audio.addEventListener("loadedmetadata", seekAndPlay, { once: true });
       return;
     }
@@ -317,31 +389,54 @@ export function createAmbience() {
     seekAndPlay();
   }
 
-  function align() {
+  function align(force) {
     if (!started || !lastView || !ctx || ctx.state !== "running") return;
+    const now = performance.now();
+    // 主循环每帧都来问，这里限一下频率；真正的判断交给 syncStep。
+    if (!force && now - lastCheck < CHECK_MS) return;
+    lastCheck = now;
     if (!audible || !lastView.playing || !enabled || !playlist.length) {
-      const fading = !audible && enabled && lastView && lastView.playing && playlist.length && hushAt && performance.now() - hushAt < 2400;
+      const fading = !audible && enabled && lastView && lastView.playing && playlist.length && hushAt && now - hushAt < 2400;
       if (fading) return;
       quiet();
       return;
     }
-    const place = scoreAt(livePos(), playlist);
-    if (place.index < 0) {
+    const move = syncStep(
+      { playing: true, pos: livePos() },
+      {
+        index: clipIndex,
+        playing: !audio.paused && !audio.ended,
+        starting,
+        seeking: audio.seeking,
+        ended: audio.ended,
+        readyState: audio.readyState,
+        timeMs: (Number(audio.currentTime) || 0) * 1000,
+        durationMs: Number.isFinite(audio.duration) ? audio.duration * 1000 : NaN,
+      },
+      playlist,
+      now,
+      lastFix,
+    );
+    if (move.act === "quiet") {
       quiet();
       return;
     }
-    if (audio.ended && Number(audio.dataset.track) === place.index) return;
-    if (audio.dataset.track === String(place.index) && (audio.seeking || audio.readyState < 2)) return;
-    if (clipIndex === place.index && !audio.paused && !audio.seeking && audio.readyState >= 2) {
-      const drift = audio.currentTime * 1000 - place.into;
-      if (Math.abs(drift) < DRIFT_MS) return;
-    }
-    beginAt(place.index, place.into);
+    if (move.act === "start") beginAt(move.index, move.into, now);
   }
+
+  audio.addEventListener("playing", () => {
+    starting = false;
+    stopStartTimer();
+  });
+
+  audio.addEventListener("error", () => {
+    starting = false;
+    stopStartTimer();
+  });
 
   audio.addEventListener("ended", () => {
     if (!lastView || !lastView.playing) return;
-    align();
+    align(true);
   });
 
   function ensure() {
@@ -362,7 +457,7 @@ export function createAmbience() {
     if (box) box.checked = enabled;
     remember(enabled);
     applyGain();
-    align();
+    align(true);
   }
 
   if (box) {
@@ -373,7 +468,7 @@ export function createAmbience() {
   }
   document.addEventListener("visibilitychange", () => {
     applyGain();
-    if (!document.hidden) align();
+    if (!document.hidden) align(true);
   });
 
   function unlock() {
@@ -390,13 +485,15 @@ export function createAmbience() {
     }
     ctx.resume();
     ensureMedia();
+    // 第一次手势得真的放一下，iOS 才认这个元素能出声。以后每个手势都 play
+    // 一次会把正在放的曲子反复叫一遍，没必要。
     if (!audio.src && playlist.length) {
       audio.dataset.track = "0";
       audio.src = new URL("../audio/" + playlist[0].file, import.meta.url).href;
+      const pending = audio.play();
+      if (pending && pending.catch) pending.catch(() => {});
     }
-    const pending = audio.play();
-    if (pending && pending.then) pending.then(() => align()).catch(() => align());
-    else align();
+    align(true);
   }
 
   return {
@@ -422,7 +519,7 @@ export function createAmbience() {
         at: Number(view.at) || Date.now(),
         receivedAt: Date.now(),
       };
-      if (started) align();
+      if (started) align(true);
     },
     hear(amount) {
       blend = Math.min(1, Math.max(0, amount || 0));

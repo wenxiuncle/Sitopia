@@ -32,7 +32,7 @@ import {
 import { DAYS, dropShadowPose, findDay, floorLamps, groundShadow, lampAt, openingQuads, sunVector } from "../js/day.js";
 import { createLift } from "../js/lift.js";
 import { atlasGrid, cellUv, containRect, doorRig, FALLBACK_FRAME_IMAGE, floorAndCeiling, FRAME_MAT, frameMeshes, horizonMeshes, liftRig, lobeMeshes, maskPaths, placePlantShadows, plantShadowMesh, spotFixtureTop, usableFrameImage, wallMesh } from "../js/meshes.js";
-import { bakeLoop, museumImpulse } from "../js/ambience.js";
+import { bakeLoop, museumImpulse, syncStep } from "../js/ambience.js";
 import { extractBlurb, extractImage, extractPortal, markedDown } from "./fetch-sites.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -1427,7 +1427,34 @@ function checkRoom() {
   assert(Math.abs(out[1][0] - 1) < 1e-4 && Math.abs(out[1][fade] - 1) < 1e-4, "constant channel stays put");
 }
 
+// 手机上卡顿是这么来的：audio 跳一次要一两百毫秒（走网络更久），跳完又比房间
+// 落后，逐帧对齐就会一直跳。这套判断只在进厅、换曲这些事上动一次。
+function checkMusicSync() {
+  const tracks = [
+    { file: "a.mp3", ms: 60000 },
+    { file: "b.mp3", ms: 60000 },
+  ];
+  const el = (over) => ({ index: 0, playing: true, starting: false, seeking: false, ended: false, readyState: 4, timeMs: 10000, durationMs: 60000, ...over });
+  const room = (pos) => ({ playing: true, pos });
+
+  assert(syncStep(room(10000), el(), tracks, 0, 0).act === "hold", "in step, leaves the clip alone");
+  assert(syncStep(room(10500), el(), tracks, 1000, 0).act === "hold", "a slow start is not drift");
+  assert(syncStep(room(30000), el(), tracks, 40000, 0).act === "start", "a gross drift restarts once");
+  assert(syncStep(room(31000), el({ starting: true }), tracks, 41000, 40000).act === "hold", "a restart is not doubled");
+  assert(syncStep(room(32000), el(), tracks, 50000, 40000).act === "hold", "the cooldown holds off another restart");
+  const paused = syncStep(room(32000), el({ playing: false }), tracks, 50000, 40000);
+  assert(paused.act === "start" && paused.into === 32000, "a paused clip resumes at the room position");
+  assert(syncStep(room(32000), el({ seeking: true }), tracks, 50000, 40000).act === "hold", "a seek in flight is left alone");
+  assert(syncStep(room(57000), el({ ended: true, timeMs: 60000 }), tracks, 70000, 0).act === "hold", "a finished clip waits at the boundary");
+  assert(syncStep(room(62000), el({ timeMs: 57000 }), tracks, 70000, 0).act === "hold", "the last seconds play out");
+  assert(syncStep(room(62000), el({ timeMs: 30000 }), tracks, 70000, 0).act === "start", "a stale clip is replaced");
+  const wrapped = syncStep(room(500), el({ ended: true, timeMs: 60000 }), tracks, 70000, 0);
+  assert(wrapped.act === "start" && wrapped.into === 500, "a one-track list starts over after it ends");
+  assert(syncStep({ playing: false, pos: 0 }, el(), tracks, 0, 0).act === "quiet", "a silent room stays quiet");
+}
+
 checkRoom();
+checkMusicSync();
 checkFacing();
 checkPull();
 checkMask();
