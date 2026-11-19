@@ -320,10 +320,12 @@ function checkDoors() {
   assert(shut > 3.5 && shut < 6, `closed door stops outside, z=${shut}`);
   const passed = walkToDoor(open);
   assert(passed < 0, `open door lets the player in, z=${passed}`);
+  // 感应半径按门板算，不用绝对坐标：门挪过一次，这三条就一起失效了。
   assert(doorWantsOpen(0, 15.5, false) === false, "spawn leaves the door shut");
-  assert(doorWantsOpen(0, 10, false) === true, "approach opens the door");
-  assert(doorWantsOpen(0, 12.5, true) === true, "door stays open a little past the sensor");
-  assert(doorWantsOpen(0, 14.5, true) === false, "door shuts once the player is clear");
+  assert(doorWantsOpen(0, cz + 3, false) === true, "approach opens the door");
+  assert(doorWantsOpen(0, cz + 5, true) === true, "door stays open a little past the sensor");
+  assert(doorWantsOpen(0, cz + 5, false) === false, "sensor lets go and the door shuts");
+  assert(doorWantsOpen(0, cz + 7, true) === false, "door shuts once the player is clear");
   const biased = new THREE.MeshBasicMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   const rig = doorRig(biased, biased);
   rig.update(0);
