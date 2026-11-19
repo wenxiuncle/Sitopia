@@ -154,16 +154,22 @@ export function containRect(srcW, srcH, dstW, dstH) {
   return { x: (dstW - w) / 2, y: 0, w, h };
 }
 
+// 图集格子要用整数像素，取整又不能改掉画芯比例：格子比画芯窄一点点，
+// 370×180 的图按宽铺满时上下就会各露出一行纸色，看着像没铺满。
 export function atlasGrid(count, maxSize) {
   const limit = Math.max(64, maxSize || 4096);
+  const need = Math.max(1, count);
   for (let cellH = 360; cellH >= 18; cellH -= 18) {
-    const cellW = cellH * (FRAME_MAT.w / FRAME_MAT.h);
+    const cellW = Math.round((cellH * FRAME_MAT.w) / FRAME_MAT.h);
     if (cellW > limit) continue;
     const cols = Math.max(1, Math.floor(limit / cellW));
-    const rows = Math.ceil(count / cols);
+    const rows = Math.ceil(need / cols);
     if (rows * cellH <= limit) return { cols, rows, cellW, cellH };
   }
-  return { cols: count, rows: 1, cellW: 18 * (FRAME_MAT.w / FRAME_MAT.h), cellH: 18 };
+  const cellH = 18;
+  const cellW = Math.round((cellH * FRAME_MAT.w) / FRAME_MAT.h);
+  const cols = Math.max(1, Math.floor(limit / cellW));
+  return { cols, rows: Math.ceil(need / cols), cellW, cellH };
 }
 
 const FRAME_EXT = /\.(webp|jpe?g|png|gif|avif)$/i;

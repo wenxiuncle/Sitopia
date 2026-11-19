@@ -5292,8 +5292,6 @@ async function prepareAtlases() {
   }
   const maxSize = Math.min(renderer.capabilities.maxTextureSize || 4096, 4096);
   const grid = atlasGrid(most + 1, maxSize);
-  grid.cellW = Math.max(4, Math.floor(grid.cellW / 4) * 4);
-  grid.cellH = Math.max(2, Math.floor(grid.cellH / 2) * 2);
   atlasGridSize = grid;
   const w = grid.cols * grid.cellW;
   const h = grid.rows * grid.cellH;

@@ -227,6 +227,16 @@ function checkParser() {
   assert(grid.cols * grid.cellW <= 4096 && grid.rows * grid.cellH <= 4096, "atlas fits");
   assert(grid.cols * grid.rows >= 101, "atlas has a cell per picture");
   assert(Math.abs(grid.cellW / grid.cellH - FRAME_MAT.w / FRAME_MAT.h) < 1e-9, "atlas cell matches the picture");
+  // 图集真正落地时按整数像素取整，取整后仍然要正好是画芯比例，否则 370×180 的图上下会露纸色。
+  for (const count of [1, 62, 187, 400, 2480]) {
+    const real = atlasGrid(count, 4096);
+    const tag = "at " + count + " pictures";
+    assert(Number.isInteger(real.cellW) && Number.isInteger(real.cellH), "atlas cell is whole pixels " + tag);
+    assert(real.cols * real.cellW <= 4096 && real.rows * real.cellH <= 4096, "atlas fits " + tag);
+    assert(real.cols * real.rows >= count, "atlas seats every picture " + tag);
+    const filled = containRect(3.7, 1.8, real.cellW, real.cellH);
+    assert(Math.abs(filled.w - real.cellW) < 1e-9 && Math.abs(filled.h - real.cellH) < 1e-9, "picture-ratio image fills the real cell " + tag);
+  }
   checkPictureFacing();
 }
 
