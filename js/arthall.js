@@ -88,13 +88,16 @@ function trackKey(item) {
   return "";
 }
 
+// 嵌播器会把标题、UP主、三连、分享、弹幕输入框、进度条、全屏键一起画在画面里。
+// ctrl=0 把整层控件收掉（controlWrap 直接 hidden），但只有 URL 带 debug=1 时播放器才解析 ctrl。
+// 这是嵌播器的内部开关，B站改版可能失效；失效时只是退回带控件的老样子，画面照常。
 function biliSrc(parsed, seconds, muted) {
   const t = Math.max(0, Math.floor(seconds || 0));
   const id = parsed.bvid ? "bvid=" + encodeURIComponent(parsed.bvid) : "aid=" + encodeURIComponent(parsed.aid);
   return "https://player.bilibili.com/player.html?" + id +
     "&page=" + (parsed.page || 1) +
     "&t=" + t +
-    "&autoplay=1&danmaku=0&high_quality=1" +
+    "&autoplay=1&danmaku=0&high_quality=1&debug=1&ctrl=0" +
     (muted ? "&muted=1" : "");
 }
 
