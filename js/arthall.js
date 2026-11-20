@@ -101,6 +101,10 @@ function biliSrc(parsed, seconds, muted) {
     (muted ? "&muted=1" : "");
 }
 
+// 嵌播器起播时会在画面上画一层信息：底部进度条/音量/全屏、顶部标题条与频道名、分享键、
+// 右下"更多视频"卡片。controls=0 收掉底部那条和中间的大播放键（modestbranding/iv_load_policy/
+// fs/disablekb 是同一时期的老参数，留着重在语义完整）；顶部标题条、分享键、更多视频卡片是
+// 嵌播器自己的信息层，官方没有对应参数（showinfo 2018 年就失效了），起播后三五秒自行淡出。
 function youtubeSrc(parsed, seconds, muted) {
   const t = Math.max(0, Math.floor(seconds || parsed.start || 0));
   const origin = location.origin && location.origin !== "null"
@@ -108,6 +112,7 @@ function youtubeSrc(parsed, seconds, muted) {
     : "";
   return "https://www.youtube.com/embed/" + encodeURIComponent(parsed.id) +
     "?autoplay=1&rel=0&playsinline=1&enablejsapi=1" + origin + "&start=" + t +
+    "&controls=0&modestbranding=1&iv_load_policy=3&fs=0&disablekb=1&cc_load_policy=0" +
     (muted ? "&mute=1" : "");
 }
 
