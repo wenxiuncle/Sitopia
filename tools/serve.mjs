@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { attachLobby } from "./lobby.mjs";
 import { adminTokenState, handleLocalAdmin } from "./admin-local.mjs";
 import { biliPageDuration } from "./bili-duration.mjs";
+import { biliPlayUrl } from "./bili-play.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const types = {
@@ -45,11 +46,27 @@ function handleBiliDuration(url, res) {
   biliPageDuration(bvid, aid, page).then((duration) => writeJson(res, 200, { duration }));
 }
 
+// 同上。代问一段能直接播的 mp4，幕布才能用自己的 <video> 出声、调音量。
+function handleBiliPlay(url, res) {
+  const bvid = url.searchParams.get("bvid") || "";
+  const aid = url.searchParams.get("aid") || "";
+  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+  if (!/^BV[0-9A-Za-z]+$/.test(bvid) && !/^\d{1,16}$/.test(aid)) {
+    writeJson(res, 400, { url: "", duration: 0, quality: 0 });
+    return;
+  }
+  biliPlayUrl(bvid, aid, page).then((info) => writeJson(res, 200, info));
+}
+
 const server = http.createServer((req, res) => {
   if (lobby && handleLocalAdmin(req, res, lobby)) return;
   const url = new URL(req.url, "http://127.0.0.1");
   if (url.pathname === "/bili-duration") {
     handleBiliDuration(url, res);
+    return;
+  }
+  if (url.pathname === "/bili-play") {
+    handleBiliPlay(url, res);
     return;
   }
   let rel = decodeURIComponent(url.pathname);

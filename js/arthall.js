@@ -321,28 +321,25 @@ async function fetchBiliDuration(parsed) {
   return 0;
 }
 
+// B 站只认自家来源页，浏览器里直接问播放地址必被 403 挡回来，改由服务端代问。
+// 问到一段能直接播的 mp4，就交给幕布自己的 <video>：音量、通断、声场都归页面管。
 async function lookupBili(parsed) {
   const q = parsed.bvid ? "bvid=" + encodeURIComponent(parsed.bvid) : "aid=" + encodeURIComponent(parsed.aid);
-  try {
-    const viewRes = await fetch("https://api.bilibili.com/x/web-interface/view?" + q);
-    if (!viewRes.ok) return { url: "", duration: 0 };
-    const view = await viewRes.json();
-    const pages = view && view.data && view.data.pages;
-    if (!pages || !pages.length) return { url: "", duration: 0 };
-    const page = pages[(parsed.page || 1) - 1] || pages[0];
-    if (!page || !page.cid) return { url: "", duration: 0 };
-    const duration = Number(page.duration) || 0;
-    const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + page.cid + "&qn=64&fnval=1");
-    if (!playRes.ok) return { url: "", duration };
-    const play = await playRes.json();
-    const clips = play && play.data && play.data.durl;
-    // 多段地址只拿到第一段，文件会在正片中途结束。这种留给官方播放器播完整段。
-    const clip = clips && clips.length === 1 ? clips[0] : null;
-    const url = clip && clip.url ? clip.url : "";
-    return { url: url || "", duration };
-  } catch {
-    return { url: "", duration: 0 };
+  const query = "/bili-play?" + q + "&page=" + (parsed.page || 1);
+  const urls = [query, "https://lobby.youquhome.com" + query];
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const res = await fetch(urls[i], { cache: "no-store", signal: AbortSignal.timeout(6000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const url = data && typeof data.url === "string" ? data.url : "";
+      const duration = Number(data && data.duration) || 0;
+      if (url || duration > 0) return { url, duration };
+    } catch {
+      // 这一条问不到，换下一条。
+    }
   }
+  return { url: "", duration: 0 };
 }
 
 async function corsOk(url) {
@@ -675,9 +672,9 @@ export function createArtHall(art, screenMesh, hooks) {
       postFrame(JSON.stringify({ event: "command", func: n > 0 ? "unMute" : "mute", args: [] }));
       return;
     }
-    if (item.platform === "bili") {
-      postFrame("setPlayer-" + JSON.stringify({ type: "changeVolume", value: { volume: n } }));
-    }
+    // B 站现役嵌播器没有对外接口，旧的 setPlayer- 协议发了也没人接。
+    // 所以 B 站片子改由服务端代问一段 mp4、用页面的 <video> 播，音量归滑块管；
+    // 只有多段 durl 这种退回嵌播器的情况才调不动。
   }
 
   function scheduleFrameVolume() {
