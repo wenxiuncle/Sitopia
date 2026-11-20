@@ -326,18 +326,35 @@ async function fetchBiliDuration(parsed) {
   return 0;
 }
 
+// 本地/自建服务带站内 Referer 代问直链：幕布自己的 <video> 放，片尾没有推荐页，结束也准。
+// 线上服务在 Cloudflare 出口会被 B 站风控拦住，拿不到就退回官方嵌播器。
 async function lookupBili(parsed) {
   const q = parsed.bvid ? "bvid=" + encodeURIComponent(parsed.bvid) : "aid=" + encodeURIComponent(parsed.aid);
+  const page = parsed.page || 1;
+  try {
+    const local = await fetch("/bili-play?" + q + "&page=" + page, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(6000),
+    });
+    if (local.ok) {
+      const info = await local.json();
+      const url = String((info && info.url) || "");
+      const duration = Number(info && info.duration) || 0;
+      if (url || duration > 0) return { url, duration };
+    }
+  } catch {
+    // 没有本地服务，继续试浏览器直问。
+  }
   try {
     const viewRes = await fetch("https://api.bilibili.com/x/web-interface/view?" + q);
     if (!viewRes.ok) return { url: "", duration: 0 };
     const view = await viewRes.json();
     const pages = view && view.data && view.data.pages;
     if (!pages || !pages.length) return { url: "", duration: 0 };
-    const page = pages[(parsed.page || 1) - 1] || pages[0];
-    if (!page || !page.cid) return { url: "", duration: 0 };
-    const duration = Number(page.duration) || 0;
-    const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + page.cid + "&qn=64&fnval=1");
+    const row = pages[(parsed.page || 1) - 1] || pages[0];
+    if (!row || !row.cid) return { url: "", duration: 0 };
+    const duration = Number(row.duration) || 0;
+    const playRes = await fetch("https://api.bilibili.com/x/player/playurl?" + q + "&cid=" + row.cid + "&qn=64&fnval=1");
     if (!playRes.ok) return { url: "", duration };
     const play = await playRes.json();
     const clips = play && play.data && play.data.durl;
@@ -357,6 +374,8 @@ async function corsOk(url) {
     const res = await fetch(url, {
       mode: "cors",
       headers: { Range: "bytes=0-1" },
+      // B 站 CDN 只放行空 Referer 或站内 Referer：探测和正式播放都不带来源页。
+      referrerPolicy: "no-referrer",
       signal: ctrl.signal,
     });
     return !!(res && (res.ok || res.status === 206));
@@ -909,6 +928,8 @@ export function createArtHall(art, screenMesh, hooks) {
       }
       const gen = loadGen;
       tryingVideo = true;
+      // B 站 CDN 只放行空 Referer 或站内 Referer，带上本地来源会被 403。
+      video.setAttribute("referrerpolicy", "no-referrer");
       let done = false;
       const finish = (ok) => {
         if (done) return;
