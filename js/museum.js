@@ -94,7 +94,20 @@ const SPRINT = 11.2;
 const JUMP_V = 5.4;
 const GRAVITY = 18;
 const MAX_STEP = 0.05;
+// 抬头低头的上限。第一视角转视角与「上次站的位置」共用这一个值。
+const PITCH_MAX = 1.15;
 const params = new URLSearchParams(location.search);
+// 「上次站的位置」只记在本机浏览器里，和昵称、排序这些本机状态放在一起。
+const POSE_KEY = "quzhan-museum-pose";
+// 这些参数是拿来看某一处画面的调试机位：它们摆出来的机位既不存档，也不从存档出生。
+const directPose =
+  params.has("selftest") ||
+  params.has("preview") ||
+  params.has("x") ||
+  params.has("z") ||
+  params.has("y") ||
+  params.has("yaw") ||
+  params.has("car");
 
 const view = document.getElementById("view");
 const loading = document.getElementById("loading");
@@ -355,6 +368,10 @@ let arriveFromGate = false;
 let arrivalQueued = false;
 let arrivalRun = false;
 let hallVeiled = false;
+// 人已经站进馆里（起名、加载、落地都过了）。没站进去就不写位置存档。
+let playerShown = false;
+// 这次开机不从广场飞进来，直接落在上次站的地方。
+let resumePose = false;
 let arrivalStamp = 0;
 let arrivalNow = 0;
 let arrivalT0 = 0;
@@ -3015,8 +3032,8 @@ function applyLook(dx, dy) {
   }
   camera.rotation.y -= dx * 0.0022;
   camera.rotation.x -= dy * 0.0022;
-  if (camera.rotation.x > 1.15) camera.rotation.x = 1.15;
-  if (camera.rotation.x < -1.15) camera.rotation.x = -1.15;
+  if (camera.rotation.x > PITCH_MAX) camera.rotation.x = PITCH_MAX;
+  if (camera.rotation.x < -PITCH_MAX) camera.rotation.x = -PITCH_MAX;
 }
 
 function touchModal() {
@@ -3680,9 +3697,12 @@ function bind() {
     boxWatch.observe(view);
   }
   // 切到别的应用里转好屏再回来，常常一个 resize 都没有。
+  // 人从这一页离开的那一刻，把站的地方记下来：手机切后台走 hidden，关页、刷新走 pagehide。
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) settleView(400);
+    if (document.hidden) savePose();
+    else settleView(400);
   });
+  window.addEventListener("pagehide", savePose);
   window.addEventListener("pageshow", () => settleView(400));
   document.addEventListener("pointerdown", () => {
     if (!document.body.classList.contains("touch-play")) return;
@@ -3885,6 +3905,68 @@ function restoreView(saved) {
   camera.position.copy(saved.pos);
   camera.rotation.copy(saved.rot);
   camera.updateMatrixWorld();
+}
+
+/* ------------------------------------------------------------ 上次站的位置 */
+// 关页前站的地方记在本机。下次开机直接落在那里，不用再从广场走一遍。
+// 布局改过、原来站的地方进了墙里或脚下没了楼板，就退回出生点。
+
+function readSavedPose() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(POSE_KEY) || "null");
+  } catch {
+    return null;
+  }
+  if (!saved || typeof saved !== "object") return null;
+  const x = Number(saved.x);
+  const y = Number(saved.y);
+  const z = Number(saved.z);
+  const yaw = Number(saved.yaw);
+  const pitch = Number(saved.pitch);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return null;
+  return { x, y, z, yaw, pitch };
+}
+
+// 存档里那个点还站不站得住：脚下有楼板、人不在墙里。站不住就整份作废。
+function applySavedPose() {
+  if (!built) return false;
+  const saved = readSavedPose();
+  if (!saved) return false;
+  if (saved.y < -0.5 || saved.y > built.floors * STORY + 0.5) return false;
+  // 和 settleFeet 一样拿脚底去问楼板：差出一掌宽就是楼层变了或站在半空。
+  const support = groundAt(saved.x, saved.z, saved.y, built.floors);
+  if (support == null || Math.abs(support - saved.y) > 0.45) return false;
+  if (blocked(saved.x, saved.z, PLAYER_RADIUS, built.walls, support)) return false;
+  px = saved.x;
+  pz = saved.z;
+  py = support;
+  const pitch = Math.min(PITCH_MAX, Math.max(-PITCH_MAX, saved.pitch));
+  camera.position.set(px, py + EYE, pz);
+  camera.rotation.set(pitch, saved.yaw, 0);
+  camera.updateMatrixWorld();
+  return true;
+}
+
+// 关页、切到后台时记一次。电梯轿厢、座位动画、跳在半空、飞行段落里都不记：
+// 那些地方跨层或悬空，回来站不住，宁可留住上一次踩在地上的位置。
+function savePose() {
+  if (!built || !playerShown) return;
+  if (arrivalRun || openingNow()) return;
+  if (seatBusy() || airborne) return;
+  if (lift && inLiftCar(px, pz)) return;
+  try {
+    localStorage.setItem(POSE_KEY, JSON.stringify({
+      x: px,
+      y: py,
+      z: pz,
+      yaw: camera.rotation.y,
+      pitch: camera.rotation.x,
+    }));
+  } catch {
+    /* 记不住就这次先不记。 */
+  }
 }
 
 function openingDay() {
@@ -4238,7 +4320,6 @@ function rehangFrames() {
 }
 
 async function buildScene(data, arrange) {
-  const directPose = params.has("selftest") || params.has("preview") || params.has("x") || params.has("z") || params.has("y") || params.has("yaw") || params.has("car");
   paceBoot = true;
   sites = data.sites;
   hangArrange = arrange;
@@ -4247,6 +4328,8 @@ async function buildScene(data, arrange) {
   await bootMark(LOAD_ARRANGE);
   built = buildMuseum(sites, hangArrange, hangSort);
   resetPose();
+  // 调试机位优先；否则接上次站的地方。接上了，下面的 entryView 就是回来的落点。
+  resumePose = directPose ? false : applySavedPose();
   if (params.has("preview") && built.frames.length) {
     const frame = built.frames[Math.min(24, built.frames.length - 1)];
     px = frame.x;
@@ -4969,6 +5052,7 @@ async function buildScene(data, arrange) {
   }
 
   function showPlayHud() {
+    playerShown = true;
     document.body.classList.remove("opening");
     hideEscCard();
     where.hidden = false;
@@ -5001,6 +5085,12 @@ async function buildScene(data, arrange) {
     if (reveal.done) return;
     reveal.done = true;
     settleHall();
+    // 接着上次站的地方开机：人已经在馆里，不必再从南立面飞进去（穿墙也难看）。
+    if (resumePose) {
+      if (entryView) restoreView(entryView);
+      presentPlayer();
+      return;
+    }
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!entryView || reduced) {
       if (entryView) restoreView(entryView);
