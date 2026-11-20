@@ -134,6 +134,22 @@ function embedReflect(item) {
   return !!(item && (item.platform === "bili" || item.platform === "youtube"));
 }
 
+// 手机上一次只让一路画面动。倒影要是也挂一个嵌播器，就是两个解码器同时开，
+// 每帧还要把画面读进布上再抹 40px 模糊；手机端 WebView 扛不住，会直接把整页回收重载，
+// 表现成"看着看着网站自己刷新、游戏从头来"。手机上只留地上一片柔光（纯 CSS），
+// 桌面照旧铺倒影。判定跟其余手机差异同一把尺：html/body 上的 touch-play（js/touch.js）。
+const coarsePointer = typeof matchMedia === "function" ? matchMedia("(pointer: coarse)") : null;
+const noHover = typeof matchMedia === "function" ? matchMedia("(hover: none)") : null;
+
+function thinReflect() {
+  if (typeof document !== "undefined") {
+    const root = document.documentElement;
+    if (root && root.classList.contains("touch-play")) return true;
+    if (document.body && document.body.classList.contains("touch-play")) return true;
+  }
+  return !!((coarsePointer && coarsePointer.matches) || (noHover && noHover.matches));
+}
+
 function formatTime(sec) {
   const s = Math.max(0, Math.floor(Number(sec) || 0));
   const m = Math.floor(s / 60);
@@ -867,7 +883,7 @@ export function createArtHall(art, screenMesh, hooks) {
     if (reflect) reflect.hidden = false;
     if (reflectGlow) reflectGlow.hidden = false;
     hideReflectCanvas();
-    if (embedReflect(item) && reflectFrame) {
+    if (!thinReflect() && embedReflect(item) && reflectFrame) {
       reflectFrame.hidden = false;
       reflectFrame.src = frameSrc(item, t, true);
     } else {
@@ -970,8 +986,11 @@ export function createArtHall(art, screenMesh, hooks) {
         video.hidden = false;
         if (reflect) reflect.hidden = false;
         if (reflectGlow) reflectGlow.hidden = false;
-        showReflectCanvas();
-        paintReflect();
+        if (thinReflect()) hideReflectCanvas();
+        else {
+          showReflectCanvas();
+          paintReflect();
+        }
         if (video.crossOrigin) {
           try { connectVideo(context()); } catch { /* 跨域音轨接不上时，元素自己出声。 */ }
         }
@@ -1428,7 +1447,7 @@ export function createArtHall(art, screenMesh, hooks) {
           showMount();
           present(camera);
           occludeBody(camera, player);
-          if (mode === "video") paintReflect();
+          if (mode === "video" && !thinReflect()) paintReflect();
           if (bus) hear(camera, mode === "video" && !paused);
         }
       }
