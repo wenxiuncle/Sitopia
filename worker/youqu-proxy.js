@@ -10,7 +10,6 @@ import { listRepoAudio } from "../tools/audio-remote.mjs";
 import { fetchedToday, frameDispatch, frameStatus } from "../tools/frames.mjs";
 import { createLoginGuard, pause } from "../tools/login-guard.mjs";
 import { biliPageDuration } from "../tools/bili-duration.mjs";
-import { biliPlayUrl } from "../tools/bili-play.mjs";
 
 const UPSTREAM = "sitopia-lobby.adhesive-quarter.workers.dev";
 const guard = createLoginGuard();
@@ -200,57 +199,6 @@ async function biliDuration(request, url) {
   return new Response(body, { headers });
 }
 
-// 播放地址带签名，两小时左右就过期。缓存只留十分钟，够同一批人连着点，也不会发出死链。
-async function biliPlay(request, url) {
-  const origin = request.headers.get("Origin") || "";
-  if (!PAGE_ORIGINS.has(origin)) return new Response("forbidden", { status: 403 });
-  const headers = {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-    "access-control-allow-origin": origin,
-    vary: "Origin",
-  };
-  if (request.method === "OPTIONS") {
-    headers.allow = "GET, OPTIONS";
-    headers["access-control-allow-methods"] = "GET, OPTIONS";
-    headers["access-control-max-age"] = "86400";
-    return new Response(null, { status: 204, headers });
-  }
-  if (request.method !== "GET") return new Response("method", { status: 405, headers });
-  const bvid = url.searchParams.get("bvid") || "";
-  const aid = url.searchParams.get("aid") || "";
-  const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
-  if (!/^BV[0-9A-Za-z]+$/.test(bvid) && !/^\d{1,16}$/.test(aid)) {
-    return new Response('{"url":"","duration":0,"quality":0}', { status: 400, headers });
-  }
-  const cacheUrl = new URL(url.origin + "/bili-play");
-  if (bvid) cacheUrl.searchParams.set("bvid", bvid);
-  if (aid) cacheUrl.searchParams.set("aid", aid);
-  cacheUrl.searchParams.set("page", String(page));
-  const cacheKey = new Request(cacheUrl.toString(), { method: "GET" });
-  try {
-    const hit = await caches.default.match(cacheKey);
-    if (hit) return new Response(hit.body, { status: hit.status, headers });
-  } catch {
-    // 缓存不可用就直接问。
-  }
-  const info = await biliPlayUrl(bvid, aid, page);
-  const body = JSON.stringify(info);
-  if (info.url) {
-    try {
-      await caches.default.put(cacheKey, new Response(body, {
-        headers: {
-          "content-type": "application/json; charset=utf-8",
-          "cache-control": "public, max-age=600",
-        },
-      }));
-    } catch {
-      // 记不住就下次再问。
-    }
-  }
-  return new Response(body, { headers });
-}
-
 function adminLogout(request) {
   const secure = new URL(request.url).protocol === "https:";
   return json({ ok: true }, 200, {
@@ -300,7 +248,6 @@ export default {
       return forwardAdmin(request, env);
     }
     if (url.pathname === "/bili-duration") return biliDuration(request, url);
-    if (url.pathname === "/bili-play") return biliPlay(request, url);
     if (
       url.pathname === "/lobby" ||
       url.pathname === "/lobby/count" ||
