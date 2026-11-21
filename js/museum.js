@@ -344,6 +344,15 @@ document.body.style.background = "#" + bootNoon.horizon.toString(16).padStart(6,
 const camera = new THREE.PerspectiveCamera(68, 1, 0.1, 900);
 camera.rotation.order = "YXZ";
 
+// 视角不跟着窗口一直变：竖向 68° 铺满，窗口比 16:9 更宽时横向视角不再继续变大，
+// 收到 16:9 那一档（约 100°）。多出来的宽度靠收紧竖向视角来适配，
+// 这样超宽屏左右不再被超广角拉扯，16:9 和更窄的窗口跟改之前一模一样。
+const BASE_FOV = 68;
+const FOV_ASPECT_CAP = 16 / 9;
+const RAD_TO_DEG = 180 / Math.PI;
+const BASE_TAN_HALF = Math.tan((BASE_FOV * Math.PI) / 360);
+const MAX_TAN_HALF = BASE_TAN_HALF * FOV_ASPECT_CAP;
+
 let loadProgress = 0;
 let loadPace = true;
 let loadCeil = 0.08;
@@ -530,6 +539,7 @@ function paintAimDebug(rect) {
     "cross " + Math.round(cross.left + cross.width / 2) + "," + Math.round(cross.top + cross.height / 2),
     "dpr " + (window.devicePixelRatio || 1).toFixed(2) + " buffer " + renderer.domElement.width + "x" + renderer.domElement.height,
     "ar css " + (rect.width / Math.max(1, rect.height)).toFixed(4) + " buf " + (renderer.domElement.width / Math.max(1, renderer.domElement.height)).toFixed(4),
+    "fov " + camera.fov.toFixed(1) + " h " + (2 * Math.atan(Math.tan((camera.fov * Math.PI) / 360) * camera.aspect) * RAD_TO_DEG).toFixed(1),
     // 视口按 CSS 像素存，three 渲染时再乘 pixelRatio。跟画布尺寸对不上，画面就会整体放大挪位。
     "vp " + Math.round(aimVp.x) + "," + Math.round(aimVp.y) + " " + Math.round(aimVp.z) + "x" + Math.round(aimVp.w) +
       " size " + Math.round(aimSize.x) + "x" + Math.round(aimSize.y) + " pr " + vpr,
@@ -670,7 +680,10 @@ function fitView() {
   sizedH = box.h;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
   renderer.setSize(box.w, box.h, false);
-  camera.aspect = box.w / box.h;
+  const aspect = box.w / box.h;
+  camera.aspect = aspect;
+  // 横向视角封顶：宽高比超过 16:9 就把竖向视角收一点，横向停在 16:9 那一档。
+  camera.fov = 2 * Math.atan(Math.min(BASE_TAN_HALF, MAX_TAN_HALF / aspect)) * RAD_TO_DEG;
   camera.updateProjectionMatrix();
   // 盒子变了，准星和取景射线的中心跟着换。
   placeAim();
