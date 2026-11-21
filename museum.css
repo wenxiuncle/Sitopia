@@ -1394,47 +1394,614 @@ body.dark-sky #seat-hint {
 
 #panel { z-index: 5; }
 
+/* 开始页：整块米白「展签」立在左边，右边留给南立面远景。
+   配色从大楼身上取：石材米白、腰线砖红、画框草金。手机直向时改到底部一片。 */
+:root,
+html,
+body {
+  --mu-cream: #f7eedc;
+  --mu-cream-hi: #fdf7ea;
+  --mu-brick: #9d4030;
+  --mu-brick-deep: #7c2f22;
+  --mu-brass: #c99a4b;
+  --mu-brass-hi: #e6bd76;
+  --mu-ink: #33231c;
+  --mu-ink-soft: #6d5b4d;
+  --mu-ink-faint: #9c8877;
+  --mu-line: rgba(124, 71, 48, 0.16);
+  --mu-shadow: 0 22px 46px rgba(58, 33, 24, 0.18);
+}
+
 #name-gate {
   position: fixed;
-  left: 50%;
-  top: 46%;
-  transform: translate(-50%, -50%);
+  left: 0;
+  top: 0;
+  bottom: 0;
   z-index: 8;
-  width: min(360px, calc(100% - 32px));
-  padding: 18px 20px 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 47vw);
+  min-width: 432px;
+  padding: 26px 34px calc(20px + env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+  overflow-y: auto;
   opacity: 0;
+  transform: translateX(-18px);
   pointer-events: none;
-  transition: opacity 0.75s ease;
+  color: var(--mu-ink);
+  /* 底色留透明：底下那层渐变才透得出楼来。 */
+  background-color: transparent;
+  /* 面色抄羽毛球首页那片留白（--veil: 251,248,241）：左侧八成、贴楼那侧化到全透。 */
+  background-image:
+    linear-gradient(90deg,
+      rgba(251, 248, 241, 0.8) 0%,
+      rgba(251, 248, 241, 0.64) 42%,
+      rgba(251, 248, 241, 0.34) 76%,
+      rgba(251, 248, 241, 0) 100%);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  border: 0;
+  /* 右侧那道边由渐变自己收：不画线、不投影，四角都是直角。 */
+  border-radius: 0;
+  transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 #name-gate.is-shown {
   opacity: 1;
+  transform: none;
   pointer-events: auto;
 }
 
-#name-gate p {
-  margin: 0 0 10px;
-  color: #6f6a64;
-  font-size: 14px;
-  line-height: 1.6;
+/* 上面写了 display:flex，hidden 属性就不再自动收起来了。 */
+#name-gate[hidden] { display: none; }
+
+/* 内容整体收窄、居中：卡片加宽了，字不用跟着拉满。 */
+.gate-head, .gate-body, .gate-foot {
+  width: 100%;
+  max-width: 384px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.gate-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.gate-mark {
+  display: flex;
+  flex: none;
+  color: var(--mu-brick);
+}
+.gate-mark svg { width: 24px; height: 24px; }
+
+.gate-brand {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  line-height: 1.3;
+  color: var(--mu-ink);
+}
+
+.gate-brand em {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--mu-ink-faint);
+}
+
+.gate-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--mu-line);
+}
+
+/* 底子薄了，字下面补一圈白（羽毛球面板里也是这么处理的），压住背后的楼和窗。 */
+.gate-kicker, .gate-lead, .gate-label, .gate-foot {
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.95), 0 0 12px rgba(255, 255, 255, 0.92);
+}
+
+.gate-body {
+  /* 内容整体上移 40px：只用相对偏移，页头和页脚不动。 */
+  position: relative;
+  top: -40px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  padding: 18px 0 4px;
+}
+
+.gate-kicker {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--mu-brick);
+}
+
+.gate-title {
+  margin: 0;
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1.16;
+  color: var(--mu-ink);
+}
+
+.gate-title span {
+  position: relative;
+  display: inline-block;
+  padding: 0 0.08em 0.04em 0.02em;
+}
+
+/* 标题后面那道斜的笔触，取画框的金。 */
+.gate-title span::after {
+  content: "";
+  position: absolute;
+  left: -0.05em;
+  right: -0.1em;
+  bottom: 0.12em;
+  z-index: -1;
+  height: 0.34em;
+  border-radius: 2px;
+  background: linear-gradient(92deg, rgba(230, 189, 118, 0.9), rgba(201, 154, 75, 0.62) 62%, rgba(201, 154, 75, 0.18));
+  transform: skewX(-11deg);
+  /* 两头收干，别在字尾留一个方头。 */
+  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.3) 0%, #000 14%, #000 72%, rgba(0, 0, 0, 0.1) 100%);
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.3) 0%, #000 14%, #000 72%, rgba(0, 0, 0, 0.1) 100%);
+}
+
+.gate-lead {
+  margin: 14px 0 0;
+  font-size: 14.5px;
+  line-height: 1.72;
+  color: var(--mu-ink-soft);
+}
+
+.gate-lead #gate-count {
+  font-weight: 700;
+  color: var(--mu-ink);
+}
+
+.gate-label {
+  display: block;
+  margin: 24px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--mu-ink-faint);
 }
 
 #name-gate input {
   box-sizing: border-box;
   width: 100%;
-  font-size: 15px;
-  padding: 8px 10px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 13px 14px;
+  color: var(--mu-ink);
+  background: #fffdf7;
+  border: 1.5px solid rgba(124, 71, 48, 0.28);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 2px rgba(74, 44, 26, 0.06);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-#name-gate button {
-  display: block;
-  width: max-content;
-  margin: 10px auto 0;
+#name-gate input::placeholder {
+  color: #b8a894;
+  font-weight: 400;
+}
+
+#name-gate input:focus {
+  border-color: var(--mu-brick);
+  box-shadow: 0 0 0 3px rgba(157, 64, 48, 0.16);
+}
+
+#name-gate input:focus-visible {
+  outline: none;
+}
+
+/* 昵称框和右边的骰子按钮并排，按钮高度跟着输入框走。 */
+.gate-field {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.gate-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gate-dice {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  padding: 0;
+  color: var(--mu-brick);
+  background: #fffdf7;
+  border: 1.5px solid rgba(124, 71, 48, 0.28);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 2px rgba(74, 44, 26, 0.06);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.gate-dice svg {
+  width: 26px;
+  height: 26px;
+}
+
+.gate-dice:hover {
+  background: #fff5e3;
+  border-color: var(--mu-brick);
+}
+
+.gate-dice:active {
+  transform: scale(0.93);
+}
+
+.gate-dice:focus-visible {
+  outline: none;
+  border-color: var(--mu-brick);
+  box-shadow: 0 0 0 3px rgba(157, 64, 48, 0.16);
+}
+
+.gate-enter {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0 12px;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px 16px 12px 20px;
+  font: inherit;
+  text-align: left;
+  color: #fdf7ea;
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 12px 24px rgba(126, 48, 34, 0.28), inset 0 1px 0 rgba(255, 220, 180, 0.22);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+
+.gate-enter-main {
+  grid-column: 1;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.gate-enter-sub {
+  grid-column: 1;
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgba(253, 240, 220, 0.76);
+}
+
+.gate-chev {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  justify-self: end;
+  opacity: 0.9;
+}
+
+.gate-enter:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 16px 30px rgba(126, 48, 34, 0.32), inset 0 1px 0 rgba(255, 220, 180, 0.28);
+}
+
+.gate-enter:active { transform: translateY(1px); }
+
+.gate-enter:focus-visible {
+  outline: 2px solid var(--mu-brick-deep);
+  outline-offset: 3px;
+}
+
+.gate-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.gate-card {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  min-height: 54px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--mu-ink);
+  background: rgba(255, 252, 244, 0.72);
+  border: 1px solid rgba(124, 71, 48, 0.2);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.gate-card:hover {
+  background: #fffdf6;
+  border-color: rgba(157, 64, 48, 0.45);
+  transform: translateY(-1px);
+}
+
+.gate-card:active { transform: none; }
+
+.gate-card:focus-visible {
+  outline: 2px solid var(--mu-brick-deep);
+  outline-offset: 2px;
+}
+
+.gate-card-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--mu-brick);
+}
+
+.gate-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.gate-card-text b {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.gate-card-text small {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--mu-ink-faint);
+}
+
+.gate-dot {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d0483a;
+  box-shadow: 0 0 0 3px rgba(208, 72, 58, 0.16);
+}
+
+.gate-dot[hidden] { display: none; }
+
+.gate-foot {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 16px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--mu-ink-faint);
+}
+
+.gate-foot span:not(:first-child)::before {
+  content: "·";
+  margin-right: 8px;
+  color: rgba(156, 136, 119, 0.6);
+}
+
+/* 手机上换成触屏的说法。 */
+.gate-foot-touch { display: none; }
+body.touch-play .gate-foot-keys { display: none; }
+body.touch-play .gate-foot-touch { display: flex; }
+
+/* 公告：开始页上唯一的一个浮层，样式跟面板同一套。 */
+#notice {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(28, 15, 10, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+#notice[hidden] { display: none; }
+
+#notice-card {
+  box-sizing: border-box;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  padding: 24px 28px 20px;
+  color: var(--mu-ink);
+  background: linear-gradient(180deg, #fdf7ea, #f3e8d4);
+  border: 1px solid var(--mu-line);
+  border-top: 4px solid var(--mu-brick);
+  border-radius: 18px;
+  box-shadow: var(--mu-shadow);
+}
+
+#notice-kicker {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  color: var(--mu-brick);
+}
+
+#notice-title {
+  margin: 0 0 16px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+#notice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#notice-list li {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
   font-size: 14px;
-  padding: 8px 14px;
-  border: 1px solid #2c2926;
-  background: #2c2926;
-  color: #fffcf8;
+  line-height: 1.7;
+  color: var(--mu-ink-soft);
+}
+
+#notice-list b {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--mu-brick);
+}
+
+#notice-list kbd {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 1.55em;
+  margin: 0 1px;
+  padding: 0 0.38em;
+  border: 1px solid rgba(124, 71, 48, 0.4);
+  border-bottom-width: 3px;
+  border-radius: 4px;
+  background: #fffdf7;
+  color: var(--mu-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+#notice-close {
+  margin-left: auto;
+  padding: 11px 22px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #fdf7ea;
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border: 0;
+  border-radius: 11px;
+  box-shadow: 0 10px 22px rgba(126, 48, 34, 0.26);
+  cursor: pointer;
+}
+
+#notice-close:hover { filter: brightness(1.06); }
+
+#notice-close:focus-visible {
+  outline: 2px solid var(--mu-brick-deep);
+  outline-offset: 3px;
+}
+
+#notice-link {
+  font-size: 13px;
+  color: var(--mu-ink-soft);
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 860px) {
+  /* 手机上不用底部抽拉那一套了：整屏铺一层七成透明的米白，楼还看得见但不跟字抢，内容摆在画面正中。 */
+  #name-gate {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    min-width: 0;
+    max-height: none;
+    /* 品牌顶格、页脚贴底，正文靠上下两个 auto 外边距落在正中。 */
+    justify-content: space-between;
+    padding: 26px 22px calc(24px + env(safe-area-inset-bottom, 0px));
+    transform: translateY(14px);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    /* 平铺一层，不渐变。 */
+    background-color: rgba(251, 248, 241, 0.7);
+    background-image: none;
+  }
+
+  #name-gate.is-shown { transform: none; }
+
+  .gate-head { padding-top: 0; }
+  /* 只给上下留 auto，左右继续沿用上面那条居中规则。 */
+  .gate-body { flex: 0 0 auto; margin-top: auto; margin-bottom: auto; padding: 0; }
+  .gate-body .gate-kicker { margin-bottom: 12px; text-align: center; }
+  .gate-title { font-size: 40px; text-align: center; }
+  .gate-lead { margin-top: 10px; font-size: 13.5px; }
+  .gate-label { margin-top: 18px; }
+  #name-gate input { font-size: 16px; padding: 11px 12px; }
+  .gate-enter { margin-top: 10px; padding: 10px 14px 10px 16px; }
+  .gate-enter-main { font-size: 16.5px; }
+  .gate-cards { gap: 8px; margin-top: 10px; }
+  .gate-card { min-height: 48px; padding: 8px 10px; }
+  .gate-foot { margin-top: 12px; }
+  #notice-card { padding: 22px 20px 16px; border-radius: 16px; }
+  #notice-list li { grid-template-columns: 52px 1fr; gap: 8px; font-size: 13.5px; }
+  #notice-title { font-size: 21px; }
+}
+
+/* 手机横屏（高度很矮）时把纵向留白和内边距压一压，一屏能放下，不用滚。 */
+@media (max-width: 860px) and (max-height: 520px) {
+  #name-gate { padding: 11px 22px calc(9px + env(safe-area-inset-bottom, 0px)); }
+  .gate-body { padding: 6px 0 0; top: 0; }
+  .gate-title { font-size: 28px; }
+  .gate-lead { margin-top: 8px; font-size: 13px; }
+  .gate-label { margin-top: 12px; }
+  #name-gate input { padding: 9px 12px; }
+  .gate-enter { margin-top: 8px; padding: 8px 13px 8px 15px; }
+  .gate-cards { margin-top: 8px; }
+  .gate-card { min-height: 44px; }
+  .gate-foot { margin-top: 8px; }
+}
+
+@media (max-height: 720px) and (min-width: 861px) {
+  #name-gate { padding-top: 18px; padding-bottom: 16px; }
+  .gate-body { padding-top: 10px; }
+  .gate-title { font-size: 36px; }
+  .gate-lead { margin-top: 10px; font-size: 13.5px; }
+  .gate-label { margin-top: 16px; }
+  .gate-enter { margin-top: 10px; padding: 9px 14px 9px 18px; }
+  .gate-enter-main { font-size: 16.5px; }
+  .gate-cards { margin-top: 9px; }
+  .gate-card { min-height: 46px; }
+  .gate-foot { margin-top: 10px; }
 }
 
 #kick-gate {
@@ -1872,7 +2439,497 @@ body.touch-play:has(#kick-gate:not([hidden])) #touch-pad { display: none; }
   }
 }
 
+/* ── 进馆之后的界面：跟开始页同一套米白展签、砖红按钮、草金细节 ── */
+html, body { --plate: rgba(255, 255, 255, 0.8); }
+
+/* 顶左：馆名做成一块挂在画面上的展签，跟汉堡菜单那张卡同一套底。 */
+#where {
+  padding: 11px 16px 10px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-left: 3px solid var(--mu-brick);
+  border-radius: 16px;
+  box-shadow: 0 6px 16px rgba(18, 26, 59, 0.12);
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+}
+
+/* 楼层写在馆名右边。 */
+#where-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+#where, #legend { text-shadow: none; }
+
+/* 白半透的卡底下有时是深色的墙，字下面补一圈白，跟羽毛球面板里的字一个处理。 */
+#where, #place, #online, #lift-toggle, #roster, #people li, #chat-log li,
+.drawer-body .menu-head, .drawer-label, #help-keys li, #project-link,
+#credit, #music-credit {
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.92);
+}
+#day button.on { text-shadow: none; }
+
+#where strong {
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--mu-ink);
+}
+
+#place {
+  margin-top: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  color: var(--mu-ink-soft);
+  white-space: nowrap;
+}
+
+#day { gap: 4px 6px; margin-top: 8px; max-width: 324px; }
+
+#day button {
+  padding: 3px 9px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--mu-ink-soft);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  text-shadow: none;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+#day button:hover { background: rgba(157, 64, 48, 0.08); color: var(--mu-ink); }
+
+#day button.on {
+  color: #fdf7ea;
+  background: var(--mu-brick);
+  border-color: var(--mu-brick);
+  text-shadow: none;
+}
+
+body.dark-sky #where strong,
+body.dark-sky #place { color: var(--mu-ink); text-shadow: none; }
+body.dark-sky #day button { color: var(--mu-ink-soft); }
+body.dark-sky #day button.on { color: #fdf7ea; text-shadow: none; }
+
+/* 顶右：延迟、帧数、汉堡。 */
+#lag, #fps {
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fdf7ea;
+  background: rgba(51, 35, 28, 0.44);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+}
+
+#fps { min-width: 0; }
+
+body.dark-sky #lag,
+body.dark-sky #fps { color: #fdf7ea; }
+
+/* 卡片底照抄羽毛球首页「角色造型」那四块：blur(10px) saturate(1.25)、1.5px 白描边、16 圆角、
+   脚下一点软影。那四块是压在米白面板上的 50% 白，透出来大约八成白；这边直接浮在楼里，
+   所以底子给到 80%（0.7 时抽屉压在画框上，键位那几行会看不清）。 */
+#online, #lift-toggle, #map-card, #lift-pad, .drawer-body, #roster {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 6px 16px rgba(18, 26, 59, 0.12);
+  color: var(--mu-ink);
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+}
+
+#drawer-toggle {
+  width: 40px;
+  height: 36px;
+  color: var(--mu-ink);
+  background: rgba(255, 255, 255, 0.8);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 6px 16px rgba(18, 26, 59, 0.12);
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+}
+
+#drawer-toggle[aria-expanded="true"] { color: var(--mu-brick); }
+
+#online, #lift-toggle {
+  padding: 9px 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  border-radius: 16px;
+  color: var(--mu-ink);
+}
+
+#online[aria-expanded="true"],
+#lift-toggle[aria-expanded="true"],
+#drawer-toggle[aria-expanded="true"] {
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border-color: transparent;
+  color: #fdf7ea;
+  box-shadow: 0 10px 22px rgba(126, 48, 34, 0.3);
+}
+
+#map-card { padding: 7px; overflow: hidden; }
+#map { border-radius: 8px; }
+
+/* 卡片贴着右上角，外阴影左右两边会被 #dock / #rail 的 overflow:hidden 切平；
+   放开它们（抽屉收起时由 #drawer 自己的 overflow 收着，不会漏出来）。 */
+#dock, #rail { overflow: visible; }
+
+.drawer-body { padding: 18px 18px 16px; border-radius: 16px; }
+#roster {
+  padding: 12px 13px 16px;
+  border-radius: 16px;
+  /* 在线名单按内容长，最多半屏：别让它从画面上方一直拉到画面底部。 */
+  flex: 0 0 auto;
+  max-height: min(56vh, 520px);
+}
+
+.menu-head {
+  margin: 16px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(124, 71, 48, 0.22);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--mu-brick);
+}
+
+.drawer-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--mu-ink-faint);
+}
+
+#name-form input {
+  padding: 7px 9px;
+  font-size: 13.5px;
+  color: var(--mu-ink);
+  background: #fffdf7;
+  border: 1px solid rgba(124, 71, 48, 0.28);
+  border-radius: 9px;
+}
+
+#name-form button {
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fdf7ea;
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border: 0;
+  border-radius: 9px;
+}
+
+#drawer-switches input,
+#sort-switch input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--mu-brick);
+}
+
+#map-switch, #online-switch, #music-switch, #solo-switch, #sort-switch label {
+  font-size: 12.5px;
+  color: var(--mu-ink-soft);
+}
+
+#help-keys li {
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--mu-ink-soft);
+}
+
+#help-keys kbd, #tab-hint kbd, #seat-hint kbd {
+  border: 1px solid rgba(124, 71, 48, 0.36);
+  border-bottom-width: 3px;
+  border-radius: 5px;
+  background: #fffdf7;
+  color: var(--mu-ink);
+  font-size: 11.5px;
+  font-weight: 800;
+  box-shadow: none;
+}
+
+#help-keys kbd { font-size: 11.5px; font-weight: 500; }
+#tab-hint kbd, #seat-hint kbd { font-size: 14px; }
+
+#project-link { color: var(--mu-ink-soft); }
+#credit, #music-credit { color: var(--mu-ink-faint); }
+
+#people li, #chat-log li { color: var(--mu-ink-soft); }
+#people li.me { color: var(--mu-brick); font-weight: 700; }
+#chat-log .chat-time, #chat-log .sys { color: var(--mu-ink-faint); }
+
+/* 画框介绍卡。 */
+#panel {
+  padding: 26px 26px 20px;
+  background: rgba(250, 243, 230, 0.96);
+  border: 1px solid var(--mu-line);
+  border-radius: 18px;
+  box-shadow: var(--mu-shadow);
+  backdrop-filter: blur(9px);
+}
+
+#panel-hall {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--mu-brick);
+}
+
+#panel h2 {
+  font-family: inherit;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--mu-ink);
+}
+
+#panel-blurb { font-size: 14.5px; line-height: 1.8; color: var(--mu-ink-soft); }
+#panel-down { font-size: 12.5px; color: var(--mu-ink-faint); }
+
+#panel a, #panel button {
+  padding: 10px 14px;
+  font-size: 13.5px;
+  font-weight: 700;
+  border: 1px solid rgba(124, 71, 48, 0.3);
+  border-radius: 10px;
+  color: var(--mu-ink);
+}
+
+#panel a:hover, #panel button:hover { background: rgba(157, 64, 48, 0.07); }
+
+/* 后面这几条带 #panel 前缀：上面 #panel a / #panel button 带上了元素名，
+   单写 #panel-portal 选择器权重不够，会被那条的 background:transparent 压掉。 */
+#panel #panel-portal {
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border-color: transparent;
+  color: #fdf7ea;
+  box-shadow: 0 10px 20px rgba(126, 48, 34, 0.24);
+}
+
+#panel #panel-portal:hover { filter: brightness(1.06); background: linear-gradient(178deg, #ac4a35, #8f3626 88%); }
+#panel #panel-close { border-color: transparent; color: var(--mu-ink-faint); }
+
+/* 欢迎卡。 */
+#boot {
+  width: min(460px, calc(100% - 32px));
+  padding: 20px 22px 18px;
+  background: rgba(250, 243, 230, 0.95);
+  border: 1px solid var(--mu-line);
+  border-radius: 18px;
+  box-shadow: var(--mu-shadow);
+}
+
+#boot h2 {
+  margin: 0 0 5px;
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--mu-ink);
+}
+
+#boot p.boot-sub { font-size: 12px; letter-spacing: 0.16em; color: var(--mu-brick); }
+#boot p, #legend { font-size: 12.8px; line-height: 1.78; color: var(--mu-ink-soft); }
+
+/* 留言板。 */
+#guestbook {
+  padding: 16px 20px 12px;
+  background: rgba(250, 243, 230, 0.96);
+  border: 1px solid var(--mu-line);
+  border-radius: 18px;
+  box-shadow: var(--mu-shadow);
+  backdrop-filter: blur(9px);
+}
+
+#guestbook-tabs { gap: 20px; border-bottom-color: var(--mu-line); }
+
+#guestbook-tabs button {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--mu-ink-faint);
+}
+
+#guestbook-tabs button[aria-selected="true"] { color: var(--mu-ink); border-bottom-color: var(--mu-brick); }
+
+#guestbook textarea {
+  border: 1px solid rgba(124, 71, 48, 0.28);
+  border-radius: 10px;
+  background: #fffdf7;
+  color: var(--mu-ink);
+}
+
+#guestbook-send {
+  padding: 9px 16px;
+  font-weight: 700;
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border: 0;
+  border-radius: 9px;
+  color: #fdf7ea;
+}
+
+#guestbook-list li { border-top-color: rgba(124, 71, 48, 0.12); }
+#guestbook-list > li:last-child:not(.note-empty) { border-bottom-color: rgba(124, 71, 48, 0.12); }
+.note-meta { font-size: 13px; color: var(--mu-ink-faint); }
+.note-text { font-size: 15px; color: var(--mu-ink-soft); }
+
+/* 放映厅设置卡。 */
+#screen-gate {
+  padding: 22px 22px 18px;
+  background: rgba(250, 243, 230, 0.96);
+  border: 1px solid var(--mu-line);
+  border-radius: 16px;
+  box-shadow: var(--mu-shadow);
+}
+
+#screen-gate h2 { font-family: inherit; font-size: 20px; font-weight: 800; letter-spacing: 0.04em; }
+#screen-gate button { border: 1px solid rgba(124, 71, 48, 0.3); border-radius: 9px; color: var(--mu-ink); }
+#screen-gate #screen-play { background: linear-gradient(178deg, #ac4a35, #8f3626 88%); border-color: transparent; color: #fdf7ea; }
+#screen-gate #screen-pause { background: rgba(157, 64, 48, 0.1); border-color: rgba(157, 64, 48, 0.28); color: var(--mu-brick); font-weight: 700; }
+#screen-volume { accent-color: var(--mu-brick); }
+#screen-url { border: 1px solid rgba(124, 71, 48, 0.28); border-radius: 9px; background: #fffdf7; }
+
+/* 聊天、提示、飘字。 */
+#chat-input {
+  padding: 11px 14px;
+  font-size: 15px;
+  color: var(--mu-ink);
+  background: rgba(250, 243, 230, 0.96);
+  border: 1px solid var(--mu-line);
+  border-radius: 12px;
+  box-shadow: 0 12px 26px rgba(58, 33, 24, 0.16);
+}
+
+.toast {
+  padding: 9px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--mu-ink);
+  background: rgba(250, 243, 230, 0.96);
+  border: 1px solid var(--mu-line);
+  border-left: 3px solid var(--mu-brick);
+  border-radius: 11px;
+  box-shadow: 0 12px 26px rgba(58, 33, 24, 0.16);
+}
+
+#self-bubble {
+  padding: 9px 13px 10px;
+  font-size: 13.5px;
+  border-radius: 12px;
+  box-shadow: 0 12px 26px rgba(58, 33, 24, 0.16);
+}
+
+#hover, #lift-hint {
+  padding: 6px 10px;
+  font-size: 13.5px;
+  border-radius: 9px;
+  box-shadow: 0 10px 22px rgba(58, 33, 24, 0.14);
+}
+
+#tab-hint, #seat-hint { color: var(--mu-ink); }
+body.dark-sky #tab-hint, body.dark-sky #seat-hint { color: var(--mu-ink); text-shadow: 0 0 2px rgba(255, 252, 248, 1), 0 0 8px rgba(255, 252, 248, 0.95); }
+
+#chatter li { color: var(--mu-ink); font-size: 13.5px; }
+
+#lift-pad button {
+  border: 1px solid rgba(124, 71, 48, 0.2);
+  border-radius: 9px;
+  background: rgba(255, 253, 247, 0.8);
+  color: var(--mu-ink);
+}
+
+#lift-pad button:hover, #lift-pad button:focus-visible { border-color: var(--mu-brick); }
+
+#lift-pad button.chosen,
+#lift-pad button.chosen:hover,
+#lift-pad button.chosen:focus-visible {
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border-color: transparent;
+  color: #fdf7ea;
+}
+
+#lift-pad button.passing, #lift-pad button.passing:hover { background: rgba(157, 64, 48, 0.1); border-color: rgba(157, 64, 48, 0.24); color: var(--mu-ink); }
+
+#kick-card {
+  padding: 22px 24px 18px;
+  background: rgba(250, 243, 230, 0.98);
+  border: 1px solid var(--mu-line);
+  border-radius: 18px;
+  box-shadow: var(--mu-shadow);
+}
+
+#kick-back {
+  padding: 9px 16px;
+  font-weight: 700;
+  background: linear-gradient(178deg, #ac4a35, #8f3626 88%);
+  border: 0;
+  border-radius: 9px;
+  color: #fdf7ea;
+}
+
+/* 大块浮层（介绍、欢迎、留言板、放映厅、踢人）也换成同一块白卡，字多所以压厚一点；
+   圆角和描边跟汉堡菜单那张卡一致。 */
+#panel, #boot, #guestbook, #screen-gate, #kick-card {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(18, 26, 59, 0.16);
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+}
+
+.toast { background: rgba(255, 255, 255, 0.92); }
+
+/* 欢迎卡挪到画面正中。 */
+#lower #boot {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: min(520px, calc(100vw - 40px));
+  margin: 0;
+  transform: translate(-50%, -50%);
+}
+
+#boot p.boot-exit {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: var(--mu-ink);
+}
+
+@media (max-width: 720px) {
+  /* 手机上右上角那块（延迟/帧/汉堡）把宽度吃到只剩一小条，展签得收窄，时辰换行摆，别钻到名单底下。 */
+  #where { padding: 9px 12px 8px; border-radius: 12px; max-width: 182px; }
+  /* 手机上一行摆不下馆名和楼层，楼层挪到馆名底下。 */
+  #where-top { flex-direction: column; align-items: flex-start; gap: 0; }
+  #day { flex-wrap: wrap; max-width: 100%; }
+  #where strong { font-size: 15.5px; }
+  #place { font-size: 11px; }
+  #day button { font-size: 11.5px; padding: 3px 8px; }
+  #panel { padding: 22px 20px 16px; border-radius: 16px; }
+  #boot { padding: 16px 18px 14px; border-radius: 16px; }
+  #boot h2 { font-size: 19px; }
+  #guestbook { padding: 14px 16px 10px; border-radius: 16px; }
+  .drawer-body { padding: 14px 14px 12px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  #drawer, #panel, #chatter li, #loading, #name-gate { transition: none; }
+  #drawer, #panel, #chatter li, #loading, #name-gate,
+  .gate-enter, .gate-card, #drawer-toggle, #online, #day button { transition: none; }
   #tab-hint, #seat-hint, .load-earth, .load-stars { animation: none; }
 }

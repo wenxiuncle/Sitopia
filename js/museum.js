@@ -113,6 +113,8 @@ const view = document.getElementById("view");
 const loading = document.getElementById("loading");
 const loadingLabel = document.getElementById("loading-label");
 const loadingCount = document.getElementById("loading-count");
+const gateCount = document.getElementById("gate-count");
+const noticeCount = document.getElementById("notice-count");
 const loadingBar = document.getElementById("loading-bar");
 const loadingMeter = document.getElementById("loading-meter");
 const boot = document.getElementById("boot");
@@ -439,8 +441,11 @@ function showFatal(message) {
 // 这里不用再手改。
 function showExhibitCount(value) {
   const count = Math.floor(Number(value));
-  if (!loadingCount || !(count > 0) || loadingCount.textContent === String(count)) return;
-  loadingCount.textContent = String(count);
+  if (!(count > 0)) return;
+  const text = String(count);
+  for (const node of [loadingCount, gateCount, noticeCount]) {
+    if (node && node.textContent !== text) node.textContent = text;
+  }
 }
 
 function askExhibitCount() {
@@ -3987,14 +3992,16 @@ function openingDay() {
 }
 
 // 南立面远景。e 从 0 到 1，摄像机沿广场外由西向东横移，始终看着楼。
+// 站得远一点：整个楼体连同门前那段广场一起看全（开始页左边一片面板，剩下这半幅要够宽）。
+const VISTA_BACK = 104;
 function placeApproach(e) {
   const shell = built.shell;
   const lookY = Math.max(8, Math.min(shell.top * 0.46, 40));
-  const y = Math.max(9, Math.min(lookY * 0.5, 22));
-  const z = shell.maxZ + 68;
-  const x = -28 + 56 * e;
+  const y = Math.max(10, Math.min(lookY * 0.62, 26));
+  const z = shell.maxZ + VISTA_BACK;
+  const x = -34 + 68 * e;
   camera.position.set(x, y, z);
-  camera.lookAt(0, lookY, shell.maxZ);
+  camera.lookAt(0, lookY * 0.92, shell.maxZ - 6);
   camera.updateMatrixWorld();
 }
 

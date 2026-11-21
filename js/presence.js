@@ -22,6 +22,7 @@ const ONLINE_KEY = "quzhan-museum-online";
 const SOLO_KEY = "quzhan-museum-solo";
 const SORT_KEY = "quzhan-museum-sort";
 const TAB_HINT_KEY = "quzhan-museum-tab-hint";
+const NOTICE_KEY = "quzhan-museum-notice-seen";
 
 function readToggle(key, fallback) {
   try {
@@ -150,6 +151,12 @@ export function mountPresence(options) {
   const kickUntilEl = document.getElementById("kick-until");
   const kickBack = document.getElementById("kick-back");
   const nameInput = document.getElementById("name-input");
+  const gateNotice = document.getElementById("gate-notice");
+  const gateDot = document.getElementById("gate-dot");
+  const gateShare = document.getElementById("gate-share");
+  const gateDice = document.getElementById("gate-dice");
+  const notice = document.getElementById("notice");
+  const noticeClose = document.getElementById("notice-close");
   const nameForm = document.getElementById("name-form");
   const navName = document.getElementById("nav-name");
   const tabHint = document.getElementById("tab-hint");
@@ -1288,6 +1295,113 @@ export function mountPresence(options) {
     commitName(navName.value);
   });
 
+  // 开始页上的「公告」和「分享」：公告只在开始页开，读过一次就把红点收起来。
+  function noticeSeen() {
+    try {
+      return localStorage.getItem(NOTICE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function markNoticeSeen() {
+    if (gateDot) gateDot.hidden = true;
+    try {
+      localStorage.setItem(NOTICE_KEY, "1");
+    } catch {
+      /* 记不住就这次先点掉红点。 */
+    }
+  }
+
+  function openNotice() {
+    if (!notice || !notice.hidden) return;
+    notice.hidden = false;
+    markNoticeSeen();
+    if (noticeClose) {
+      try { noticeClose.focus({ preventScroll: true }); }
+      catch { noticeClose.focus(); }
+    }
+  }
+
+  function closeNotice() {
+    if (!notice || notice.hidden) return;
+    notice.hidden = true;
+    if (gateNotice && !nameGate.hidden) {
+      try { gateNotice.focus({ preventScroll: true }); }
+      catch { gateNotice.focus(); }
+    }
+  }
+
+  if (gateDot && noticeSeen()) gateDot.hidden = true;
+  if (gateNotice) gateNotice.addEventListener("click", openNotice);
+  if (noticeClose) noticeClose.addEventListener("click", closeNotice);
+  if (notice) {
+    notice.addEventListener("click", (event) => {
+      if (event.target === notice) closeNotice();
+    });
+  }
+
+  // 分享：手机上先走系统面板；没有就复制链接，复制不了再让人自己抄。
+  if (gateShare) {
+    gateShare.addEventListener("click", async () => {
+      const url = "https://sitopia.youquhome.com/";
+      const data = { title: "趣站博物馆", text: "一个可以走进去逛的 3D 网址博物馆", url };
+      if (navigator.share) {
+        try {
+          await navigator.share(data);
+          return;
+        } catch (error) {
+          if (error && error.name === "AbortError") return;
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("链接已复制，发给朋友吧");
+      } catch {
+        window.prompt("复制这个链接发给朋友：", url);
+      }
+    });
+  }
+
+  // 骰子：从形容词和名词里各抽一个，拼成「……的……」当昵称。
+  // 词是给小学到高中的孩子打气的，别塞丧气词和网络黑话。
+  const NAME_HEADS = [
+    "上进", "专注", "刻苦", "勤奋", "自律",
+    "沉稳", "清醒", "坚韧", "好问", "灵光",
+    "稳当", "追光", "向阳", "不服输", "有底气",
+    "眼里有光", "心里有数", "脚踏实地", "越挫越勇", "一往无前",
+  ];
+  const NAME_TAILS = [
+    "少年", "学子", "读书人", "追梦人", "赶路人",
+    "攀登者", "夜读者", "小树苗", "星火", "种子",
+    "长跑者", "解题人", "黑马", "破晓者", "拾级人",
+    "灯塔", "答卷人", "未来客", "早起鸟", "小书虫",
+  ];
+
+  function pickName() {
+    const head = NAME_HEADS[Math.floor(Math.random() * NAME_HEADS.length)];
+    const tail = NAME_TAILS[Math.floor(Math.random() * NAME_TAILS.length)];
+    return head + "的" + tail;
+  }
+
+  if (gateDice) {
+    gateDice.addEventListener("click", () => {
+      const max = Number(nameInput.getAttribute("maxlength")) || 0;
+      let pick = pickName();
+      // 抽到跟现在一样的就再抽一次，免得点了没反应。
+      for (let i = 0; i < 6 && pick === nameInput.value; i += 1) pick = pickName();
+      if (max > 0 && pick.length > max) pick = pick.slice(0, max);
+      nameInput.value = pick;
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      // 手机上不抢焦点，免得键盘弹出来挡住面板。
+      if (!window.matchMedia("(hover: none)").matches) {
+        nameInput.focus({ preventScroll: true });
+        const end = nameInput.value.length;
+        try { nameInput.setSelectionRange(end, end); } catch {}
+      }
+    });
+  }
+
   function watchCompose(input) {
     input.addEventListener("compositionstart", () => {
       composing = true;
@@ -1338,6 +1452,11 @@ export function mountPresence(options) {
 
   document.addEventListener("keydown", (event) => {
     const el = event.target;
+    if (event.key === "Escape" && notice && !notice.hidden) {
+      event.preventDefault();
+      closeNotice();
+      return;
+    }
     if (el === chatInput && event.key === "Escape") {
       event.preventDefault();
       closeChat();

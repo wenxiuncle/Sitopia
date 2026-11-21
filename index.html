@@ -117,8 +117,10 @@
   <div id="crosshair" hidden><span></span><span></span><span></span><span></span></div>
   <div id="hover" hidden></div>
   <header id="where" hidden>
-    <strong>趣站博物馆</strong>
-    <div id="place">门厅</div>
+    <div id="where-top">
+      <strong>趣站博物馆</strong>
+      <div id="place">门厅</div>
+    </div>
     <nav id="day"></nav>
   </header>
   <p id="lift-hint" hidden></p>
@@ -128,14 +130,83 @@
     <p class="boot-sub">有趣网址之家荣誉出品</p>
     <p>这里是有趣网址之家3D虚拟展厅，你可以在这个三维空间里走动，像参观博物馆一样浏览各种有趣的网站；走近画框单击左键即可看到趣站的介绍和链接；馆内左侧有电梯，可以快速到达指定层，虽然可能走楼梯更快。。。如果有多人在线，还可以和小伙伴一起浏览、聊天。</p>
     <ol id="legend"></ol>
+    <p class="boot-exit">关闭本浏览器标签页即可退出游戏</p>
   </div>
   <ol id="chatter"></ol>
   </div>
   <form id="name-gate" hidden>
-    <p>进馆之前，先起个名字。</p>
-    <input id="name-input" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
-    <button type="submit">进入</button>
+    <div class="gate-head">
+      <span class="gate-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.5 9.2 12 4.3l8.5 4.9"/>
+          <path d="M5.6 10.6v7M9.5 10.6v7M14.5 10.6v7M18.4 10.6v7"/>
+          <path d="M3 19.7h18"/>
+        </svg>
+      </span>
+      <span class="gate-brand">有趣网址之家出品<em>YOUQUHOME.COM</em></span>
+      <span class="gate-rule" aria-hidden="true"></span>
+    </div>
+    <div class="gate-body">
+      <p class="gate-kicker">3D 网址博物馆 · 免费在线逛</p>
+      <h1 class="gate-title" id="gate-title"><span>趣站博物馆</span></h1>
+      <p class="gate-lead">输入昵称就能进馆。<span id="gate-count">2480</span> 个有趣网站挂在画框里，走近就能看介绍、点开原文。</p>
+      <label class="gate-label" for="name-input">你的昵称</label>
+      <div class="gate-field">
+        <input id="name-input" maxlength="12" autocomplete="nickname" placeholder="怎么称呼你" aria-label="名称">
+        <button class="gate-dice" type="button" id="gate-dice" title="随机起个名字" aria-label="随机起个名字">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.4"/>
+            <circle cx="8.5" cy="8.5" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="15.5" cy="8.5" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="8.5" cy="15.5" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="15.5" cy="15.5" r="1.15" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
+      </div>
+      <button class="gate-enter" type="submit">
+        <span class="gate-enter-main">进入博物馆</span>
+        <span class="gate-enter-sub">免费 · 不用注册 · 手机也能进</span>
+        <svg class="gate-chev" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
+      <div class="gate-cards">
+        <button class="gate-card" type="button" id="gate-notice" aria-haspopup="dialog" aria-controls="notice">
+          <svg class="gate-card-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8.6a6 6 0 0 0-12 0c0 5-2 6.4-2 6.4h16s-2-1.4-2-6.4"/>
+            <path d="M13.7 19a2 2 0 0 1-3.4 0"/>
+          </svg>
+          <span class="gate-card-text"><b>公告</b><small>进馆须知</small></span>
+          <i class="gate-dot" id="gate-dot" aria-hidden="true"></i>
+        </button>
+        <button class="gate-card" type="button" id="gate-share">
+          <svg class="gate-card-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 4.5 11 13.5"/>
+            <path d="M20 4.5h-5.6M20 4.5v5.6"/>
+            <path d="M9.5 6H5.5A1.5 1.5 0 0 0 4 7.5v11A1.5 1.5 0 0 0 5.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/>
+          </svg>
+          <span class="gate-card-text"><b>分享</b><small>发给朋友</small></span>
+        </button>
+      </div>
+    </div>
+    <p class="gate-foot gate-foot-keys"><span>WASD 走动</span><span>鼠标转视角</span><span>Tab 看说明</span></p>
+    <p class="gate-foot gate-foot-touch"><span>左手摇杆走动</span><span>滑动画面转视角</span><span>右下圆圈跳</span></p>
   </form>
+  <div id="notice" hidden role="dialog" aria-modal="true" aria-labelledby="notice-title">
+    <div id="notice-card">
+      <p id="notice-kicker">公告</p>
+      <h2 id="notice-title">进馆须知</h2>
+      <ul id="notice-list">
+        <li><b>看什么</b><span>馆里挂着 <span id="notice-count">2480</span> 个网址画框。走近画框，单击左键看介绍，点链接读原文。</span></li>
+        <li><b>怎么走</b><span><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> 或方向键走动，鼠标转视角，<kbd>空格</kbd> 跳一下；手机用左下摇杆。</span></li>
+        <li><b>一起逛</b><span>多人在线时能看见彼此、一起聊天；想安静逛，在右上菜单里开单人模式。</span></li>
+        <li><b>关于</b><span>有趣网址之家出品，开源在 GitHub；琴声来自公有领域曲目。</span></li>
+      </ul>
+      <div id="notice-actions">
+        <a id="notice-link" href="https://youquhome.com/" target="_blank" rel="noopener noreferrer">去有趣网址之家</a>
+        <button id="notice-close" type="button">知道了</button>
+      </div>
+    </div>
+  </div>
   <div id="kick-gate" hidden>
     <div id="kick-card">
       <p><strong>你已被请出展厅。</strong></p>
